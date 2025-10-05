@@ -1,0 +1,41 @@
+================================================================================
+ANATOMICAL PRIOR ANALYSIS REPORT
+================================================================================
+
+Data source: /scratch3/liu275/Data/dHCP/dHCP_split.json
+Number of samples: 708
+Number of classes: 87
+Foreground only: True
+Dilation iterations: 2
+
+ADJACENCY STATISTICS
+----------------------------------------
+Non-zero adjacencies: 2270
+Max adjacency probability: 0.9309
+Mean adjacency probability: 0.0383
+
+TOP 10 STRONGEST ADJACENCIES
+----------------------------------------
+1. Class 1 <-> Class 85: 0.9309
+2. Class 66 <-> Class 23: 0.8972
+3. Class 67 <-> Class 24: 0.8940
+4. Class 81 <-> Class 38: 0.8888
+5. Class 80 <-> Class 37: 0.8883
+6. Class 82 <-> Class 39: 0.8494
+7. Class 83 <-> Class 40: 0.8486
+8. Class 87 <-> Class 43: 0.8420
+9. Class 78 <-> Class 35: 0.6792
+10. Class 79 <-> Class 36: 0.6772
+
+SYMMETRY ANALYSIS
+----------------------------------------
+Pair 1_2: mean=0.000, std=0.000, range=[0.000, 0.001]
+Pair 3_4: mean=0.580, std=0.070, range=[0.396, 0.853]
+Pair 5_6: mean=0.611, std=0.097, range=[0.395, 0.987]
+Pair 7_8: mean=0.887, std=0.088, range=[0.555, 1.000]
+Pair 9_10: mean=0.804, std=0.133, range=[0.404, 1.000]
+Pair 11_12: mean=0.390, std=0.091, range=[0.212, 0.943]
+Pair 13_14: mean=0.820, std=0.094, range=[0.550, 1.000]
+Pair 15_16: mean=0.283, std=0.049, range=[0.157, 0.445]
+Pair 17_18: mean=0.059, std=0.011, range=[0.031, 0.193]
+Pair 21_20: mean=0.252, std=0.037, range=[0.111, 0.354]

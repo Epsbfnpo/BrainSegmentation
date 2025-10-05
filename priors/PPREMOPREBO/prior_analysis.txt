@@ -1,0 +1,41 @@
+================================================================================
+ANATOMICAL PRIOR ANALYSIS REPORT
+================================================================================
+
+Data source: /scratch3/liu275/Data/PPREMOPREBO/PPREMOPREBO_split.json
+Number of samples: 186
+Number of classes: 87
+Foreground only: True
+Dilation iterations: 2
+
+ADJACENCY STATISTICS
+----------------------------------------
+Non-zero adjacencies: 2322
+Max adjacency probability: 0.9761
+Mean adjacency probability: 0.0375
+
+TOP 10 STRONGEST ADJACENCIES
+----------------------------------------
+1. Class 1 <-> Class 85: 0.9761
+2. Class 81 <-> Class 38: 0.8431
+3. Class 66 <-> Class 23: 0.8417
+4. Class 80 <-> Class 37: 0.8395
+5. Class 67 <-> Class 24: 0.8343
+6. Class 83 <-> Class 40: 0.7905
+7. Class 82 <-> Class 39: 0.7865
+8. Class 87 <-> Class 43: 0.7690
+9. Class 54 <-> Class 8: 0.6237
+10. Class 55 <-> Class 9: 0.6082
+
+SYMMETRY ANALYSIS
+----------------------------------------
+Pair 1_2: mean=0.000, std=0.000, range=[0.000, 0.001]
+Pair 3_4: mean=0.525, std=0.100, range=[0.299, 0.986]
+Pair 5_6: mean=0.575, std=0.119, range=[0.295, 0.957]
+Pair 7_8: mean=0.862, std=0.107, range=[0.490, 1.000]
+Pair 9_10: mean=0.774, std=0.154, range=[0.397, 0.999]
+Pair 11_12: mean=0.415, std=0.121, range=[0.169, 0.790]
+Pair 13_14: mean=0.780, std=0.133, range=[0.455, 0.996]
+Pair 15_16: mean=0.301, std=0.070, range=[0.109, 0.589]
+Pair 17_18: mean=0.052, std=0.016, range=[0.015, 0.117]
+Pair 21_20: mean=0.276, std=0.065, range=[0.094, 0.436]
