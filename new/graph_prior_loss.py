@@ -1,0 +1,951 @@
+#!/usr/bin/env python3
+"""
+Age-conditioned graph-based anatomical prior loss for brain segmentation
+Implements volume priors, shape priors, and weighted adjacency based on age
+"""
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import json
+import numpy as np
+import os
+from typing import Optional, Dict, List, Tuple
+from monai.data import MetaTensor
+from scipy.ndimage import distance_transform_edt
+
+
+def _to_tensor(x):
+    """Convert MetaTensor to regular torch.Tensor if needed"""
+    if x is None:
+        return None
+    if isinstance(x, MetaTensor):
+        return x.as_tensor()
+    return x
+
+def soft_adjacency_from_probs(probs: torch.Tensor,
+                              kernel_size: int = 3,
+                              stride: int = 1,
+                              temperature: float = 1.0,
+                              restricted_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    """Compute soft adjacency matrix from probability maps with optional restrictions."""
+
+    probs = _to_tensor(probs)
+
+    if kernel_size > 1:
+        probs_pooled = F.avg_pool3d(
+            probs,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=kernel_size // 2,
+            count_include_pad=False,
+        )
+    else:
+        probs_pooled = probs
+
+    B, C, X_p, Y_p, Z_p = probs_pooled.shape
+    probs_flat = probs_pooled.reshape(B, C, -1)
+    probs_norm = probs_flat / (probs_flat.sum(dim=2, keepdim=True) + 1e-8)
+
+    A_batch = torch.bmm(probs_norm, probs_norm.transpose(1, 2))
+
+    if temperature != 1.0:
+        A_batch = torch.pow(A_batch + 1e-8, 1.0 / temperature)
+
+    eye = torch.eye(C, device=probs.device).unsqueeze(0)
+    A_batch = A_batch * (1 - eye)
+
+    if restricted_mask is not None:
+        restricted_mask = _to_tensor(restricted_mask)
+        if restricted_mask.dim() == 2:
+            restricted_mask = restricted_mask.unsqueeze(0)
+        A_batch = A_batch * restricted_mask
+
+    row_sums = A_batch.sum(dim=2, keepdim=True).clamp(min=1e-8)
+    A_batch = A_batch / row_sums
+
+    return A_batch.mean(dim=0)
+
+def compute_laplacian(A: torch.Tensor, normalized: bool = True) -> torch.Tensor:
+    """Compute (optionally normalized) graph Laplacian from adjacency matrix."""
+
+    A = _to_tensor(A)
+    A_sym = 0.5 * (A + A.T)
+    D = torch.diag(A_sym.sum(dim=1))
+    L = D - A_sym
+
+    if normalized:
+        d_sqrt_inv = torch.diag(1.0 / torch.sqrt(torch.diag(D).clamp(min=1e-8)))
+        L = d_sqrt_inv @ L @ d_sqrt_inv
+
+    return L
+
+def spectral_alignment_loss(L_pred: torch.Tensor,
+                            L_prior: torch.Tensor,
+                            top_k: int = 20,
+                            align_vectors: bool = True,
+                            eigenvalue_weighted: bool = False) -> torch.Tensor:
+    """Align Laplacian spectra (and optionally eigenvectors) between two graphs."""
+
+    L_pred = _to_tensor(L_pred)
+    L_prior = _to_tensor(L_prior)
+
+    L_pred_sym = 0.5 * (L_pred + L_pred.T)
+    L_prior_sym = 0.5 * (L_prior + L_prior.T)
+
+    evals_pred, evecs_pred = torch.linalg.eigh(L_pred_sym.float())
+    evals_prior, evecs_prior = torch.linalg.eigh(L_prior_sym.float())
+
+    evals_pred = evals_pred.to(L_pred.dtype)
+    evals_prior = evals_prior.to(L_prior.dtype)
+    evecs_pred = evecs_pred.to(L_pred.dtype)
+    evecs_prior = evecs_prior.to(L_prior.dtype)
+
+    k = min(top_k, evals_pred.shape[0] - 1)
+
+    loss_evals = F.mse_loss(evals_pred[1:k + 1], evals_prior[1:k + 1])
+
+    if not align_vectors or k <= 0:
+        return loss_evals
+
+    U_pred = evecs_pred[:, 1:k + 1]
+    U_prior = evecs_prior[:, 1:k + 1]
+
+    dots = (U_pred * U_prior).sum(dim=0)
+    signs = torch.where(dots < 0, -torch.ones_like(dots), torch.ones_like(dots))
+    U_pred = U_pred * signs.unsqueeze(0)
+
+    if eigenvalue_weighted:
+        w = evals_prior[1:k + 1].abs()
+        w = w / (w.sum() + 1e-8)
+        loss_subspace = 0.0
+        for i in range(k):
+            cos_sim = torch.dot(U_pred[:, i], U_prior[:, i])
+            loss_subspace += w[i] * (1.0 - cos_sim ** 2)
+    else:
+        P_pred = U_pred @ U_pred.T
+        P_prior = U_prior @ U_prior.T
+        loss_subspace = F.mse_loss(P_pred, P_prior)
+
+    return loss_evals + 0.5 * loss_subspace
+
+def edge_consistency_loss_with_mismatch(A_pred: torch.Tensor,
+                                        A_prior: torch.Tensor,
+                                        required_edges: Optional[List[Tuple[int, int]]] = None,
+                                        forbidden_edges: Optional[List[Tuple[int, int]]] = None,
+                                        margin: float = 0.1,
+                                        class_weights: Optional[torch.Tensor] = None,
+                                        qap_mismatch_g: float = 1.5,
+                                        restricted_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    """Edge-level alignment with mismatch-aware penalties and optional masks."""
+
+    A_pred = _to_tensor(A_pred)
+    A_prior = _to_tensor(A_prior)
+
+    if restricted_mask is not None:
+        restricted_mask = _to_tensor(restricted_mask)
+        A_pred = A_pred * restricted_mask
+        A_prior = A_prior * restricted_mask
+
+    if class_weights is not None:
+        w = class_weights.view(-1, 1)
+        W = torch.sqrt(w @ w.T)
+        W = W / W.mean()
+    else:
+        W = torch.ones_like(A_pred)
+
+    loss_mse = torch.mean(W * (A_pred - A_prior) ** 2)
+
+    if restricted_mask is not None:
+        R = restricted_mask
+    else:
+        R = torch.ones_like(A_pred)
+
+    M = (A_pred * A_prior) * R
+    N = ((1 - A_pred) * (1 - A_prior)) * R
+    X = ((1 - A_prior) * A_pred + A_prior * (1 - A_pred)) * R
+    loss_qap = qap_mismatch_g * X.mean() - M.mean()
+    loss_base = loss_mse + 0.1 * loss_qap
+
+    loss_required = torch.tensor(0.0, device=A_pred.device)
+    th_required = 0.02
+    if required_edges:
+        for i, j in required_edges:
+            if i < A_pred.shape[0] and j < A_pred.shape[1]:
+                loss_required = loss_required + torch.pow(F.relu(th_required - A_pred[i, j]), 2)
+
+    loss_forbidden = torch.tensor(0.0, device=A_pred.device)
+    th_forbidden = 5e-4
+    if forbidden_edges:
+        for i, j in forbidden_edges:
+            if i < A_pred.shape[0] and j < A_pred.shape[1]:
+                loss_forbidden = loss_forbidden + torch.pow(F.relu(A_pred[i, j] - th_forbidden), 2)
+
+    num_constraints = len(required_edges or []) + len(forbidden_edges or [])
+    if num_constraints > 0:
+        constraint_weight = 0.1
+        loss_constraints = constraint_weight * (loss_required + loss_forbidden) / num_constraints
+    else:
+        loss_constraints = torch.tensor(0.0, device=A_pred.device)
+
+    return loss_base + loss_constraints
+
+def compute_restricted_mask(num_classes: int,
+                            required_edges: List[Tuple[int, int]],
+                            forbidden_edges: List[Tuple[int, int]],
+                            lr_pairs: List[Tuple[int, int]],
+                            device: torch.device) -> torch.Tensor:
+    """Construct binary mask describing which adjacencies are valid."""
+
+    R = torch.ones(num_classes, num_classes, device=device)
+    R.fill_diagonal_(0)
+
+    for i, j in forbidden_edges:
+        if i < num_classes and j < num_classes:
+            R[i, j] = 0
+            R[j, i] = 0
+
+    for i, j in required_edges:
+        if i < num_classes and j < num_classes:
+            R[i, j] = 1
+            R[j, i] = 1
+
+    for left, right in lr_pairs:
+        if left < num_classes and right < num_classes:
+            R[left, right] = 1
+            R[right, left] = 1
+
+    return R
+
+
+def compute_sdt(mask: torch.Tensor) -> torch.Tensor:
+    """
+    Compute signed distance transform for a mask
+    Args:
+        mask: (B, C, X, Y, Z) binary or soft mask
+    Returns:
+        sdt: (B, C, X, Y, Z) signed distance transform
+    """
+    B, C, X, Y, Z = mask.shape
+    sdt = torch.zeros_like(mask)
+
+    # Convert to numpy for distance transform
+    mask_np = mask.detach().cpu().numpy()
+
+    for b in range(B):
+        for c in range(C):
+            # Threshold soft mask
+            binary_mask = mask_np[b, c] > 0.5
+
+            if binary_mask.any():
+                # Compute distance transform
+                dist_inside = distance_transform_edt(binary_mask)
+                dist_outside = distance_transform_edt(~binary_mask)
+
+                # Signed distance: negative inside, positive outside
+                sdt_np = np.where(binary_mask, -dist_inside, dist_outside)
+                sdt[b, c] = torch.from_numpy(sdt_np).to(mask.device)
+
+    return sdt
+
+
+def compute_weighted_adjacency(probs: torch.Tensor, age: torch.Tensor,
+                               age_weights: Optional[Dict] = None,
+                               temperature: float = 1.0) -> torch.Tensor:
+    """
+    Compute weighted adjacency matrix based on age
+
+    Args:
+        probs: (B, C, X, Y, Z) probability maps
+        age: (B, 1) age tensor
+        age_weights: Dictionary mapping age ranges to weight matrices
+        temperature: Temperature for sharpening
+
+    Returns:
+        A_weighted: (B, C, C) weighted adjacency matrix
+    """
+    B, C, X, Y, Z = probs.shape
+
+    # Flatten spatial dimensions
+    probs_flat = probs.reshape(B, C, -1)
+
+    # Compute co-occurrence matrix
+    A_batch = torch.bmm(probs_flat, probs_flat.transpose(1, 2))  # (B, C, C)
+
+    # Apply temperature
+    if temperature != 1.0:
+        A_batch = torch.pow(A_batch + 1e-8, 1.0 / temperature)
+
+    # Zero diagonal
+    eye = torch.eye(C, device=probs.device).unsqueeze(0)
+    A_batch = A_batch * (1 - eye)
+
+    # Apply age-dependent weights if provided
+    if age_weights is not None:
+        for b in range(B):
+            age_val = age[b].item()
+            # Find appropriate weight matrix for this age
+            weight_matrix = get_age_weight_matrix(age_val, age_weights, C, probs.device)
+            A_batch[b] = A_batch[b] * weight_matrix
+
+    # Row-normalize per-sample  (B, C, C)
+    row_sums = A_batch.sum(dim=2, keepdim=True).clamp(min=1e-8)
+    A_batch = A_batch / row_sums
+
+    # 返回每个样本的邻接矩阵 (B, C, C)
+    return A_batch
+
+
+def get_age_weight_matrix(age: float, age_weights: Dict,
+                          num_classes: int, device: torch.device) -> torch.Tensor:
+    """
+    Get weight matrix for a specific age through interpolation
+
+    Args:
+        age: Age value
+        age_weights: Dict with age as key and weight matrix as value
+        num_classes: Number of classes
+        device: Device
+
+    Returns:
+        weight_matrix: (C, C) interpolated weight matrix
+    """
+    if not age_weights:
+        return torch.ones(num_classes, num_classes, device=device)
+
+    # Get sorted ages
+    ages = sorted(list(age_weights.keys()))
+
+    # Find bracketing ages
+    if age <= ages[0]:
+        return torch.tensor(age_weights[ages[0]], device=device)
+    if age >= ages[-1]:
+        return torch.tensor(age_weights[ages[-1]], device=device)
+
+    # Linear interpolation
+    for i in range(len(ages) - 1):
+        if ages[i] <= age <= ages[i + 1]:
+            alpha = (age - ages[i]) / (ages[i + 1] - ages[i])
+            w1 = torch.tensor(age_weights[ages[i]], device=device)
+            w2 = torch.tensor(age_weights[ages[i + 1]], device=device)
+            return (1 - alpha) * w1 + alpha * w2
+
+    return torch.ones(num_classes, num_classes, device=device)
+
+
+def volume_consistency_loss(probs: torch.Tensor, age: torch.Tensor,
+                            volume_stats: Dict, num_classes: int) -> torch.Tensor:
+    """
+    Compute volume consistency loss based on age-specific statistics
+
+    Args:
+        probs: (B, C, X, Y, Z) probability maps
+        age: (B, 1) age tensor
+        volume_stats: Dictionary with age-specific volume statistics
+        num_classes: Number of classes
+
+    Returns:
+        loss: Volume consistency loss
+    """
+    B = probs.shape[0]
+
+    # Compute predicted volumes
+    predicted_volumes = probs.sum(dim=(2, 3, 4))  # (B, C)
+    # 将预测量归一化为“体积分数”，和先验统计（分数）一致
+    sum_all = predicted_volumes.sum(dim=1, keepdim=True).clamp(min=1e-6)
+    predicted_volumes = predicted_volumes / sum_all
+    # Get expected volumes for each age
+    expected_volumes = torch.zeros(B, num_classes, device=probs.device)
+    expected_stds = torch.ones(B, num_classes, device=probs.device)
+
+    for b in range(B):
+        age_val = age[b].item()
+        volumes, stds = get_expected_volumes(age_val, volume_stats, num_classes)
+        expected_volumes[b] = torch.tensor(volumes, device=probs.device)
+        expected_stds[b] = torch.tensor(stds, device=probs.device)
+
+    # Normalize by expected std
+    normalized_diff = (predicted_volumes - expected_volumes) / (expected_stds + 1e-6)
+
+    # Huber loss for robustness
+    loss = F.smooth_l1_loss(normalized_diff, torch.zeros_like(normalized_diff))
+
+    return loss
+
+
+def get_expected_volumes(age: float, volume_stats: Dict,
+                         num_classes: int) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Get expected volume statistics for a given age
+
+    Args:
+        age: Age value
+        volume_stats: Dictionary with age-specific statistics
+        num_classes: Number of classes
+
+    Returns:
+        means: Expected volume means
+        stds: Expected volume stds
+    """
+    if not volume_stats:
+        return np.ones(num_classes), np.ones(num_classes)
+
+    # Find closest age or interpolate
+    ages = sorted(list(volume_stats.keys()))
+
+    if age <= ages[0]:
+        stats = volume_stats[ages[0]]
+        return np.array(stats['means']), np.array(stats['stds'])
+
+    if age >= ages[-1]:
+        stats = volume_stats[ages[-1]]
+        return np.array(stats['means']), np.array(stats['stds'])
+
+    # Linear interpolation
+    for i in range(len(ages) - 1):
+        if ages[i] <= age <= ages[i + 1]:
+            alpha = (age - ages[i]) / (ages[i + 1] - ages[i])
+            means1 = np.array(volume_stats[ages[i]]['means'])
+            stds1 = np.array(volume_stats[ages[i]]['stds'])
+            means2 = np.array(volume_stats[ages[i + 1]]['means'])
+            stds2 = np.array(volume_stats[ages[i + 1]]['stds'])
+
+            means = (1 - alpha) * means1 + alpha * means2
+            stds = (1 - alpha) * stds1 + alpha * stds2
+            return means, stds
+
+    return np.ones(num_classes), np.ones(num_classes)
+
+
+def shape_consistency_loss(probs: torch.Tensor, age: torch.Tensor,
+                           shape_templates: Optional[Dict] = None) -> torch.Tensor:
+    """
+    Compute shape consistency loss using signed distance transforms
+
+    Args:
+        probs: (B, C, X, Y, Z) probability maps
+        age: (B, 1) age tensor
+        shape_templates: Dictionary with age-specific shape templates
+
+    Returns:
+        loss: Shape consistency loss
+    """
+    if shape_templates is None:
+        return torch.tensor(0.0, device=probs.device)
+
+    # Compute SDT for predictions
+    sdt_pred = compute_sdt(probs)
+
+    # Get expected SDT for each age
+    B = probs.shape[0]
+    loss = 0.0
+
+    for b in range(B):
+        age_val = age[b].item()
+        sdt_expected = get_shape_template(age_val, shape_templates, probs.shape[1:], probs.device)
+
+        if sdt_expected is not None:
+            # L1 loss on SDT
+            loss += F.l1_loss(sdt_pred[b], sdt_expected)
+
+    return loss / B if B > 0 else torch.tensor(0.0, device=probs.device)
+
+
+def get_shape_template(age: float, shape_templates: Dict,
+                       shape: Tuple, device: torch.device) -> Optional[torch.Tensor]:
+    """
+    Get shape template for a specific age
+
+    Args:
+        age: Age value
+        shape_templates: Dictionary with age-specific templates
+        shape: Expected shape (C, X, Y, Z)
+        device: Device
+
+    Returns:
+        template: Shape template tensor or None
+    """
+    if not shape_templates:
+        return None
+
+    # Find closest age
+    ages = sorted(list(shape_templates.keys()))
+    closest_age = min(ages, key=lambda x: abs(x - age))
+
+    template = shape_templates[closest_age]
+
+    # Convert to tensor and resize if needed
+    if isinstance(template, np.ndarray):
+        template = torch.from_numpy(template).to(device)
+
+    # Ensure correct shape
+    if template.shape != shape:
+        # Simple resize using interpolation
+        template = F.interpolate(
+            template.unsqueeze(0),
+            size=shape[1:],
+            mode='trilinear',
+            align_corners=False
+        ).squeeze(0)
+
+    return template
+
+
+class AgeConditionedGraphPriorLoss(nn.Module):
+    """Unified age-conditioned prior with dual-branch graph alignment support."""
+
+    def __init__(self,
+                 volume_stats_path: Optional[str] = None,
+                 shape_templates_path: Optional[str] = None,
+                 weighted_adj_path: Optional[str] = None,
+                 age_weights_path: Optional[str] = None,
+                 prior_adj_path: Optional[str] = None,
+                 required_json: Optional[str] = None,
+                 forbidden_json: Optional[str] = None,
+                 lr_pairs_json: Optional[str] = None,
+                 src_prior_adj_path: Optional[str] = None,
+                 src_required_json: Optional[str] = None,
+                 src_forbidden_json: Optional[str] = None,
+                 lambda_volume: float = 0.2,
+                 lambda_shape: float = 0.1,
+                 lambda_weighted_adj: float = 0.15,
+                 lambda_topo: float = 0.02,
+                 lambda_sym: float = 0.05,
+                 lambda_spec: float = 0.1,
+                 lambda_edge: float = 0.1,
+                 lambda_spec_src: Optional[float] = None,
+                 lambda_edge_src: Optional[float] = None,
+                 lambda_spec_tgt: Optional[float] = None,
+                 lambda_edge_tgt: Optional[float] = None,
+                 top_k: int = 20,
+                 temperature: float = 1.0,
+                 warmup_epochs: Optional[int] = 10,
+                 pool_kernel: int = 3,
+                 pool_stride: int = 2,
+                 graph_align_mode: str = 'joint',
+                 class_weights: Optional[torch.Tensor] = None,
+                 align_U_weighted: bool = False,
+                 qap_mismatch_g: float = 1.5,
+                 use_restricted_mask: bool = False,
+                 restricted_mask_path: Optional[str] = None,
+                 lambda_dyn: float = 0.0,
+                 dyn_top_k: int = 12,
+                 dyn_start_epoch: int = 50,
+                 dyn_ramp_epochs: int = 50,
+                 prior_warmup_epochs: Optional[int] = None,
+                 prior_temperature: Optional[float] = None,
+                 **extra_kwargs):
+        super().__init__()
+
+        # Age-aware coefficients
+        self.lambda_volume = lambda_volume
+        self.lambda_shape = lambda_shape
+        self.lambda_weighted_adj = lambda_weighted_adj
+        self.lambda_topo = lambda_topo
+        self.lambda_sym = lambda_sym
+
+        # Graph alignment coefficients
+        self.graph_align_mode = graph_align_mode
+        self.align_U_weighted = align_U_weighted
+        self.qap_mismatch_g = qap_mismatch_g
+        self.lambda_spec_src = lambda_spec_src if lambda_spec_src is not None else (lambda_spec if graph_align_mode in ['src_only', 'joint'] else 0.0)
+        self.lambda_edge_src = lambda_edge_src if lambda_edge_src is not None else (lambda_edge if graph_align_mode in ['src_only', 'joint'] else 0.0)
+        self.lambda_spec_tgt = lambda_spec_tgt if lambda_spec_tgt is not None else (lambda_spec if graph_align_mode in ['tgt_only', 'joint'] else 0.0)
+        self.lambda_edge_tgt = lambda_edge_tgt if lambda_edge_tgt is not None else (lambda_edge if graph_align_mode in ['tgt_only', 'joint'] else 0.0)
+
+        self.top_k = top_k
+        self.temperature = temperature
+        self.pool_kernel = pool_kernel
+        self.pool_stride = pool_stride
+
+        # Warmup scheduling for all prior terms
+        self.warmup_epochs = warmup_epochs if warmup_epochs is not None else prior_warmup_epochs or 0
+        self.current_epoch = 0
+
+        # Dynamic spectral branch configuration
+        self.lambda_dyn = lambda_dyn
+        self.dyn_top_k = dyn_top_k
+        self.dyn_start_epoch = dyn_start_epoch
+        self.dyn_ramp_epochs = dyn_ramp_epochs
+
+        # Separate temperature for weighted adjacency if provided
+        self.prior_temperature = prior_temperature if prior_temperature is not None else temperature
+
+        # ========================= Age-aware priors =========================
+        self.volume_stats = None
+        if volume_stats_path and os.path.exists(volume_stats_path):
+            with open(volume_stats_path, 'r') as f:
+                tmp_vs = json.load(f)
+                self.volume_stats = {float(k): v for k, v in tmp_vs.items()}
+            print(f"✓ Loaded volume statistics from {volume_stats_path}")
+
+        self.shape_templates = None
+        if shape_templates_path and os.path.exists(shape_templates_path):
+            self.shape_templates = torch.load(shape_templates_path)
+            print(f"✓ Loaded shape templates from {shape_templates_path}")
+
+        self.age_weights = None
+        if age_weights_path and os.path.exists(age_weights_path):
+            with open(age_weights_path, 'r') as f:
+                tmp_aw = json.load(f)
+                self.age_weights = {float(k): v for k, v in tmp_aw.items()}
+            print(f"✓ Loaded age-dependent weights from {age_weights_path}")
+
+        if weighted_adj_path and os.path.exists(weighted_adj_path):
+            A_weighted = np.load(weighted_adj_path).astype(np.float32)
+            row_sums = np.clip(A_weighted.sum(axis=1, keepdims=True), 1e-8, None)
+            A_weighted = A_weighted / row_sums
+            self.register_buffer('A_weighted_prior', torch.from_numpy(A_weighted))
+            print(f"✓ Loaded weighted adjacency prior from {weighted_adj_path}")
+        else:
+            self.register_buffer('A_weighted_prior', torch.empty(0))
+
+        # ========================= Graph priors =========================
+        self.lr_pairs: List[Tuple[int, int]] = []
+        if lr_pairs_json and os.path.exists(lr_pairs_json):
+            with open(lr_pairs_json, 'r') as f:
+                pairs_raw = json.load(f)
+                self.lr_pairs = [(int(a) - 1, int(b) - 1) for a, b in pairs_raw if int(a) > 0 and int(b) > 0]
+
+        self.tgt_required_edges: List[Tuple[int, int]] = []
+        if required_json and os.path.exists(required_json):
+            with open(required_json, 'r') as f:
+                data = json.load(f)
+                self.tgt_required_edges = [(int(i), int(j)) for i, j in data.get('required', [])]
+
+        self.tgt_forbidden_edges: List[Tuple[int, int]] = []
+        if forbidden_json and os.path.exists(forbidden_json):
+            with open(forbidden_json, 'r') as f:
+                data = json.load(f)
+                self.tgt_forbidden_edges = [(int(i), int(j)) for i, j in data.get('forbidden', [])]
+
+        # Alias for topology regularizer
+        self.required_edges = self.tgt_required_edges
+        self.forbidden_edges = self.tgt_forbidden_edges
+
+        if prior_adj_path and os.path.exists(prior_adj_path):
+            A_tgt = torch.from_numpy(np.load(prior_adj_path)).float()
+            row_sums = A_tgt.sum(dim=1, keepdim=True).clamp(min=1e-8)
+            A_tgt = A_tgt / row_sums
+            self.register_buffer('A_tgt', A_tgt)
+            self.register_buffer('L_tgt', compute_laplacian(A_tgt, normalized=True))
+            self.has_target_prior = True
+        else:
+            self.register_buffer('A_tgt', torch.empty(0))
+            self.register_buffer('L_tgt', torch.empty(0))
+            self.has_target_prior = False
+
+        self.src_required_edges: List[Tuple[int, int]] = []
+        self.src_forbidden_edges: List[Tuple[int, int]] = []
+        if src_required_json and os.path.exists(src_required_json):
+            with open(src_required_json, 'r') as f:
+                data = json.load(f)
+                self.src_required_edges = [(int(i), int(j)) for i, j in data.get('required', [])]
+
+        if src_forbidden_json and os.path.exists(src_forbidden_json):
+            with open(src_forbidden_json, 'r') as f:
+                data = json.load(f)
+                self.src_forbidden_edges = [(int(i), int(j)) for i, j in data.get('forbidden', [])]
+
+        if src_prior_adj_path and os.path.exists(src_prior_adj_path) and graph_align_mode in ['src_only', 'joint']:
+            A_src = torch.from_numpy(np.load(src_prior_adj_path)).float()
+            row_sums = A_src.sum(dim=1, keepdim=True).clamp(min=1e-8)
+            A_src = A_src / row_sums
+            self.register_buffer('A_src', A_src)
+            self.register_buffer('L_src', compute_laplacian(A_src, normalized=True))
+            self.has_source_prior = True
+        else:
+            self.register_buffer('A_src', torch.empty(0))
+            self.register_buffer('L_src', torch.empty(0))
+            self.has_source_prior = False
+
+        # Class weights for edge reweighting
+        if class_weights is not None:
+            class_weights = _to_tensor(class_weights).float()
+            self.register_buffer('class_weights', class_weights)
+        else:
+            self.class_weights = None
+
+        # Keep track of number of classes if known
+        self.num_classes = None
+        if self.has_target_prior:
+            self.num_classes = self.A_tgt.shape[0]
+        elif self.has_source_prior:
+            self.num_classes = self.A_src.shape[0]
+        elif self.A_weighted_prior.numel() > 0:
+            self.num_classes = self.A_weighted_prior.shape[0]
+
+        # Restricted mask (load or derive)
+        mask_tensor = torch.empty(0)
+        if use_restricted_mask:
+            if restricted_mask_path and os.path.exists(restricted_mask_path):
+                mask_tensor = torch.from_numpy(np.load(restricted_mask_path)).float()
+            elif self.num_classes is not None:
+                mask_tensor = compute_restricted_mask(
+                    self.num_classes,
+                    self.tgt_required_edges + self.src_required_edges,
+                    self.tgt_forbidden_edges + self.src_forbidden_edges,
+                    self.lr_pairs,
+                    device=torch.device('cpu'),
+                ).float()
+        self.use_restricted_mask = use_restricted_mask and mask_tensor.numel() > 0
+        self.register_buffer('R_mask', mask_tensor if mask_tensor.numel() > 0 else torch.empty(0))
+
+    def set_epoch(self, epoch: int):
+        self.current_epoch = epoch
+
+    def get_warmup_factor(self) -> float:
+        if self.warmup_epochs and self.current_epoch < self.warmup_epochs:
+            return self.current_epoch / max(1, self.warmup_epochs)
+        return 1.0
+
+    def forward(self,
+                logits: torch.Tensor,
+                labels: Optional[torch.Tensor] = None,
+                age: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        logits = _to_tensor(logits)
+        labels = _to_tensor(labels)
+
+        if age is None:
+            age = torch.zeros(logits.shape[0], 1, device=logits.device, dtype=logits.dtype)
+        else:
+            age = _to_tensor(age)
+            if age.dim() == 1:
+                age = age.unsqueeze(1)
+            if age.shape[1] > 1:
+                age = age[:, :1]
+            age = age.to(device=logits.device, dtype=logits.dtype)
+
+        probs = F.softmax(logits, dim=1)
+        num_classes = probs.shape[1]
+
+        loss_dict: Dict[str, torch.Tensor] = {}
+        dtype = logits.dtype
+        device = logits.device
+
+        age_loss_sum = torch.zeros(1, device=device, dtype=dtype)
+
+        if self.lambda_volume > 0 and self.volume_stats is not None:
+            loss_volume = volume_consistency_loss(probs, age, self.volume_stats, num_classes)
+            loss_dict['volume_loss'] = loss_volume.detach()
+            age_loss_sum = age_loss_sum + self.lambda_volume * loss_volume
+
+        if self.lambda_shape > 0 and self.shape_templates is not None:
+            loss_shape = shape_consistency_loss(probs, age, self.shape_templates)
+            loss_dict['shape_loss'] = loss_shape.detach()
+            age_loss_sum = age_loss_sum + self.lambda_shape * loss_shape
+
+        if self.lambda_weighted_adj > 0:
+            age_weight_dict = self.age_weights if self.age_weights is not None else None
+            A_pred_batch = compute_weighted_adjacency(
+                probs,
+                age,
+                age_weights=age_weight_dict,
+                temperature=self.prior_temperature,
+            )
+            if self.A_weighted_prior.numel() > 0:
+                B, C, _ = A_pred_batch.shape
+                loss_adj = torch.zeros(1, device=device, dtype=dtype)
+                A_prior = self.A_weighted_prior.to(device=device, dtype=dtype)
+                for b in range(B):
+                    if self.age_weights is not None:
+                        W = get_age_weight_matrix(age[b].item(), self.age_weights, C, device)
+                        W = W.to(device=device, dtype=dtype)
+                    else:
+                        W = torch.ones(C, C, device=device, dtype=dtype)
+                    diff = A_pred_batch[b] - A_prior
+                    loss_adj = loss_adj + (W * diff * diff).mean()
+                loss_adj = loss_adj / max(1, B)
+            else:
+                loss_adj = torch.var(A_pred_batch)
+
+            loss_dict['weighted_adj_loss'] = loss_adj.detach()
+            age_loss_sum = age_loss_sum + self.lambda_weighted_adj * loss_adj
+
+        if self.lambda_topo > 0 and (self.required_edges or self.forbidden_edges):
+            probs_flat = probs.reshape(probs.shape[0], probs.shape[1], -1)
+            A_simple = torch.bmm(probs_flat, probs_flat.transpose(1, 2)).mean(0)
+
+            loss_topo = torch.zeros(1, device=device, dtype=dtype)
+            for i, j in self.required_edges:
+                if i < num_classes and j < num_classes:
+                    loss_topo = loss_topo + F.relu(0.01 - A_simple[i, j])
+            for i, j in self.forbidden_edges:
+                if i < num_classes and j < num_classes:
+                    loss_topo = loss_topo + F.relu(A_simple[i, j] - 0.001)
+
+            loss_dict['topo_loss'] = loss_topo.detach()
+            age_loss_sum = age_loss_sum + self.lambda_topo * loss_topo
+
+        # ========================= Graph alignment branch =========================
+        graph_branch_sum = torch.zeros(1, device=device, dtype=dtype)
+        loss_spec_src = torch.zeros(1, device=device, dtype=dtype)
+        loss_edge_src = torch.zeros(1, device=device, dtype=dtype)
+        loss_spec_tgt = torch.zeros(1, device=device, dtype=dtype)
+        loss_edge_tgt = torch.zeros(1, device=device, dtype=dtype)
+        loss_sym = torch.zeros(1, device=device, dtype=dtype)
+
+        need_graph = (
+            self.lambda_spec_src > 0 or self.lambda_edge_src > 0 or
+            self.lambda_spec_tgt > 0 or self.lambda_edge_tgt > 0 or
+            (self.lambda_sym > 0 and len(self.lr_pairs) > 0)
+        )
+
+        A_pred = None
+        if need_graph:
+            if self.use_restricted_mask and self.R_mask.numel() > 0:
+                restricted_mask = self.R_mask.to(device=device, dtype=dtype)
+            else:
+                restricted_mask = None
+            A_pred = soft_adjacency_from_probs(
+                probs,
+                kernel_size=self.pool_kernel,
+                stride=self.pool_stride,
+                temperature=self.temperature,
+                restricted_mask=restricted_mask,
+            )
+            L_pred = compute_laplacian(A_pred, normalized=True)
+
+            if self.has_source_prior and self.lambda_spec_src > 0:
+                loss_spec_src = spectral_alignment_loss(
+                    L_pred, self.L_src,
+                    top_k=self.top_k,
+                    align_vectors=True,
+                    eigenvalue_weighted=self.align_U_weighted,
+                )
+
+            if self.has_source_prior and self.lambda_edge_src > 0:
+                A_src = self.A_src
+                if self.use_restricted_mask and restricted_mask is not None:
+                    A_src = A_src * restricted_mask
+                loss_edge_src = edge_consistency_loss_with_mismatch(
+                    A_pred,
+                    A_src,
+                    required_edges=self.src_required_edges,
+                    forbidden_edges=self.src_forbidden_edges,
+                    class_weights=self.class_weights,
+                    qap_mismatch_g=self.qap_mismatch_g,
+                    restricted_mask=restricted_mask,
+                )
+
+            if self.has_target_prior and self.lambda_spec_tgt > 0:
+                loss_spec_tgt = spectral_alignment_loss(
+                    L_pred, self.L_tgt,
+                    top_k=self.top_k,
+                    align_vectors=True,
+                    eigenvalue_weighted=self.align_U_weighted,
+                )
+
+            if self.has_target_prior and self.lambda_edge_tgt > 0:
+                A_tgt = self.A_tgt
+                if self.use_restricted_mask and restricted_mask is not None:
+                    A_tgt = A_tgt * restricted_mask
+                loss_edge_tgt = edge_consistency_loss_with_mismatch(
+                    A_pred,
+                    A_tgt,
+                    required_edges=self.tgt_required_edges,
+                    forbidden_edges=self.tgt_forbidden_edges,
+                    class_weights=self.class_weights,
+                    qap_mismatch_g=self.qap_mismatch_g,
+                    restricted_mask=restricted_mask,
+                )
+
+            if self.lambda_sym > 0 and self.lr_pairs:
+                loss_sym = symmetry_consistency_loss(probs, self.lr_pairs)
+
+            graph_branch_sum = (
+                self.lambda_spec_src * loss_spec_src +
+                self.lambda_edge_src * loss_edge_src +
+                self.lambda_spec_tgt * loss_spec_tgt +
+                self.lambda_edge_tgt * loss_edge_tgt +
+                self.lambda_sym * loss_sym
+            )
+
+        warmup_factor = self.get_warmup_factor()
+        graph_total = warmup_factor * graph_branch_sum
+
+        total_loss = age_loss_sum + graph_total
+
+        loss_dict['graph_total'] = graph_total.detach()
+        loss_dict['graph_loss'] = graph_total.detach()
+        loss_dict['graph_spec_src'] = loss_spec_src.detach()
+        loss_dict['graph_edge_src'] = loss_edge_src.detach()
+        loss_dict['graph_spec_tgt'] = loss_spec_tgt.detach()
+        loss_dict['graph_edge_tgt'] = loss_edge_tgt.detach()
+        loss_dict['graph_sym'] = loss_sym.detach()
+        loss_dict['sym_loss'] = loss_sym.detach()
+        loss_dict['graph_spec'] = (
+            (loss_spec_src * self.lambda_spec_src + loss_spec_tgt * self.lambda_spec_tgt)
+            / max(self.lambda_spec_src + self.lambda_spec_tgt, 1e-8)
+            if (self.lambda_spec_src + self.lambda_spec_tgt) > 0 else torch.zeros_like(loss_spec_src)
+        ).detach()
+        loss_dict['graph_edge'] = (
+            (loss_edge_src * self.lambda_edge_src + loss_edge_tgt * self.lambda_edge_tgt)
+            / max(self.lambda_edge_src + self.lambda_edge_tgt, 1e-8)
+            if (self.lambda_edge_src + self.lambda_edge_tgt) > 0 else torch.zeros_like(loss_edge_src)
+        ).detach()
+        loss_dict['warmup_factor'] = torch.tensor(warmup_factor, device=device)
+
+        if A_pred is not None:
+            th_required = 0.02
+            th_forbidden = 5e-4
+            required_missing = 0
+            forbidden_present = 0
+
+            for i, j in (self.tgt_required_edges + self.src_required_edges):
+                if i < A_pred.shape[0] and j < A_pred.shape[1] and A_pred[i, j].item() < th_required:
+                    required_missing += 1
+
+            for i, j in (self.tgt_forbidden_edges + self.src_forbidden_edges):
+                if i < A_pred.shape[0] and j < A_pred.shape[1] and A_pred[i, j].item() > th_forbidden:
+                    forbidden_present += 1
+
+            loss_dict['structural_violations'] = {
+                'required_missing': required_missing,
+                'forbidden_present': forbidden_present,
+            }
+            struct_score = forbidden_present * 1.5 + required_missing
+            loss_dict['graph_struct'] = torch.tensor(struct_score, device=device, dtype=dtype)
+            loss_dict['A_pred'] = A_pred.detach()
+        else:
+            loss_dict['structural_violations'] = {
+                'required_missing': 0,
+                'forbidden_present': 0,
+            }
+            loss_dict['graph_struct'] = torch.zeros(1, device=device, dtype=dtype)
+
+        return total_loss, loss_dict
+
+
+def symmetry_consistency_loss(probs: torch.Tensor,
+                              lr_pairs: List[Tuple[int, int]],
+                              flip_dim: int = 2) -> torch.Tensor:
+    """
+    Compute symmetry consistency loss for left-right paired structures
+
+    Args:
+        probs: (B, C, X, Y, Z) probability maps
+        lr_pairs: List of (left, right) class index pairs (0-based)
+        flip_dim: Spatial dimension for left-right flip (2 for X-axis in RAS)
+
+    Returns:
+        loss: Scalar loss value
+    """
+    if not lr_pairs:
+        return torch.tensor(0.0, device=probs.device)
+
+    # Flip probabilities along left-right axis
+    probs_flipped = torch.flip(probs, dims=[flip_dim])
+
+    # Create swapped version
+    probs_swapped = probs_flipped.clone()
+
+    # Swap left-right paired channels
+    for left, right in lr_pairs:
+        probs_swapped[:, left, ...] = probs_flipped[:, right, ...]
+        probs_swapped[:, right, ...] = probs_flipped[:, left, ...]
+
+    # Consistency loss: original should match swapped version
+    loss = F.l1_loss(probs, probs_swapped)
+
+    return loss
