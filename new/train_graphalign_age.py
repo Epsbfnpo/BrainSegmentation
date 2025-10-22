@@ -164,6 +164,16 @@ def get_parser():
     parser.add_argument('--src_prior_forbidden_json', type=str, default=None,
                         help='Path to SOURCE domain forbidden edges JSON file')
 
+    # Debugging and diagnostics
+    parser.add_argument('--debug_mode', action='store_true', default=False,
+                        help='Enable verbose debug logging for the first few batches')
+    parser.add_argument('--debug_step_limit', type=int, default=2,
+                        help='Number of training/validation steps per epoch to print debug info')
+    parser.add_argument('--debug_graph_batches', type=int, default=2,
+                        help='Number of batches to log inside the age-conditioned graph prior module')
+    parser.add_argument('--debug_validate_samples', type=int, default=2,
+                        help='Validation batches to dump detailed diagnostics when debug is enabled')
+
     # Graph loss hyperparameters
     parser.add_argument('--graph_topr', type=int, default=20,
                         help='Number of eigenvalues for spectral alignment')
@@ -502,6 +512,15 @@ def main():
         parser = get_parser()
         args = parser.parse_args()
 
+        if not args.debug_mode:
+            env_debug = os.environ.get("TRAIN_DEBUG", "")
+            if env_debug.lower() in {"1", "true", "yes", "y", "on", "debug"}:
+                args.debug_mode = True
+
+        args.debug_step_limit = max(1, args.debug_step_limit)
+        args.debug_graph_batches = max(1, args.debug_graph_batches)
+        args.debug_validate_samples = max(1, args.debug_validate_samples)
+
         # Initialize distributed training with extended timeout
         if is_dist():
             timeout = timedelta(minutes=args.dist_timeout)
@@ -517,6 +536,12 @@ def main():
 
         device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
         is_main = (not is_dist()) or dist.get_rank() == 0
+
+        if args.debug_mode and is_main:
+            print("\n🐞 Debug mode enabled")
+            print(f"  Train/val step limit: {args.debug_step_limit}")
+            print(f"  Graph prior debug batches: {args.debug_graph_batches}")
+            print(f"  Validation debug samples: {args.debug_validate_samples}")
 
         # Initialize time manager
         time_manager = TimeManager(args.job_time_limit, args.time_buffer_minutes)
@@ -672,6 +697,8 @@ def main():
             age_embed_dim=args.age_embed_dim,
             volume_statistics_path=args.volume_stats_json,
             shape_prior_path=args.shape_templates_pt,
+            debug_mode=args.debug_mode,
+            debug_step_limit=args.debug_step_limit,
         ).to(device)
 
         model_create_time = time.time() - model_create_start
@@ -747,6 +774,8 @@ def main():
             'lambda_sym': args.lambda_sym,
             'prior_warmup_epochs': args.prior_warmup_epochs,
             'prior_temperature': args.prior_temperature,
+            'debug_mode': args.debug_mode,
+            'debug_max_batches': args.debug_graph_batches,
         }
 
         graph_specific_kwargs = {}
