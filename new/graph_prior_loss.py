@@ -323,8 +323,113 @@ def get_age_weight_matrix(age: float, age_weights: Dict,
     return torch.ones(num_classes, num_classes, device=device)
 
 
+def _detect_background_index(volume_stats: Dict, num_classes: int) -> Optional[int]:
+    """Infer which channel in the prior corresponds to background.
+
+    We treat a channel as background if either (1) the statistics provide one
+    more entry than the model predicts classes, or (2) a single channel
+    dominates the distribution (mean > 0.5 and the remainder < 0.5)."""
+
+    for stats in volume_stats.values():
+        means = np.asarray(stats.get('means', []), dtype=np.float64)
+        if means.size == 0:
+            continue
+
+        candidate_idx = int(np.argmax(means))
+        candidate_val = float(means[candidate_idx])
+        remainder = float(means.sum() - candidate_val)
+
+        if means.size > num_classes and candidate_val >= remainder:
+            return min(candidate_idx, num_classes - 1)
+        if candidate_val > 0.5 and remainder < 0.5:
+            return min(candidate_idx, num_classes - 1)
+
+    return None
+
+
+def _align_volume_stats(volume_stats: Dict, num_classes: int) -> Tuple[Dict, Optional[int], np.ndarray]:
+    """Align raw volume statistics to match the model's foreground classes."""
+
+    if not volume_stats:
+        return {}, None, np.ones(num_classes, dtype=np.float32)
+
+    background_idx = _detect_background_index(volume_stats, num_classes)
+    aligned: Dict[float, Dict[str, List[float]]] = {}
+
+    valid_mask = np.ones(num_classes, dtype=np.float32)
+    if background_idx is not None and 0 <= background_idx < num_classes:
+        valid_mask[background_idx] = 0.0
+
+    desired_fg_len = num_classes - 1 if (background_idx is not None and 0 <= background_idx < num_classes) else num_classes
+
+    for age_key, stats in volume_stats.items():
+        means = np.asarray(stats.get('means', []), dtype=np.float64)
+        stds = np.asarray(stats.get('stds', []), dtype=np.float64)
+
+        if stds.shape[0] != means.shape[0]:
+            if stds.shape[0] > means.shape[0]:
+                stds = stds[: means.shape[0]]
+            else:
+                stds = np.pad(stds, (0, means.shape[0] - stds.shape[0]), constant_values=1.0)
+
+        if background_idx is not None and 0 <= background_idx < means.shape[0]:
+            mask = np.ones(means.shape[0], dtype=bool)
+            mask[background_idx] = False
+            fg_means = means[mask]
+            fg_stds = stds[mask]
+        else:
+            fg_means = means
+            fg_stds = stds
+
+        if desired_fg_len <= 0:
+            fg_means = np.zeros(0, dtype=np.float64)
+            fg_stds = np.ones(0, dtype=np.float64)
+        else:
+            if fg_means.size > desired_fg_len:
+                fg_means = fg_means[:desired_fg_len]
+                fg_stds = fg_stds[:desired_fg_len]
+            elif fg_means.size < desired_fg_len:
+                pad = desired_fg_len - fg_means.size
+                fg_means = np.pad(fg_means, (0, pad), constant_values=0.0)
+                fg_stds = np.pad(fg_stds, (0, pad), constant_values=1.0)
+
+        total = fg_means.sum()
+        if total > 1e-6:
+            fg_means = fg_means / total
+            fg_stds = fg_stds / total
+
+        aligned_means = np.zeros(num_classes, dtype=np.float32)
+        aligned_stds = np.ones(num_classes, dtype=np.float32)
+
+        if background_idx is not None and 0 <= background_idx < num_classes:
+            idx_fg = 0
+            for idx in range(num_classes):
+                if idx == background_idx:
+                    aligned_means[idx] = 0.0
+                    aligned_stds[idx] = 1.0
+                else:
+                    aligned_means[idx] = fg_means[idx_fg] if idx_fg < fg_means.size else 0.0
+                    aligned_stds[idx] = fg_stds[idx_fg] if idx_fg < fg_stds.size else 1.0
+                    idx_fg += 1
+        else:
+            length = min(num_classes, fg_means.size)
+            aligned_means[:length] = fg_means[:length]
+            aligned_stds[:length] = fg_stds[:length]
+            if length < num_classes:
+                aligned_means[length:] = 0.0
+                aligned_stds[length:] = 1.0
+
+        aligned[float(age_key)] = {
+            'means': aligned_means.tolist(),
+            'stds': aligned_stds.tolist(),
+        }
+
+    return aligned, background_idx, valid_mask
+
+
 def volume_consistency_loss(probs: torch.Tensor, age: torch.Tensor,
-                            volume_stats: Dict, num_classes: int) -> torch.Tensor:
+                            volume_stats: Dict, num_classes: int,
+                            valid_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
     """
     Compute volume consistency loss based on age-specific statistics
 
@@ -357,8 +462,15 @@ def volume_consistency_loss(probs: torch.Tensor, age: torch.Tensor,
     # Normalize by expected std
     normalized_diff = (predicted_volumes - expected_volumes) / (expected_stds + 1e-6)
 
-    # Huber loss for robustness
-    loss = F.smooth_l1_loss(normalized_diff, torch.zeros_like(normalized_diff))
+    if valid_mask is not None:
+        mask = valid_mask.view(1, -1).to(device=probs.device, dtype=probs.dtype)
+        normalized_diff = normalized_diff * mask
+        denom = mask.sum().clamp(min=1.0)
+    else:
+        denom = torch.tensor(normalized_diff.numel(), device=probs.device, dtype=probs.dtype)
+
+    zero_target = torch.zeros_like(normalized_diff)
+    loss = F.smooth_l1_loss(normalized_diff, zero_target, reduction='sum') / denom
 
     return loss
 
@@ -604,6 +716,11 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                 self.volume_stats = {float(k): v for k, v in tmp_vs.items()}
             print(f"✓ Loaded volume statistics from {volume_stats_path}")
 
+        self._volume_stats_aligned_to: Optional[int] = None
+        self.volume_background_idx: Optional[int] = None
+        self._volume_alignment_logged = False
+        self.register_buffer('volume_valid_mask', torch.empty(0), persistent=False)
+
         self.shape_templates = None
         if shape_templates_path and os.path.exists(shape_templates_path):
             self.shape_templates = torch.load(shape_templates_path)
@@ -740,6 +857,42 @@ class AgeConditionedGraphPriorLoss(nn.Module):
             return self.current_epoch / max(1, self.age_warmup_epochs)
         return 1.0
 
+    def _ensure_volume_stats_alignment(self, num_classes: int):
+        if self.volume_stats is None:
+            return
+
+        if self._volume_stats_aligned_to == num_classes:
+            return
+
+        aligned, background_idx, mask_np = _align_volume_stats(self.volume_stats, num_classes)
+        if aligned:
+            self.volume_stats = aligned
+        self.volume_background_idx = background_idx
+
+        if mask_np is None or mask_np.size == 0:
+            mask_tensor = torch.ones(num_classes, dtype=torch.float32)
+        else:
+            mask_tensor = torch.from_numpy(mask_np.astype(np.float32))
+
+        if self.volume_valid_mask.numel() == 0 or self.volume_valid_mask.shape[0] != mask_tensor.shape[0]:
+            self.volume_valid_mask = mask_tensor
+        else:
+            self.volume_valid_mask.data = mask_tensor.to(self.volume_valid_mask.device)
+
+        self._volume_stats_aligned_to = num_classes
+
+        if (
+            background_idx is not None
+            and not self._volume_alignment_logged
+            and ((not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0)
+        ):
+            print(
+                f"[GraphPrior] Volume prior alignment: dropped channel {background_idx} as background "
+                f"and renormalized foreground statistics to {num_classes} classes"
+            )
+            self._volume_alignment_logged = True
+
+
     def forward(self,
                 logits: torch.Tensor,
                 labels: Optional[torch.Tensor] = None,
@@ -759,6 +912,8 @@ class AgeConditionedGraphPriorLoss(nn.Module):
 
         probs = F.softmax(logits, dim=1)
         num_classes = probs.shape[1]
+
+        self._ensure_volume_stats_alignment(num_classes)
 
         loss_dict: Dict[str, torch.Tensor] = {}
         dtype = logits.dtype
@@ -803,7 +958,10 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                     )
 
         if self.lambda_volume > 0 and self.volume_stats is not None:
-            loss_volume = volume_consistency_loss(probs, age, self.volume_stats, num_classes)
+            mask = None
+            if self.volume_valid_mask.numel() == num_classes:
+                mask = self.volume_valid_mask.to(device=probs.device, dtype=probs.dtype)
+            loss_volume = volume_consistency_loss(probs, age, self.volume_stats, num_classes, valid_mask=mask)
             loss_dict['volume_loss'] = loss_volume.detach()
             age_loss_sum = age_loss_sum + age_warmup * self.lambda_volume * loss_volume
 
