@@ -323,8 +323,109 @@ def get_age_weight_matrix(age: float, age_weights: Dict,
     return torch.ones(num_classes, num_classes, device=device)
 
 
+def _detect_background_index(volume_stats: Dict, num_classes: int) -> Optional[int]:
+    """Infer which channel in the prior corresponds to background.
+
+    We treat a channel as background if either (1) the statistics provide one
+    more entry than the model predicts classes, or (2) a single channel
+    dominates the distribution (mean > 0.5 and the remainder < 0.5)."""
+
+    for stats in volume_stats.values():
+        means = np.asarray(stats.get('means', []), dtype=np.float64)
+        if means.size == 0:
+            continue
+
+        candidate_idx = int(np.argmax(means))
+        candidate_val = float(means[candidate_idx])
+        remainder = float(means.sum() - candidate_val)
+
+        if means.size > num_classes and candidate_val >= remainder:
+            return min(candidate_idx, num_classes - 1)
+        if candidate_val > 0.5 and remainder < 0.5:
+            return min(candidate_idx, num_classes - 1)
+
+    return None
+
+
+def _align_volume_stats(volume_stats: Dict, num_classes: int) -> Tuple[Dict, Optional[int], np.ndarray]:
+    """Align raw volume statistics to match the model's foreground classes."""
+
+    if not volume_stats:
+        return {}, None, np.ones(num_classes, dtype=np.float32)
+
+    background_idx = _detect_background_index(volume_stats, num_classes)
+    aligned: Dict[float, Dict[str, List[float]]] = {}
+
+    valid_mask = np.ones(num_classes, dtype=np.float32)
+
+    for age_key, stats in volume_stats.items():
+        means = np.asarray(stats.get('means', []), dtype=np.float64)
+        stds = np.asarray(stats.get('stds', []), dtype=np.float64)
+
+        if stds.shape[0] != means.shape[0]:
+            if stds.shape[0] > means.shape[0]:
+                stds = stds[: means.shape[0]]
+            else:
+                stds = np.pad(stds, (0, means.shape[0] - stds.shape[0]), constant_values=1.0)
+
+        if background_idx is not None and 0 <= background_idx < means.shape[0]:
+            means = np.delete(means, background_idx)
+            stds = np.delete(stds, background_idx)
+
+        if means.size == 0:
+            fg_means = np.zeros(num_classes, dtype=np.float64)
+            fg_stds = np.ones(num_classes, dtype=np.float64)
+            valid_mask.fill(0.0)
+        else:
+            if means.size > num_classes:
+                fg_means = means[:num_classes]
+                fg_stds = stds[:num_classes]
+            else:
+                pad = num_classes - means.size
+                fg_means = np.pad(means, (0, pad), constant_values=0.0)
+                fg_stds = np.pad(stds, (0, pad), constant_values=1.0)
+                if pad > 0:
+                    valid_mask[means.size:] = 0.0
+
+        total = fg_means.sum()
+        if total > 1e-6:
+            fg_means = fg_means / total
+            fg_stds = fg_stds / total
+
+        aligned[float(age_key)] = {
+            'means': fg_means.astype(np.float32).tolist(),
+            'stds': fg_stds.astype(np.float32).tolist(),
+        }
+
+    return aligned, background_idx, valid_mask
+
+
+def _align_shape_channels(template: torch.Tensor, target_channels: int) -> torch.Tensor:
+    """Match template channel dimension to the network output channels."""
+
+    if template.dim() != 4:
+        return template
+
+    aligned = template
+
+    if aligned.shape[0] > target_channels:
+        flat = aligned.view(aligned.shape[0], -1).abs().sum(dim=1)
+        while aligned.shape[0] > target_channels:
+            drop_idx = int(torch.argmax(flat).item())
+            aligned = torch.cat([aligned[:drop_idx], aligned[drop_idx + 1:]], dim=0)
+            flat = aligned.view(aligned.shape[0], -1).abs().sum(dim=1)
+    elif aligned.shape[0] < target_channels:
+        pad = target_channels - aligned.shape[0]
+        if pad > 0:
+            zeros = torch.zeros((pad, *aligned.shape[1:]), device=aligned.device, dtype=aligned.dtype)
+            aligned = torch.cat([aligned, zeros], dim=0)
+
+    return aligned
+
+
 def volume_consistency_loss(probs: torch.Tensor, age: torch.Tensor,
-                            volume_stats: Dict, num_classes: int) -> torch.Tensor:
+                            volume_stats: Dict, num_classes: int,
+                            valid_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
     """
     Compute volume consistency loss based on age-specific statistics
 
@@ -357,8 +458,15 @@ def volume_consistency_loss(probs: torch.Tensor, age: torch.Tensor,
     # Normalize by expected std
     normalized_diff = (predicted_volumes - expected_volumes) / (expected_stds + 1e-6)
 
-    # Huber loss for robustness
-    loss = F.smooth_l1_loss(normalized_diff, torch.zeros_like(normalized_diff))
+    if valid_mask is not None:
+        mask = valid_mask.view(1, -1).to(device=probs.device, dtype=probs.dtype)
+        normalized_diff = normalized_diff * mask
+        denom = mask.sum().clamp(min=1.0)
+    else:
+        denom = torch.tensor(normalized_diff.numel(), device=probs.device, dtype=probs.dtype)
+
+    zero_target = torch.zeros_like(normalized_diff)
+    loss = F.smooth_l1_loss(normalized_diff, zero_target, reduction='sum') / denom
 
     return loss
 
@@ -483,10 +591,13 @@ def get_shape_template(age: float, shape_templates: Dict,
     # Convert to tensor and resize if needed
     if isinstance(template, np.ndarray):
         template = torch.from_numpy(template).to(device)
+    else:
+        template = template.to(device)
 
-    # Ensure correct shape
-    if template.shape != shape:
-        # Simple resize using interpolation
+    template = _align_shape_channels(template, shape[0])
+
+    # Ensure correct spatial shape
+    if template.shape[1:] != shape[1:]:
         template = F.interpolate(
             template.unsqueeze(0),
             size=shape[1:],
@@ -603,6 +714,11 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                 tmp_vs = json.load(f)
                 self.volume_stats = {float(k): v for k, v in tmp_vs.items()}
             print(f"✓ Loaded volume statistics from {volume_stats_path}")
+
+        self._volume_stats_aligned_to: Optional[int] = None
+        self.volume_background_idx: Optional[int] = None
+        self._volume_alignment_logged = False
+        self.register_buffer('volume_valid_mask', torch.empty(0), persistent=False)
 
         self.shape_templates = None
         if shape_templates_path and os.path.exists(shape_templates_path):
@@ -740,6 +856,42 @@ class AgeConditionedGraphPriorLoss(nn.Module):
             return self.current_epoch / max(1, self.age_warmup_epochs)
         return 1.0
 
+    def _ensure_volume_stats_alignment(self, num_classes: int):
+        if self.volume_stats is None:
+            return
+
+        if self._volume_stats_aligned_to == num_classes:
+            return
+
+        aligned, background_idx, mask_np = _align_volume_stats(self.volume_stats, num_classes)
+        if aligned:
+            self.volume_stats = aligned
+        self.volume_background_idx = background_idx
+
+        if mask_np is None or mask_np.size == 0:
+            mask_tensor = torch.ones(num_classes, dtype=torch.float32)
+        else:
+            mask_tensor = torch.from_numpy(mask_np.astype(np.float32))
+
+        if self.volume_valid_mask.numel() == 0 or self.volume_valid_mask.shape[0] != mask_tensor.shape[0]:
+            self.volume_valid_mask = mask_tensor
+        else:
+            self.volume_valid_mask.data = mask_tensor.to(self.volume_valid_mask.device)
+
+        self._volume_stats_aligned_to = num_classes
+
+        if (
+            background_idx is not None
+            and not self._volume_alignment_logged
+            and ((not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0)
+        ):
+            print(
+                f"[GraphPrior] Volume prior alignment: removed channel {background_idx} from priors "
+                f"and matched statistics to {num_classes} model classes"
+            )
+            self._volume_alignment_logged = True
+
+
     def forward(self,
                 logits: torch.Tensor,
                 labels: Optional[torch.Tensor] = None,
@@ -759,6 +911,8 @@ class AgeConditionedGraphPriorLoss(nn.Module):
 
         probs = F.softmax(logits, dim=1)
         num_classes = probs.shape[1]
+
+        self._ensure_volume_stats_alignment(num_classes)
 
         loss_dict: Dict[str, torch.Tensor] = {}
         dtype = logits.dtype
@@ -803,7 +957,10 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                     )
 
         if self.lambda_volume > 0 and self.volume_stats is not None:
-            loss_volume = volume_consistency_loss(probs, age, self.volume_stats, num_classes)
+            mask = None
+            if self.volume_valid_mask.numel() == num_classes:
+                mask = self.volume_valid_mask.to(device=probs.device, dtype=probs.dtype)
+            loss_volume = volume_consistency_loss(probs, age, self.volume_stats, num_classes, valid_mask=mask)
             loss_dict['volume_loss'] = loss_volume.detach()
             age_loss_sum = age_loss_sum + age_warmup * self.lambda_volume * loss_volume
 
@@ -885,9 +1042,17 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                     )
 
         if self.lambda_topo > 0 and (self.required_edges or self.forbidden_edges):
-            probs_flat = probs.reshape(probs.shape[0], probs.shape[1], -1)
-            A_simple = torch.bmm(probs_flat, probs_flat.transpose(1, 2)).mean(0)
-
+            if self.use_restricted_mask and self.R_mask.numel() > 0:
+                topo_mask = self.R_mask.to(device=device, dtype=dtype)
+            else:
+                topo_mask = None
+            A_simple = soft_adjacency_from_probs(
+                probs,
+                kernel_size=1,
+                stride=1,
+                temperature=1.0,
+                restricted_mask=topo_mask,
+            )
             loss_topo = torch.zeros(1, device=device, dtype=dtype)
             for i, j in self.required_edges:
                 if i < num_classes and j < num_classes:
