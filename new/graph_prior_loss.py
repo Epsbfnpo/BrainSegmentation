@@ -885,9 +885,17 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                     )
 
         if self.lambda_topo > 0 and (self.required_edges or self.forbidden_edges):
-            probs_flat = probs.reshape(probs.shape[0], probs.shape[1], -1)
-            A_simple = torch.bmm(probs_flat, probs_flat.transpose(1, 2)).mean(0)
-
+            if self.use_restricted_mask and self.R_mask.numel() > 0:
+                topo_mask = self.R_mask.to(device=device, dtype=dtype)
+            else:
+                topo_mask = None
+            A_simple = soft_adjacency_from_probs(
+                probs,
+                kernel_size=1,
+                stride=1,
+                temperature=1.0,
+                restricted_mask=topo_mask,
+            )
             loss_topo = torch.zeros(1, device=device, dtype=dtype)
             for i, j in self.required_edges:
                 if i < num_classes and j < num_classes:
