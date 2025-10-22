@@ -38,6 +38,27 @@ def read_label(path):
         return None
 
 
+def _remap_to_foreground(label: np.ndarray, num_classes: int) -> np.ndarray:
+    """Remap raw labels to contiguous foreground indices [0, num_classes-1].
+
+    Background voxels (<=0) are mapped to -1 so they can be ignored by later
+    processing steps. Any label values greater than the expected number of
+    classes are clipped to keep the statistics stable.
+    """
+
+    remapped = np.full_like(label, -1, dtype=np.int32)
+    if num_classes <= 0:
+        return remapped
+
+    positive_mask = label > 0
+    if np.any(positive_mask):
+        remapped[positive_mask] = label[positive_mask] - 1
+        # Clamp to valid range just in case a label exceeds the expected count
+        np.clip(remapped, a_min=-1, a_max=num_classes - 1, out=remapped)
+
+    return remapped
+
+
 def compute_soft_adjacency(label, num_classes=87, dilate_iter=1, foreground_only=True):
     """
     Compute soft adjacency matrix from a single label volume
@@ -56,9 +77,10 @@ def compute_soft_adjacency(label, num_classes=87, dilate_iter=1, foreground_only
 
     # Determine label range
     if foreground_only:
-        label_range = range(num_classes)  # 0-86
+        label = _remap_to_foreground(label, num_classes)
+        label_range = range(num_classes)  # 0..(C-1) for foreground classes
     else:
-        label_range = range(1, num_classes + 1)  # 1-87
+        label_range = range(1, num_classes + 1)  # 1..C including background
 
     for c_idx, c_label in enumerate(label_range):
         mask_c = (label == c_label)
@@ -72,6 +94,8 @@ def compute_soft_adjacency(label, num_classes=87, dilate_iter=1, foreground_only
         # Check what labels are in the boundary
         if boundary.any():
             boundary_labels = label[boundary]
+            if foreground_only:
+                boundary_labels = boundary_labels[boundary_labels >= 0]
             for d_idx, d_label in enumerate(label_range):
                 if d_label == c_label:
                     continue
@@ -95,14 +119,22 @@ def compute_symmetry_scores(label, lr_pairs, num_classes=87, foreground_only=Tru
     """
     symmetry_scores = {}
 
+    if foreground_only:
+        label_proc = _remap_to_foreground(label, num_classes)
+    else:
+        label_proc = label
+
     for left, right in lr_pairs:
-        # Adjust for 0-based indexing if needed
         if foreground_only:
-            left_mask = (label == (left - 1))
-            right_mask = (label == (right - 1))
+            left_idx = left - 1
+            right_idx = right - 1
+            if left_idx < 0 or right_idx < 0:
+                continue
+            left_mask = (label_proc == left_idx)
+            right_mask = (label_proc == right_idx)
         else:
-            left_mask = (label == left)
-            right_mask = (label == right)
+            left_mask = (label_proc == left)
+            right_mask = (label_proc == right)
 
         # Compute volumes
         left_vol = left_mask.sum()
@@ -247,18 +279,22 @@ def main(args):
 
             # (b) volume fractions by age bin
             if args.foreground_only:
-                label_range = np.arange(args.num_classes)        # 0..86
-                counts = np.bincount(label.ravel(), minlength=args.num_classes)
+                label_fg = _remap_to_foreground(label, args.num_classes)
+                fg_values = label_fg[label_fg >= 0]
+                if fg_values.size > 0:
+                    counts = np.bincount(fg_values, minlength=args.num_classes)
+                else:
+                    counts = np.zeros(args.num_classes, dtype=np.int64)
             else:
-                label_range = np.arange(1, args.num_classes + 1) # 1..87
+                label_range = np.arange(1, args.num_classes + 1)  # 1..87
                 counts = np.bincount(label.ravel(), minlength=args.num_classes + 1)
                 counts = counts[1:]  # drop background 0
 
-            total_fg = counts[label_range].sum()
+            total_fg = counts.sum()
             if total_fg == 0:
                 frac = np.zeros(args.num_classes, dtype=np.float64)
             else:
-                frac = counts[label_range] / float(total_fg)
+                frac = counts / float(total_fg)
             vol_stats[age_bin].append(frac.tolist())
 
 
