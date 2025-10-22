@@ -131,7 +131,9 @@ class SimplifiedDAUnetModule(nn.Module):
                  use_age_conditioning: bool = True,
                  age_embed_dim: int = 64,
                  volume_statistics_path: str = None,
-                 shape_prior_path: str = None):
+                 shape_prior_path: str = None,
+                 debug_mode: bool = False,
+                 debug_step_limit: int = 2):
         super().__init__()
         self.base_model = base_model
         self.num_classes = num_classes
@@ -140,6 +142,9 @@ class SimplifiedDAUnetModule(nn.Module):
         self.enhanced_class_weights = enhanced_class_weights
         self.use_age_conditioning = use_age_conditioning
         self.class_weights = self._load_class_weights(class_prior_path)
+        self.debug_mode = bool(debug_mode)
+        self.debug_step_limit = max(1, int(debug_step_limit)) if self.debug_mode else 0
+        self._debug_logged_steps = set()
 
         is_main = not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
         if is_main:
@@ -152,6 +157,8 @@ class SimplifiedDAUnetModule(nn.Module):
             if self.class_weights is not None:
                 print(
                     f"  Class weights loaded: shape={self.class_weights.shape}, min={self.class_weights.min():.3f}, max={self.class_weights.max():.3f}")
+            if self.debug_mode:
+                print(f"  🐞 Debug mode enabled for SimplifiedDAUnetModule (first {self.debug_step_limit} steps per epoch)")
 
         # Age conditioning modules
         if use_age_conditioning:
@@ -281,12 +288,14 @@ class SimplifiedDAUnetModule(nn.Module):
     def compute_losses(self, source_images: torch.Tensor, source_labels: torch.Tensor,
                        seg_criterion: nn.Module, source_ages: Optional[torch.Tensor] = None,
                        step: int = 0) -> Dict[str, torch.Tensor]:
-        losses = {}
+        losses: Dict[str, torch.Tensor] = {}
+        is_main = not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
+        debug_active = self.debug_mode and (step < self.debug_step_limit) and is_main
+
         with torch.no_grad():
             unique_labels = torch.unique(source_labels)
             min_label = unique_labels.min().item()
             max_label = unique_labels.max().item()
-            is_main = not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
             if step == 0 and is_main and max_label >= self.num_classes:
                 print(f"\n🔍 Label Check (step {step}):")
                 print(f"  Unique labels count: {len(unique_labels)}")
@@ -298,18 +307,44 @@ class SimplifiedDAUnetModule(nn.Module):
                 valid_mask = source_labels >= 0
                 source_labels = torch.where(valid_mask, torch.clamp(source_labels, min=0, max=self.num_classes - 1),
                                             source_labels)
+            if debug_active and step not in self._debug_logged_steps:
+                print(f"\n🐞 [SimplifiedDAUnet][Step {step}] Input diagnostics")
+                print(f"  Source images shape: {tuple(source_images.shape)}, dtype={source_images.dtype}")
+                print(f"  Source labels shape: {tuple(source_labels.shape)}, dtype={source_labels.dtype}")
+                print(f"  Unique labels (after clamp): count={len(unique_labels)}, min={min_label}, max={max_label}")
+                neg_count = int((source_labels == -1).sum().item())
+                print(f"  Ignored voxels (-1): {neg_count}")
+                img_view = source_images.detach()
+                print(f"  Image stats: min={img_view.min():.4f}, max={img_view.max():.4f}, mean={img_view.mean():.4f}, std={img_view.std():.4f}")
+                if source_ages is not None:
+                    ages_np = source_ages.detach().cpu().flatten()
+                    print(f"  Age stats: min={ages_np.min():.2f}, max={ages_np.max():.2f}, mean={ages_np.mean():.2f}")
+
         if len(source_labels.shape) == 4:
             source_labels = source_labels.unsqueeze(1)
 
         # Forward with age conditioning
         source_seg = self.forward(source_images, source_ages)
 
-        is_main = not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
         if step == 0 and is_main:
             print(f"  Model output shape: {source_seg.shape}")
             print(f"  Labels shape: {source_labels.shape}")
             if source_ages is not None:
                 print(f"  Age range in batch: [{source_ages.min():.1f}, {source_ages.max():.1f}]")
+
+        if debug_active and step not in self._debug_logged_steps:
+            with torch.no_grad():
+                logits = source_seg.detach()
+                print(f"  Logits stats: min={logits.min():.4f}, max={logits.max():.4f}, mean={logits.mean():.4f}, std={logits.std():.4f}")
+                if torch.isnan(logits).any():
+                    print(f"  ⚠️  NaNs detected in logits! count={int(torch.isnan(logits).sum().item())}")
+                probs = torch.softmax(logits, dim=1)
+                probs_sum = probs.sum(dim=(2, 3, 4))
+                row = probs_sum[0]
+                topk = torch.topk(row, k=min(5, row.numel()))
+                print(f"  Top-{topk.indices.numel()} class probability masses (sample 0):")
+                for idx in topk.indices.cpu().tolist():
+                    print(f"    Class {idx}: mass={row[idx].item():.5f}")
 
         try:
             seg_loss_output = seg_criterion(source_seg, source_labels)
@@ -331,12 +366,21 @@ class SimplifiedDAUnetModule(nn.Module):
         losses['seg_loss'] = seg_loss
         if seg_loss_components:
             losses['seg_loss_components'] = seg_loss_components
+            if debug_active and step not in self._debug_logged_steps:
+                print("  Segmentation loss components:")
+                for key, value in seg_loss_components.items():
+                    print(f"    {key}: {float(value):.6f}")
+
+        if debug_active and step not in self._debug_logged_steps:
+            print(f"  Segmentation loss (combined): {seg_loss.item():.6f}")
 
         # Age prediction loss (auxiliary task)
         if self.use_age_conditioning and source_ages is not None and getattr(self, "enable_internal_volume_loss", False):
             predicted_age = self.age_predictor(source_seg)
             age_loss = F.smooth_l1_loss(predicted_age, source_ages)
             losses['age_loss'] = age_loss * 0.01  # Small weight for auxiliary task
+            if debug_active and step not in self._debug_logged_steps:
+                print(f"  Age auxiliary loss: {losses['age_loss'].item():.6f}")
 
         # Volume consistency loss
         if self.use_age_conditioning and source_ages is not None and getattr(self, "enable_internal_volume_loss", False):
@@ -350,6 +394,8 @@ class SimplifiedDAUnetModule(nn.Module):
             # Compute volume loss (KL divergence style)
             volume_loss = F.smooth_l1_loss(predicted_volumes, expected_mean)
             losses['volume_loss'] = volume_loss * 0.1
+            if debug_active and step not in self._debug_logged_steps:
+                print(f"  Internal volume loss: {losses['volume_loss'].item():.6f}")
 
         # Total loss
         total_loss = seg_loss
@@ -360,5 +406,13 @@ class SimplifiedDAUnetModule(nn.Module):
 
         losses['total'] = total_loss
         losses['logits'] = source_seg
+
+        if debug_active and step not in self._debug_logged_steps:
+            print(f"  Total loss: {total_loss.item():.6f}")
+            if torch.cuda.is_available():
+                mem_alloc = torch.cuda.memory_allocated(source_seg.device) / (1024 ** 3)
+                mem_max = torch.cuda.max_memory_allocated(source_seg.device) / (1024 ** 3)
+                print(f"  CUDA memory: alloc={mem_alloc:.2f} GB, max_alloc={mem_max:.2f} GB")
+            self._debug_logged_steps.add(step)
 
         return losses
