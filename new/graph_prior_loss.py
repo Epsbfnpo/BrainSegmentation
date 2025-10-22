@@ -357,10 +357,6 @@ def _align_volume_stats(volume_stats: Dict, num_classes: int) -> Tuple[Dict, Opt
     aligned: Dict[float, Dict[str, List[float]]] = {}
 
     valid_mask = np.ones(num_classes, dtype=np.float32)
-    if background_idx is not None and 0 <= background_idx < num_classes:
-        valid_mask[background_idx] = 0.0
-
-    desired_fg_len = num_classes - 1 if (background_idx is not None and 0 <= background_idx < num_classes) else num_classes
 
     for age_key, stats in volume_stats.items():
         means = np.asarray(stats.get('means', []), dtype=np.float64)
@@ -373,58 +369,58 @@ def _align_volume_stats(volume_stats: Dict, num_classes: int) -> Tuple[Dict, Opt
                 stds = np.pad(stds, (0, means.shape[0] - stds.shape[0]), constant_values=1.0)
 
         if background_idx is not None and 0 <= background_idx < means.shape[0]:
-            mask = np.ones(means.shape[0], dtype=bool)
-            mask[background_idx] = False
-            fg_means = means[mask]
-            fg_stds = stds[mask]
-        else:
-            fg_means = means
-            fg_stds = stds
+            means = np.delete(means, background_idx)
+            stds = np.delete(stds, background_idx)
 
-        if desired_fg_len <= 0:
-            fg_means = np.zeros(0, dtype=np.float64)
-            fg_stds = np.ones(0, dtype=np.float64)
+        if means.size == 0:
+            fg_means = np.zeros(num_classes, dtype=np.float64)
+            fg_stds = np.ones(num_classes, dtype=np.float64)
+            valid_mask.fill(0.0)
         else:
-            if fg_means.size > desired_fg_len:
-                fg_means = fg_means[:desired_fg_len]
-                fg_stds = fg_stds[:desired_fg_len]
-            elif fg_means.size < desired_fg_len:
-                pad = desired_fg_len - fg_means.size
-                fg_means = np.pad(fg_means, (0, pad), constant_values=0.0)
-                fg_stds = np.pad(fg_stds, (0, pad), constant_values=1.0)
+            if means.size > num_classes:
+                fg_means = means[:num_classes]
+                fg_stds = stds[:num_classes]
+            else:
+                pad = num_classes - means.size
+                fg_means = np.pad(means, (0, pad), constant_values=0.0)
+                fg_stds = np.pad(stds, (0, pad), constant_values=1.0)
+                if pad > 0:
+                    valid_mask[means.size:] = 0.0
 
         total = fg_means.sum()
         if total > 1e-6:
             fg_means = fg_means / total
             fg_stds = fg_stds / total
 
-        aligned_means = np.zeros(num_classes, dtype=np.float32)
-        aligned_stds = np.ones(num_classes, dtype=np.float32)
-
-        if background_idx is not None and 0 <= background_idx < num_classes:
-            idx_fg = 0
-            for idx in range(num_classes):
-                if idx == background_idx:
-                    aligned_means[idx] = 0.0
-                    aligned_stds[idx] = 1.0
-                else:
-                    aligned_means[idx] = fg_means[idx_fg] if idx_fg < fg_means.size else 0.0
-                    aligned_stds[idx] = fg_stds[idx_fg] if idx_fg < fg_stds.size else 1.0
-                    idx_fg += 1
-        else:
-            length = min(num_classes, fg_means.size)
-            aligned_means[:length] = fg_means[:length]
-            aligned_stds[:length] = fg_stds[:length]
-            if length < num_classes:
-                aligned_means[length:] = 0.0
-                aligned_stds[length:] = 1.0
-
         aligned[float(age_key)] = {
-            'means': aligned_means.tolist(),
-            'stds': aligned_stds.tolist(),
+            'means': fg_means.astype(np.float32).tolist(),
+            'stds': fg_stds.astype(np.float32).tolist(),
         }
 
     return aligned, background_idx, valid_mask
+
+
+def _align_shape_channels(template: torch.Tensor, target_channels: int) -> torch.Tensor:
+    """Match template channel dimension to the network output channels."""
+
+    if template.dim() != 4:
+        return template
+
+    aligned = template
+
+    if aligned.shape[0] > target_channels:
+        flat = aligned.view(aligned.shape[0], -1).abs().sum(dim=1)
+        while aligned.shape[0] > target_channels:
+            drop_idx = int(torch.argmax(flat).item())
+            aligned = torch.cat([aligned[:drop_idx], aligned[drop_idx + 1:]], dim=0)
+            flat = aligned.view(aligned.shape[0], -1).abs().sum(dim=1)
+    elif aligned.shape[0] < target_channels:
+        pad = target_channels - aligned.shape[0]
+        if pad > 0:
+            zeros = torch.zeros((pad, *aligned.shape[1:]), device=aligned.device, dtype=aligned.dtype)
+            aligned = torch.cat([aligned, zeros], dim=0)
+
+    return aligned
 
 
 def volume_consistency_loss(probs: torch.Tensor, age: torch.Tensor,
@@ -595,10 +591,13 @@ def get_shape_template(age: float, shape_templates: Dict,
     # Convert to tensor and resize if needed
     if isinstance(template, np.ndarray):
         template = torch.from_numpy(template).to(device)
+    else:
+        template = template.to(device)
 
-    # Ensure correct shape
-    if template.shape != shape:
-        # Simple resize using interpolation
+    template = _align_shape_channels(template, shape[0])
+
+    # Ensure correct spatial shape
+    if template.shape[1:] != shape[1:]:
         template = F.interpolate(
             template.unsqueeze(0),
             size=shape[1:],
@@ -887,8 +886,8 @@ class AgeConditionedGraphPriorLoss(nn.Module):
             and ((not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0)
         ):
             print(
-                f"[GraphPrior] Volume prior alignment: dropped channel {background_idx} as background "
-                f"and renormalized foreground statistics to {num_classes} classes"
+                f"[GraphPrior] Volume prior alignment: removed channel {background_idx} from priors "
+                f"and matched statistics to {num_classes} model classes"
             )
             self._volume_alignment_logged = True
 
