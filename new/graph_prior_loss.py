@@ -707,6 +707,10 @@ class AgeConditionedGraphPriorLoss(nn.Module):
         self.debug_max_batches = max(1, int(debug_max_batches)) if self.debug_mode else 0
         self._debug_batch_count = 0
 
+        # Track whether the loaded priors align with the foreground-only label space
+        self._prior_alignment_ok = True
+        self._alignment_warning_logged = False
+
         # ========================= Age-aware priors =========================
         self.volume_stats = None
         if volume_stats_path and os.path.exists(volume_stats_path):
@@ -868,6 +872,14 @@ class AgeConditionedGraphPriorLoss(nn.Module):
             self.volume_stats = aligned
         self.volume_background_idx = background_idx
 
+        # If a dominant background channel is detected we disable prior terms to avoid
+        # enforcing incorrect constraints (old priors were generated before foreground
+        # remapping). Users should rebuild priors with the updated script.
+        if background_idx is not None:
+            self._prior_alignment_ok = False
+        else:
+            self._prior_alignment_ok = True
+
         if mask_np is None or mask_np.size == 0:
             mask_tensor = torch.ones(num_classes, dtype=torch.float32)
         else:
@@ -913,6 +925,31 @@ class AgeConditionedGraphPriorLoss(nn.Module):
         num_classes = probs.shape[1]
 
         self._ensure_volume_stats_alignment(num_classes)
+
+        if not self._prior_alignment_ok:
+            if (not self._alignment_warning_logged
+                    and ((not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0)):
+                print("⚠️  Detected background-heavy priors. Skipping age-conditioned graph losses."
+                      " Please regenerate priors with the updated build_graph_priors.py.")
+                self._alignment_warning_logged = True
+
+            zero = torch.zeros(1, device=logits.device, dtype=logits.dtype)
+            zero_dict: Dict[str, torch.Tensor] = {
+                'volume_loss': zero,
+                'shape_loss': zero,
+                'weighted_adj_loss': zero,
+                'topo_loss': zero,
+                'graph_spec_src': zero,
+                'graph_edge_src': zero,
+                'graph_spec_tgt': zero,
+                'graph_edge_tgt': zero,
+                'graph_sym': zero,
+                'structural_violations': {'required_missing': 0, 'forbidden_present': 0},
+                'weighted_adj_active_classes': zero,
+                'warmup_factor': torch.tensor(self.get_warmup_factor(), device=logits.device, dtype=logits.dtype),
+                'age_warmup_factor': torch.tensor(self.get_age_warmup_factor(), device=logits.device, dtype=logits.dtype),
+            }
+            return zero, zero_dict
 
         loss_dict: Dict[str, torch.Tensor] = {}
         dtype = logits.dtype
