@@ -9,6 +9,7 @@ from monai.data import decollate_batch
 from monai.transforms import AsDiscrete
 from monai.inferers import sliding_window_inference
 import time
+import math
 from typing import Dict, Optional, List
 from tqdm import tqdm
 import psutil
@@ -28,6 +29,15 @@ def dist_mean_scalar(x: torch.Tensor):
         dist.all_reduce(x, op=dist.ReduceOp.SUM)
         x /= dist.get_world_size()
     return x
+
+
+def compute_grad_norm(parameters) -> float:
+    total_norm_sq = 0.0
+    for p in parameters:
+        if p.grad is not None:
+            param_norm = p.grad.data.norm(2)
+            total_norm_sq += float(param_norm.item()) ** 2
+    return math.sqrt(total_norm_sq) if total_norm_sq > 0 else 0.0
 
 
 class CombinedSegmentationLoss(nn.Module):
@@ -117,6 +127,12 @@ def train_epoch_age_aware(model, source_loader, target_loader, optimizer, epoch,
     """Training epoch with age-aware losses"""
 
     is_main = (not is_distributed) or rank == 0
+    debug_enabled = bool(getattr(args, 'debug_mode', False))
+    debug_step_limit = max(1, getattr(args, 'debug_step_limit', 2))
+
+    def debug_print(msg):
+        if debug_enabled and is_main:
+            print(f"[DEBUG][Train][Epoch {epoch}] {msg}", flush=True)
 
     # Helper to safely convert tensors to Python scalars
     def _to_scalar(val):
@@ -145,6 +161,20 @@ def train_epoch_age_aware(model, source_loader, target_loader, optimizer, epoch,
         actual_model = model
     if age_graph_loss is not None and hasattr(actual_model, "age_conditioner"):
         actual_model.age_conditioner.set_strength(age_graph_loss.get_warmup_factor())
+
+    if debug_enabled and is_main:
+        try:
+            source_len = len(source_loader.dataset)
+        except Exception:
+            source_len = 'unknown'
+        try:
+            target_len = len(target_loader.dataset)
+        except Exception:
+            target_len = 'unknown'
+        debug_print(
+            f"Debugging first {debug_step_limit} steps (source dataset={source_len}, target dataset={target_len}, "
+            f"batch_size={getattr(args, 'batch_size', 'unknown')})"
+        )
 
     # Loss accumulators
     total_loss = 0
@@ -293,6 +323,55 @@ def train_epoch_age_aware(model, source_loader, target_loader, optimizer, epoch,
         optimizer.zero_grad()
 
         global_step = (epoch - 1) * num_steps + i
+        debug_active = debug_enabled and (i < debug_step_limit)
+
+        if debug_active:
+            debug_print(
+                f"Step {i}: source images {tuple(source_images.shape)}, labels {tuple(source_labels.shape)}, "
+                f"target images {tuple(target_images.shape)}, labels {tuple(target_labels.shape)}"
+            )
+            with torch.no_grad():
+                src_stats = (
+                    float(source_images.min().item()),
+                    float(source_images.max().item()),
+                    float(source_images.mean().item()),
+                    float(source_images.std().item())
+                )
+                tgt_stats = (
+                    float(target_images.min().item()),
+                    float(target_images.max().item()),
+                    float(target_images.mean().item()),
+                    float(target_images.std().item())
+                )
+                debug_print(
+                    f"         Source image stats min={src_stats[0]:.3f}, max={src_stats[1]:.3f}, "
+                    f"mean={src_stats[2]:.3f}, std={src_stats[3]:.3f}"
+                )
+                debug_print(
+                    f"         Target image stats min={tgt_stats[0]:.3f}, max={tgt_stats[1]:.3f}, "
+                    f"mean={tgt_stats[2]:.3f}, std={tgt_stats[3]:.3f}"
+                )
+                src_unique = torch.unique(source_labels.detach())
+                tgt_unique = torch.unique(target_labels.detach())
+                debug_print(
+                    f"         Source labels unique={src_unique.numel()} (min={int(src_unique.min().item())}, max={int(src_unique.max().item())})"
+                )
+                debug_print(
+                    f"         Target labels unique={tgt_unique.numel()} (min={int(tgt_unique.min().item())}, max={int(tgt_unique.max().item())})"
+                )
+                if source_ages is not None:
+                    ages = source_ages.detach().cpu().numpy()
+                    debug_print(
+                        f"         Source ages range {ages.min():.2f}-{ages.max():.2f} (mean {ages.mean():.2f})"
+                    )
+                if target_ages is not None:
+                    ages_t = target_ages.detach().cpu().numpy()
+                    debug_print(
+                        f"         Target ages range {ages_t.min():.2f}-{ages_t.max():.2f} (mean {ages_t.mean():.2f})"
+                    )
+
+        graph_debug_info = None
+        target_seg_components_saved = None
 
         # Forward pass with mixed precision
         if use_amp:
@@ -317,6 +396,7 @@ def train_epoch_age_aware(model, source_loader, target_loader, optimizer, epoch,
                     losses['target_seg_loss'] = target_seg_loss
                     losses['total'] = losses['total'] + current_target_weight * target_seg_loss
                     target_seg_loss_total += target_seg_loss.item()
+                    target_seg_components_saved = target_seg_components
 
                 # Apply age-conditioned graph loss
                 if age_graph_loss is not None:
@@ -328,6 +408,7 @@ def train_epoch_age_aware(model, source_loader, target_loader, optimizer, epoch,
 
                     losses['total'] = losses['total'] + graph_total
                     losses['graph_total'] = graph_total
+                    graph_debug_info = graph_dict
 
                     # Accumulate age-aware losses
                     if 'volume_loss' in graph_dict:
@@ -414,6 +495,7 @@ def train_epoch_age_aware(model, source_loader, target_loader, optimizer, epoch,
                 losses['target_seg_loss'] = target_seg_loss
                 losses['total'] = losses['total'] + current_target_weight * target_seg_loss
                 target_seg_loss_total += target_seg_loss.item()
+                target_seg_components_saved = target_seg_components
 
             if age_graph_loss is not None:
                 if target_logits is not None:
@@ -423,6 +505,7 @@ def train_epoch_age_aware(model, source_loader, target_loader, optimizer, epoch,
 
                 losses['total'] = losses['total'] + graph_total
                 losses['graph_total'] = graph_total
+                graph_debug_info = graph_dict
 
                 if 'volume_loss' in graph_dict:
                     volume_loss_total += graph_dict['volume_loss'].item()
@@ -490,6 +573,84 @@ def train_epoch_age_aware(model, source_loader, target_loader, optimizer, epoch,
                     losses['total'] = losses['total'] + effective_lambda * L_dyn
                     dyn_spec_loss_total += L_dyn.item()
 
+        if debug_active:
+            debug_print(
+                f"Step {i}: total loss={losses['total'].item():.6f}, seg={losses['seg_loss'].item():.6f}"
+            )
+            if torch.isnan(losses['total']).any():
+                debug_print("         ⚠️ NaN detected in total loss")
+            seg_comps = losses.get('seg_loss_components')
+            if seg_comps:
+                debug_print(
+                    "         Seg components "
+                    + ", ".join(f"{k}={float(v):.6f}" for k, v in seg_comps.items())
+                )
+            if target_seg_components_saved:
+                debug_print(
+                    "         Target seg components "
+                    + ", ".join(
+                        f"{k}={float(v):.6f}" for k, v in target_seg_components_saved.items()
+                    )
+                )
+            with torch.no_grad():
+                src_logits_det = source_logits.detach()
+                debug_print(
+                    f"         Source logits stats mean={src_logits_det.mean():.4f}, std={src_logits_det.std():.4f}, "
+                    f"min={src_logits_det.min():.4f}, max={src_logits_det.max():.4f}"
+                )
+                if torch.isnan(src_logits_det).any():
+                    debug_print(
+                        f"         ⚠️ NaN detected in source logits (count={int(torch.isnan(src_logits_det).sum().item())})"
+                    )
+                src_probs = torch.softmax(src_logits_det, dim=1)
+                mass = src_probs.sum(dim=(2, 3, 4))[0]
+                top_mass = torch.topk(mass, k=min(5, mass.numel()))
+                debug_print(
+                    "         Source prob mass (sample0) "
+                    + ", ".join(
+                        f"c{idx}={mass[idx].item():.4f}" for idx in top_mass.indices.cpu().tolist()
+                    )
+                )
+                if target_logits is not None:
+                    tgt_logits_det = target_logits.detach()
+                    debug_print(
+                        f"         Target logits stats mean={tgt_logits_det.mean():.4f}, std={tgt_logits_det.std():.4f}, "
+                        f"min={tgt_logits_det.min():.4f}, max={tgt_logits_det.max():.4f}"
+                    )
+                    if torch.isnan(tgt_logits_det).any():
+                        debug_print(
+                            f"         ⚠️ NaN detected in target logits (count={int(torch.isnan(tgt_logits_det).sum().item())})"
+                        )
+            if graph_debug_info:
+                warmup = graph_debug_info.get('warmup_factor')
+                age_warm = graph_debug_info.get('age_warmup_factor')
+                if warmup is not None:
+                    debug_print(f"         Graph warmup factor={float(_to_scalar(warmup)):.3f}")
+                if age_warm is not None:
+                    debug_print(f"         Graph age warmup={float(_to_scalar(age_warm)):.3f}")
+                for key in ['volume_loss', 'shape_loss', 'weighted_adj_loss', 'graph_spec_src',
+                            'graph_edge_src', 'graph_spec_tgt', 'graph_edge_tgt', 'graph_sym', 'graph_struct']:
+                    if key in graph_debug_info and graph_debug_info[key] is not None:
+                        debug_print(f"         {key}={float(_to_scalar(graph_debug_info[key])):.6f}")
+                structural = graph_debug_info.get('structural_violations', {})
+                if isinstance(structural, dict):
+                    debug_print(
+                        f"         Structural violations: required_missing={structural.get('required_missing', 0)}, "
+                        f"forbidden_present={structural.get('forbidden_present', 0)}"
+                    )
+                if 'weighted_adj_active_classes' in graph_debug_info:
+                    val = graph_debug_info['weighted_adj_active_classes']
+                    debug_print(f"         Weighted adj active classes={float(_to_scalar(val)):.2f}")
+                A_pred = graph_debug_info.get('A_pred')
+                if isinstance(A_pred, torch.Tensor) and A_pred.numel() > 0:
+                    with torch.no_grad():
+                        debug_print(
+                            f"         A_pred stats mean={A_pred.mean():.5f}, std={A_pred.std():.5f}, "
+                            f"min={A_pred.min():.5f}, max={A_pred.max():.5f}"
+                        )
+            if 'dyn_spec' in losses:
+                debug_print(f"         Dynamic spectral loss={losses['dyn_spec'].item():.6f}")
+
         # Get loss components
         if 'seg_loss_components' in losses:
             dice_loss_total += losses['seg_loss_components'].get('dice', 0)
@@ -503,13 +664,31 @@ def train_epoch_age_aware(model, source_loader, target_loader, optimizer, epoch,
             volume_loss_total += losses['volume_loss'].item()
 
         # Backward pass
+        if debug_active:
+            debug_print("         Backpropagation start")
         losses['total'].backward()
+
+        grad_norm_pre = compute_grad_norm(model.parameters()) if debug_active else 0.0
+        if debug_active:
+            debug_print(f"         Grad norm (pre-clip)={grad_norm_pre:.6f}")
 
         # Gradient clipping
         torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
 
+        if debug_active:
+            grad_norm_post = compute_grad_norm(model.parameters())
+            debug_print(f"         Grad norm (post-clip)={grad_norm_post:.6f}")
+
         # Update weights
         optimizer.step()
+
+        if debug_active:
+            lr_val = optimizer.param_groups[0]['lr']
+            debug_print(f"         Optimizer step complete, lr={lr_val:.6e}")
+            if torch.cuda.is_available():
+                mem_alloc = torch.cuda.memory_allocated(device) / (1024 ** 3)
+                mem_max = torch.cuda.max_memory_allocated(device) / (1024 ** 3)
+                debug_print(f"         CUDA memory alloc={mem_alloc:.2f} GB, max_alloc={mem_max:.2f} GB")
 
         # Update metrics
         total_loss += losses['total'].item()
@@ -713,6 +892,13 @@ def val_epoch_age_aware(model, loader, epoch, writer, args,
     """Validate one epoch with age-aware model"""
 
     is_main = (not is_distributed) or rank == 0
+    debug_enabled = bool(getattr(args, 'debug_mode', False))
+    debug_val_limit = max(1, getattr(args, 'debug_validate_samples', getattr(args, 'debug_step_limit', 2)))
+
+    def debug_print(msg):
+        if debug_enabled and is_main:
+            print(f"[DEBUG][Val][Epoch {epoch}] {msg}", flush=True)
+
     model.eval()
 
     # Extract actual model from DDP if needed
@@ -814,6 +1000,23 @@ def val_epoch_age_aware(model, loader, epoch, writer, args,
 
             all_ages.append(age.cpu().numpy())
 
+            debug_active = debug_enabled and (i < debug_val_limit)
+            if debug_active:
+                debug_print(
+                    f"Sample {i}: data shape={tuple(data.shape)}, label shape={tuple(target.shape)}"
+                )
+                debug_print(
+                    f"           image stats min={float(data.min().item()):.3f}, max={float(data.max().item()):.3f}, "
+                    f"mean={float(data.mean().item()):.3f}, std={float(data.std().item()):.3f}"
+                )
+                debug_print(
+                    f"           age min={float(age.min().item()):.2f}, max={float(age.max().item()):.2f}"
+                )
+                tgt_unique = torch.unique(target)
+                debug_print(
+                    f"           target unique={tgt_unique.numel()} (min={int(tgt_unique.min().item())}, max={int(tgt_unique.max().item())})"
+                )
+
             # Fix label dimensions
             if len(target.shape) == 5 and target.shape[1] == 1:
                 target = target.squeeze(1)
@@ -856,12 +1059,25 @@ def val_epoch_age_aware(model, loader, epoch, writer, args,
             total_inference_time += infer_time
             inference_times.append(infer_time)
 
+            if debug_active:
+                debug_print(f"           inference time={infer_time:.3f}s")
+                debug_print(
+                    f"           output stats mean={float(output.mean().item()):.4f}, std={float(output.std().item()):.4f}, "
+                    f"min={float(output.min().item()):.4f}, max={float(output.max().item()):.4f}"
+                )
+
             # Compute loss
             loss, loss_components = seg_criterion(output, target)
             total_loss += loss.item()
             dice_loss_total += loss_components['dice']
             ce_loss_total += loss_components['ce']
             focal_loss_total += loss_components['focal']
+
+            if debug_active:
+                debug_print(
+                    f"           loss={loss.item():.6f}, dice={loss_components['dice']:.6f}, "
+                    f"ce={loss_components['ce']:.6f}, focal={loss_components['focal']:.6f}"
+                )
 
             # For metrics computation
             output_one_hot = [post_pred(i) for i in decollate_batch(output)]
@@ -887,6 +1103,13 @@ def val_epoch_age_aware(model, loader, epoch, writer, args,
             # Compute dice
             dice_metric(y_pred=output_one_hot, y=target_one_hot)
             dice_metric_per_class(y_pred=output_one_hot, y=target_one_hot)
+
+            if debug_active:
+                sample_dice = DiceMetric(include_background=True, reduction="mean", get_not_nans=False)
+                sample_dice(y_pred=[output_one_hot[0]], y=[target_one_hot[0]])
+                sample_score = sample_dice.aggregate().item()
+                debug_print(f"           sample dice (first volume)={sample_score:.4f}")
+                sample_dice.reset()
 
             # Count predictions per class
             pred = torch.argmax(output, dim=1)

@@ -540,6 +540,8 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                  dyn_ramp_epochs: int = 50,
                  prior_warmup_epochs: Optional[int] = None,
                  prior_temperature: Optional[float] = None,
+                 debug_mode: bool = False,
+                 debug_max_batches: int = 2,
                  **extra_kwargs):
         super().__init__()
 
@@ -589,6 +591,10 @@ class AgeConditionedGraphPriorLoss(nn.Module):
 
         # Separate temperature for weighted adjacency if provided
         self.prior_temperature = prior_temperature if prior_temperature is not None else temperature
+
+        self.debug_mode = bool(debug_mode)
+        self.debug_max_batches = max(1, int(debug_max_batches)) if self.debug_mode else 0
+        self._debug_batch_count = 0
 
         # ========================= Age-aware priors =========================
         self.volume_stats = None
@@ -761,6 +767,41 @@ class AgeConditionedGraphPriorLoss(nn.Module):
         age_loss_sum = torch.zeros(1, device=device, dtype=dtype)
         age_warmup = self.get_age_warmup_factor()
 
+        predicted_volumes = probs.sum(dim=(2, 3, 4))
+        total_volume = predicted_volumes.sum(dim=1, keepdim=True).clamp(min=1e-6)
+        volume_fractions = predicted_volumes / total_volume
+
+        debug_active = (
+            self.debug_mode
+            and (self._debug_batch_count < self.debug_max_batches)
+            and ((not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0)
+        )
+        if debug_active:
+            debug_prefix = f"[DEBUG][GraphPrior][batch {self._debug_batch_count + 1}]"
+            print(f"{debug_prefix} logits shape={tuple(logits.shape)}")
+            print(f"{debug_prefix} age range={float(age.min().item()):.2f}-{float(age.max().item()):.2f}")
+            print(f"{debug_prefix} graph warmup={self.get_warmup_factor():.3f}, age warmup={age_warmup:.3f}")
+            with torch.no_grad():
+                vf = volume_fractions.detach()[0]
+                top_mass = torch.topk(vf, k=min(5, vf.numel()))
+                print(
+                    f"{debug_prefix} volume fractions (sample0): "
+                    + ", ".join(
+                        f"c{idx}={vf[idx].item():.4f}" for idx in top_mass.indices.cpu().tolist()
+                    )
+                )
+                if self.volume_stats is not None:
+                    exp_mean, _ = get_expected_volumes(float(age[0].item()), self.volume_stats, num_classes)
+                    exp = torch.tensor(exp_mean, device=vf.device, dtype=vf.dtype)
+                    diff = vf - exp
+                    top_diff = torch.topk(diff.abs(), k=min(5, diff.numel()))
+                    print(
+                        f"{debug_prefix} volume diff vs prior: "
+                        + ", ".join(
+                            f"c{idx}={diff[idx].item():+.4f}" for idx in top_diff.indices.cpu().tolist()
+                        )
+                    )
+
         if self.lambda_volume > 0 and self.volume_stats is not None:
             loss_volume = volume_consistency_loss(probs, age, self.volume_stats, num_classes)
             loss_dict['volume_loss'] = loss_volume.detach()
@@ -790,17 +831,15 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                 loss_adj = torch.zeros(1, device=device, dtype=dtype)
                 valid_batch_count = 0
                 A_prior = self.A_weighted_prior.to(device=device, dtype=dtype)
-                predicted_volumes = probs.sum(dim=(2, 3, 4))
-                total_volume = predicted_volumes.sum(dim=1, keepdim=True).clamp(min=1e-6)
-                volume_fractions = (predicted_volumes / total_volume).to(device=device, dtype=dtype)
+                volume_fractions_local = volume_fractions.to(device=device, dtype=dtype)
                 if self.weighted_adj_presence_slope > 0:
                     presence_logits = (
-                            (volume_fractions - self.weighted_adj_presence_threshold)
+                            (volume_fractions_local - self.weighted_adj_presence_threshold)
                             * self.weighted_adj_presence_slope
                     )
                     presence = torch.sigmoid(presence_logits)
                 else:
-                    presence = (volume_fractions > self.weighted_adj_presence_threshold).to(dtype=dtype)
+                    presence = (volume_fractions_local > self.weighted_adj_presence_threshold).to(dtype=dtype)
                 eye = torch.eye(C, device=device, dtype=dtype)
                 active_counts: List[int] = []
                 for b in range(B):
@@ -818,7 +857,7 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                         W = W.to(device=device, dtype=dtype)
                     else:
                         W = torch.ones(C, C, device=device, dtype=dtype)
-                    vol_weight = torch.outer(volume_fractions[b], volume_fractions[b])
+                    vol_weight = torch.outer(volume_fractions_local[b], volume_fractions_local[b])
                     weight_mask = W * mask * vol_weight
                     denom = weight_mask.sum().clamp(min=1e-6)
                     diff = (A_pred_batch[b] - A_prior) * mask
@@ -838,10 +877,28 @@ class AgeConditionedGraphPriorLoss(nn.Module):
 
             loss_dict['weighted_adj_loss'] = loss_adj.detach()
             age_loss_sum = age_loss_sum + age_warmup * self.lambda_weighted_adj * loss_adj
+            if debug_active:
+                print(f"{debug_prefix} weighted adjacency loss={float(loss_adj.detach().item()):.6f}")
+                if 'weighted_adj_active_classes' in loss_dict:
+                    print(
+                        f"{debug_prefix} active classes={float(loss_dict['weighted_adj_active_classes'].item()):.2f}"
+                    )
 
         if self.lambda_topo > 0 and (self.required_edges or self.forbidden_edges):
-            probs_flat = probs.reshape(probs.shape[0], probs.shape[1], -1)
-            A_simple = torch.bmm(probs_flat, probs_flat.transpose(1, 2)).mean(0)
+            # NOTE: The old (stable) implementation computed adjacency on
+            # probability distributions that were normalized per-class before
+            # taking the inner product. The previous refactor accidentally used
+            # raw probability masses, so the dot products scaled with the number
+            # of voxels (~10^5) and caused the topology penalty to dominate the
+            # loss. Re-introduce the normalization so that adjacency scores stay
+            # in [0, 1] just like in the legacy branch.
+            A_simple = soft_adjacency_from_probs(
+                probs,
+                kernel_size=1,
+                stride=1,
+                temperature=1.0,
+                restricted_mask=None,
+            )
 
             loss_topo = torch.zeros(1, device=device, dtype=dtype)
             for i, j in self.required_edges:
@@ -853,6 +910,12 @@ class AgeConditionedGraphPriorLoss(nn.Module):
 
             loss_dict['topo_loss'] = loss_topo.detach()
             age_loss_sum = age_loss_sum + age_warmup * self.lambda_topo * loss_topo
+            if debug_active:
+                print(
+                    f"{debug_prefix} topo loss={float(loss_topo.detach().item()):.6f} "
+                    f"(A_simple mean={A_simple.mean().item():.5f}, "
+                    f"max={A_simple.max().item():.5f})"
+                )
 
         # ========================= Graph alignment branch =========================
         graph_branch_sum = torch.zeros(1, device=device, dtype=dtype)
@@ -937,9 +1000,24 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                 self.lambda_edge_tgt * loss_edge_tgt +
                 self.lambda_sym * loss_sym
             )
+            if debug_active:
+                if A_pred is not None:
+                    with torch.no_grad():
+                        print(
+                            f"{debug_prefix} A_pred stats mean={A_pred.mean().item():.5f}, max={A_pred.max().item():.5f}, "
+                            f"min={A_pred.min().item():.5f}"
+                        )
+                print(
+                    f"{debug_prefix} graph losses spec_src={float(loss_spec_src.detach().item()):.6f}, "
+                    f"edge_src={float(loss_edge_src.detach().item()):.6f}, "
+                    f"spec_tgt={float(loss_spec_tgt.detach().item()):.6f}, "
+                    f"edge_tgt={float(loss_edge_tgt.detach().item()):.6f}, sym={float(loss_sym.detach().item()):.6f}"
+                )
 
         warmup_factor = self.get_warmup_factor()
         graph_total = warmup_factor * graph_branch_sum
+        if debug_active:
+            print(f"{debug_prefix} graph_total={float(graph_total.detach().item()):.6f} (warmup={warmup_factor:.3f})")
 
         total_loss = age_loss_sum + graph_total
 
@@ -991,6 +1069,9 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                 'forbidden_present': 0,
             }
             loss_dict['graph_struct'] = torch.zeros(1, device=device, dtype=dtype)
+
+        if debug_active:
+            self._debug_batch_count += 1
 
         return total_loss, loss_dict
 
