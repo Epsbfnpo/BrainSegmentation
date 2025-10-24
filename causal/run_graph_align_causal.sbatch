@@ -42,20 +42,4 @@ echo "=============================================================="
 echo "Job $SLURM_JOB_ID completed with status $EXIT_STATUS at $(date)"
 echo "=============================================================="
 
-# Auto-resubmit logic to continue long trainings over multiple 2h slots
-RESULTS_DIR="/datasets/work/hb-nhmrc-dhcp/work/liu275/causal/results"
-LATEST_CHECKPOINT="${RESULTS_DIR}/latest.pth"
-FINAL_MODEL="${RESULTS_DIR}/final_model.pth"
-
-if [ -f "$LATEST_CHECKPOINT" ] && [ ! -f "$FINAL_MODEL" ]; then
-    echo "Training not yet converged. Preparing to resubmit job after cooldown."
-    sbatch --dependency=singleton --job-name=graph_align_causal "$0"
-    RESUBMIT_STATUS=$?
-    if [ $RESUBMIT_STATUS -ne 0 ]; then
-        echo "Failed to queue follow-up job (status $RESUBMIT_STATUS). Please resubmit manually."
-    else
-        echo "Follow-up job queued successfully."
-    fi
-fi
-
 exit $EXIT_STATUS

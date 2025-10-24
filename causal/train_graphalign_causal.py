@@ -67,8 +67,10 @@ def get_parser():
     # Model parameters
     parser.add_argument('--in_channels', default=1, type=int,
                         help='Number of input channels')
+
     parser.add_argument('--out_channels', default=87, type=int,
                         help='Number of segmentation classes')
+
     parser.add_argument('--feature_size', default=48, type=int,
                         help='Feature size for transformer')
     parser.add_argument('--roi_x', default=96, type=int,
@@ -359,6 +361,7 @@ def get_parser():
                         help='Use label-based cropping for registered data to ensure all classes are sampled')
 
     # Time management for preemptible jobs
+
     parser.add_argument('--job_time_limit', default=115, type=int,
                         help='Job time limit in minutes (default: 115 for 2-hour jobs with buffer)')
     parser.add_argument('--time_buffer_minutes', default=5, type=int,
@@ -380,6 +383,7 @@ def _enforce_foreground_only_config(args, verbose: bool = True):
 def load_pretrained_model(model, checkpoint_path, device):
     """Load pretrained model with proper handling"""
     is_main = (not is_dist()) or dist.get_rank() == 0
+
 
     if is_main:
         print(f"🔥 Loading pretrained model from: {checkpoint_path}")
@@ -1325,6 +1329,7 @@ def safe_main():
     parser = get_parser()
     args = parser.parse_args()
     args = _enforce_foreground_only_config(args, verbose=False)
+
     if isinstance(args.ci_bandwidths, str):
         args.ci_bandwidths = [float(x) for x in args.ci_bandwidths.split(',') if x.strip()]
     if not isinstance(args.ci_bandwidths, (list, tuple)) or len(args.ci_bandwidths) == 0:
