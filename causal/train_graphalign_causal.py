@@ -67,8 +67,10 @@ def get_parser():
     # Model parameters
     parser.add_argument('--in_channels', default=1, type=int,
                         help='Number of input channels')
-    parser.add_argument('--out_channels', default=88, type=int,
+
+    parser.add_argument('--out_channels', default=87, type=int,
                         help='Number of segmentation classes')
+
     parser.add_argument('--feature_size', default=48, type=int,
                         help='Feature size for transformer')
     parser.add_argument('--roi_x', default=96, type=int,
@@ -131,10 +133,6 @@ def get_parser():
                         help='Path to target domain required edges JSON file')
     parser.add_argument('--prior_forbidden_json', type=str, default=None,
                         help='Path to target domain forbidden edges JSON file')
-    parser.add_argument('--prior_containment_json', type=str, default=None,
-                        help='Path to containment relations JSON file')
-    parser.add_argument('--prior_exclusive_json', type=str, default=None,
-                        help='Path to exclusive pairs JSON file')
 
     # ========== AGE-AWARE PRIORS (NEW, minimal-intrusion) ==========
     parser.add_argument('--use_age_conditioning', action='store_true', default=True,
@@ -363,6 +361,7 @@ def get_parser():
                         help='Use label-based cropping for registered data to ensure all classes are sampled')
 
     # Time management for preemptible jobs
+
     parser.add_argument('--job_time_limit', default=115, type=int,
                         help='Job time limit in minutes (default: 115 for 2-hour jobs with buffer)')
     parser.add_argument('--time_buffer_minutes', default=5, type=int,
@@ -371,9 +370,20 @@ def get_parser():
     return parser
 
 
+def _enforce_foreground_only_config(args, verbose: bool = True):
+    """Ensure foreground-only mode consistently predicts 87 brain regions."""
+    if getattr(args, 'foreground_only', False):
+        if args.out_channels != 87 and verbose:
+            print(
+                f"⚙️ Foreground-only模式启用：自动将out_channels从{args.out_channels}调整为87，确保仅预测87个脑区")
+        args.out_channels = 87
+    return args
+
+
 def load_pretrained_model(model, checkpoint_path, device):
     """Load pretrained model with proper handling"""
     is_main = (not is_dist()) or dist.get_rank() == 0
+
 
     if is_main:
         print(f"🔥 Loading pretrained model from: {checkpoint_path}")
@@ -547,6 +557,7 @@ def main():
         # Parse arguments
         parser = get_parser()
         args = parser.parse_args()
+        args = _enforce_foreground_only_config(args)
 
         if isinstance(args.ci_bandwidths, str):
             args.ci_bandwidths = [float(x) for x in args.ci_bandwidths.split(',') if x.strip()]
@@ -1317,6 +1328,8 @@ def safe_main():
     # Parse args first to get results_dir
     parser = get_parser()
     args = parser.parse_args()
+    args = _enforce_foreground_only_config(args, verbose=False)
+
     if isinstance(args.ci_bandwidths, str):
         args.ci_bandwidths = [float(x) for x in args.ci_bandwidths.split(',') if x.strip()]
     if not isinstance(args.ci_bandwidths, (list, tuple)) or len(args.ci_bandwidths) == 0:

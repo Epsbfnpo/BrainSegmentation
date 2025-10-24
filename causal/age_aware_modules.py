@@ -124,7 +124,7 @@ class ShapeEncoder(nn.Module):
 
 
 class SimplifiedDAUnetModule(nn.Module):
-    def __init__(self, base_model: nn.Module, num_classes: int = 88,
+    def __init__(self, base_model: nn.Module, num_classes: int = 87,
                  roi_size: Tuple[int, int, int] = (96, 96, 96),
                  foreground_only: bool = False, class_prior_path: str = None,
                  enhanced_class_weights: bool = True,

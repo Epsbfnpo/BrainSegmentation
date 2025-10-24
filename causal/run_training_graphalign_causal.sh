@@ -26,8 +26,6 @@ TARGET_PRIORS_DIR="/datasets/work/hb-nhmrc-dhcp/work/liu275/causal/priors/PPREMO
 TARGET_PRIOR_ADJ_NPY="${TARGET_PRIORS_DIR}/prior_adj.npy"
 TARGET_PRIOR_REQUIRED_JSON="${TARGET_PRIORS_DIR}/prior_required.json"
 TARGET_PRIOR_FORBIDDEN_JSON="${TARGET_PRIORS_DIR}/prior_forbidden.json"
-TARGET_PRIOR_CONTAIN_JSON="${TARGET_PRIORS_DIR}/prior_containment.json"
-TARGET_PRIOR_EXCLUSIVE_JSON="${TARGET_PRIORS_DIR}/prior_exclusive.json"
 TARGET_WEIGHTED_ADJ_NPY="${TARGET_PRIORS_DIR}/weighted_adj.npy"
 TARGET_VOLUME_STATS_JSON="${TARGET_PRIORS_DIR}/volume_stats.json"
 TARGET_AGE_WEIGHTS_JSON="${TARGET_PRIORS_DIR}/age_weights.json"
@@ -172,8 +170,7 @@ TARGET_GRAPH_ARGS=""
 [ -f "$TARGET_PRIOR_ADJ_NPY" ] && TARGET_GRAPH_ARGS+=" --prior_adj_npy $TARGET_PRIOR_ADJ_NPY"
 [ -f "$TARGET_PRIOR_REQUIRED_JSON" ] && TARGET_GRAPH_ARGS+=" --prior_required_json $TARGET_PRIOR_REQUIRED_JSON"
 [ -f "$TARGET_PRIOR_FORBIDDEN_JSON" ] && TARGET_GRAPH_ARGS+=" --prior_forbidden_json $TARGET_PRIOR_FORBIDDEN_JSON"
-[ -f "$TARGET_PRIOR_CONTAIN_JSON" ] && TARGET_GRAPH_ARGS+=" --prior_containment_json $TARGET_PRIOR_CONTAIN_JSON"
-[ -f "$TARGET_PRIOR_EXCLUSIVE_JSON" ] && TARGET_GRAPH_ARGS+=" --prior_exclusive_json $TARGET_PRIOR_EXCLUSIVE_JSON"
+
 # Compose source graph args
 SOURCE_GRAPH_ARGS=""
 [ -f "$SOURCE_PRIOR_ADJ_NPY" ] && SOURCE_GRAPH_ARGS+=" --src_prior_adj_npy $SOURCE_PRIOR_ADJ_NPY"
@@ -212,7 +209,7 @@ done
 CMD+=(
     --results_dir "$RESULTS_DIR"
     --in_channels 1
-    --out_channels 88
+    --out_channels 87
     --feature_size 48
     --roi_x 128 --roi_y 128 --roi_z 128
     --use_label_crop
