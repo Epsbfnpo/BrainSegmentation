@@ -385,8 +385,8 @@ def main(args):
     )
 
     # Save symmetry statistics
+    symmetry_stats = {}
     if symmetry_all:
-        symmetry_stats = {}
         for pair, scores in symmetry_all.items():
             symmetry_stats[f"{pair[0]}_{pair[1]}"] = {
                 "mean": float(np.mean(scores)),
