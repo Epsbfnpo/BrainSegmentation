@@ -72,13 +72,46 @@ def assign_age_bins(ages: torch.Tensor, edges: torch.Tensor) -> torch.Tensor:
     return bins
 
 
-def weighted_mean(values: torch.Tensor, weights: Optional[torch.Tensor] = None) -> torch.Tensor:
-    if weights is None:
-        return values.mean()
-    if weights.numel() == 0:
-        return values.mean()
-    w = weights / (weights.sum() + 1e-6)
-    return (values * w).sum()
+def weighted_mean(
+    values: torch.Tensor,
+    weights: Optional[torch.Tensor] = None,
+    mask: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Compute the weighted mean with optional boolean masking.
+
+    MONAI's ``MetaTensor`` keeps track of metadata and overrides advanced
+    indexing operations such as ``tensor[mask]``.  When the per-sample losses
+    produced by :func:`compute_per_sample_ce` retain the ``MetaTensor`` type,
+    boolean indexing triggers metadata handling code that expects integer
+    indices and raises ``TypeError``.  Accepting a mask directly allows us to
+    avoid advanced indexing while keeping gradients intact.
+    """
+
+    masked_values = values
+    masked_weights = weights
+
+    if mask is not None:
+        if mask.shape != values.shape:
+            mask = mask.view_as(values)
+        mask = mask.to(device=values.device)
+        if mask.dtype != values.dtype:
+            mask_float = mask.to(dtype=values.dtype)
+        else:
+            mask_float = mask
+        masked_values = values * mask_float
+        if weights is not None:
+            masked_weights = weights * mask_float
+        effective_count = mask_float.sum().clamp(min=1.0)
+    else:
+        effective_count = None
+
+    if masked_weights is None:
+        if effective_count is None:
+            return values.mean()
+        return masked_values.sum() / effective_count
+
+    weight_sum = masked_weights.sum().clamp(min=1e-6)
+    return (masked_values * masked_weights).sum() / weight_sum
 
 
 def compute_per_sample_ce(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
@@ -727,9 +760,9 @@ def train_epoch_age_aware(model, source_loader, target_loader, optimizer, epoch,
 
                         env_losses = []
                         if src_mask.any():
-                            env_losses.append(weighted_mean(src_ce[src_mask], source_weights[src_mask]))
+                            env_losses.append(weighted_mean(src_ce, source_weights, mask=src_mask))
                         if tgt_mask.any():
-                            env_losses.append(weighted_mean(tgt_ce[tgt_mask], target_weights[tgt_mask]))
+                            env_losses.append(weighted_mean(tgt_ce, target_weights, mask=tgt_mask))
 
                         if env_losses and irm_weight > 0:
                             env_tensor = torch.stack(env_losses)
@@ -746,8 +779,12 @@ def train_epoch_age_aware(model, source_loader, target_loader, optimizer, epoch,
                             bins_in_batch += 1
 
                         if graph_inv_weight > 0 and src_mask.any() and tgt_mask.any():
-                            A_src_mean = weighted_matrix_mean(A_src_batch[src_mask], source_weights[src_mask])
-                            A_tgt_mean = weighted_matrix_mean(A_tgt_batch[tgt_mask], target_weights[tgt_mask])
+                            A_src_mean = weighted_matrix_mean(
+                                A_src_batch[src_mask], source_weights[src_mask]
+                            )
+                            A_tgt_mean = weighted_matrix_mean(
+                                A_tgt_batch[tgt_mask], target_weights[tgt_mask]
+                            )
                             diff = A_src_mean - A_tgt_mean
                             penalty_bin = (diff ** 2).mean()
                             if graph_inv_use_spectral:
