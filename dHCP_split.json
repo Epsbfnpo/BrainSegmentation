@@ -1,0 +1,4254 @@
+{
+  "training": [
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img356.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img356.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img703.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img703.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img586.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img586.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img648.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img648.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img560.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img560.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img382.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img382.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img568.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img568.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img472.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img472.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img116.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img116.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img210.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img210.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img525.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img525.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img017.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img017.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img611.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img611.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img370.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img370.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img029.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img029.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img579.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img579.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img426.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img426.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img342.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img342.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img273.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img273.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img667.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img667.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img304.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img304.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img006.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img006.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img177.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img177.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img303.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img303.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img014.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img014.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img228.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img228.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img064.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img064.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img626.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img626.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img309.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img309.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img101.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img101.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img461.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img461.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img106.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img106.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img040.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img040.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img075.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img075.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img628.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img628.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img139.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img139.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img405.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img405.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img262.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img262.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img557.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img557.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img213.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img213.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img178.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img178.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img186.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img186.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img527.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img527.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img193.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img193.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img263.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img263.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img015.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img015.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img572.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img572.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img638.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img638.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img244.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img244.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img316.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img316.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img497.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img497.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img669.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img669.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img144.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img144.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img102.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img102.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img352.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img352.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img313.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img313.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img436.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img436.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img087.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img087.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img025.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img025.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img543.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img543.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img385.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img385.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img453.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img453.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img173.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img173.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img003.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img003.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img181.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img181.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img622.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img622.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img317.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img317.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img484.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img484.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img650.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img650.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img408.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img408.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img252.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img252.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img431.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img431.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img421.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img421.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img256.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img256.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img009.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img009.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img133.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img133.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img151.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img151.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img327.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img327.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img526.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img526.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img689.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img689.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img583.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img583.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img011.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img011.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img515.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img515.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img362.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img362.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img043.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img043.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img393.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img393.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img354.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img354.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img037.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img037.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img427.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img427.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img381.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img381.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img587.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img587.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img483.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img483.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img358.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img358.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img321.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img321.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img681.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img681.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img348.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img348.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img489.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img489.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img523.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img523.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img589.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img589.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img034.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img034.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img665.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img665.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img415.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img415.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img396.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img396.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img424.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img424.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img150.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img150.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img541.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img541.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img503.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img503.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img065.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img065.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img093.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img093.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img208.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img208.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img079.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img079.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img199.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img199.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img097.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img097.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img041.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img041.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img194.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img194.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img603.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img603.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img647.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img647.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img420.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img420.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img365.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img365.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img401.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img401.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img307.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img307.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img059.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img059.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img016.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img016.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img341.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img341.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img577.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img577.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img269.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img269.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img418.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img418.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img532.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img532.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img119.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img119.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img511.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img511.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img057.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img057.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img563.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img563.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img232.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img232.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img312.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img312.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img220.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img220.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img326.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img326.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img630.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img630.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img387.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img387.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img294.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img294.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img565.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img565.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img107.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img107.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img398.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img398.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img298.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img298.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img159.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img159.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img063.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img063.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img548.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img548.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img678.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img678.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img355.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img355.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img257.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img257.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img302.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img302.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img192.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img192.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img517.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img517.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img024.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img024.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img441.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img441.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img539.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img539.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img610.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img610.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img658.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img658.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img044.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img044.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img281.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img281.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img223.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img223.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img330.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img330.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img163.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img163.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img266.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img266.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img120.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img120.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img308.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img308.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img692.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img692.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img359.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img359.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img419.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img419.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img529.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img529.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img633.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img633.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img175.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img175.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img214.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img214.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img141.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img141.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img188.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img188.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img078.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img078.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img582.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img582.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img291.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img291.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img662.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img662.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img403.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img403.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img416.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img416.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img191.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img191.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img287.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img287.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img490.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img490.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img514.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img514.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img340.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img340.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img295.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img295.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img574.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img574.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img643.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img643.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img379.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img379.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img322.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img322.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img201.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img201.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img602.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img602.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img130.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img130.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img404.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img404.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img499.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img499.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img531.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img531.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img537.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img537.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img561.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img561.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img673.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img673.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img242.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img242.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img466.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img466.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img680.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img680.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img111.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img111.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img462.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img462.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img451.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img451.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img172.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img172.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img189.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img189.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img444.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img444.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img185.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img185.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img612.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img612.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img495.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img495.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img642.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img642.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img423.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img423.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img554.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img554.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img238.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img238.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img329.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img329.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img578.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img578.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img500.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img500.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img491.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img491.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img148.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img148.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img422.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img422.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img654.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img654.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img438.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img438.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img156.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img156.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img569.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img569.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img366.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img366.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img202.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img202.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img378.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img378.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img089.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img089.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img455.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img455.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img153.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img153.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img481.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img481.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img010.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img010.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img350.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img350.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img149.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img149.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img046.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img046.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img325.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img325.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img627.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img627.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img399.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img399.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img632.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img632.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img267.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img267.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img535.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img535.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img138.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img138.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img216.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img216.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img473.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img473.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img265.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img265.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img131.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img131.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img165.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img165.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img698.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img698.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img255.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img255.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img198.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img198.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img248.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img248.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img018.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img018.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img222.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img222.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img464.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img464.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img169.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img169.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img205.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img205.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img468.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img468.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img458.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img458.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img576.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img576.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img117.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img117.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img684.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img684.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img180.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img180.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img521.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img521.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img103.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img103.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img114.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img114.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img241.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img241.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img551.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img551.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img196.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img196.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img608.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img608.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img645.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img645.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img137.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img137.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img286.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img286.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img485.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img485.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img311.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img311.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img092.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img092.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img013.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img013.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img212.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img212.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img091.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img091.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img084.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img084.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img454.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img454.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img328.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img328.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img440.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img440.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img538.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img538.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img053.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img053.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img459.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img459.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img618.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img618.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img184.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img184.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img384.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img384.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img187.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img187.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img158.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img158.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img593.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img593.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img524.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img524.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img488.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img488.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img076.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img076.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img562.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img562.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img392.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img392.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img019.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img019.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img280.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img280.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img077.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img077.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img457.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img457.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img621.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img621.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img637.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img637.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img288.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img288.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img219.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img219.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img283.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img283.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img456.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img456.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img083.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img083.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img135.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img135.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img067.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img067.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img171.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img171.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img432.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img432.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img023.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img023.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img594.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img594.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img425.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img425.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img445.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img445.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img027.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img027.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img540.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img540.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img629.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img629.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img259.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img259.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img556.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img556.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img482.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img482.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img631.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img631.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img108.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img108.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img310.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img310.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img145.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img145.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img140.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img140.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img417.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img417.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img336.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img336.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img055.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img055.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img546.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img546.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img351.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img351.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img069.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img069.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img054.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img054.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img636.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img636.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img284.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img284.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img360.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img360.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img663.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img663.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img502.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img502.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img314.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img314.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img155.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img155.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img279.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img279.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img595.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img595.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img400.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img400.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img146.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img146.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img190.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img190.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img126.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img126.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img584.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img584.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img179.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img179.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img549.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img549.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img369.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img369.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img260.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img260.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img437.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img437.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img276.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img276.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img361.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img361.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img052.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img052.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img289.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img289.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img319.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img319.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img363.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img363.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img005.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img005.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img038.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img038.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img376.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img376.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img516.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img516.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img154.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img154.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img478.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img478.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img344.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img344.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img504.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img504.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img203.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img203.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img683.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img683.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img123.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img123.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img407.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img407.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img367.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img367.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img508.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img508.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img670.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img670.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img134.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img134.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img570.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img570.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img268.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img268.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img290.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img290.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img299.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img299.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img337.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img337.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img635.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img635.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img397.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img397.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img318.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img318.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img021.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img021.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img394.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img394.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img412.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img412.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img127.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img127.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img292.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img292.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img062.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img062.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img475.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img475.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img121.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img121.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img346.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img346.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img035.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img035.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img305.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img305.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img036.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img036.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img700.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img700.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img042.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img042.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img261.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img261.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img609.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img609.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img555.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img555.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img536.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img536.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img580.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img580.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img245.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img245.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img300.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img300.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img450.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img450.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img413.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img413.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img161.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img161.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img530.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img530.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img476.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img476.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img278.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img278.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img377.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img377.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img646.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img646.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img030.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img030.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img112.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img112.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img152.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img152.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img467.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img467.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img080.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img080.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img250.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img250.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img685.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img685.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img656.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img656.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img641.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img641.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img428.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img428.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img375.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img375.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img357.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img357.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img528.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img528.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img607.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img607.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img233.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img233.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img447.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img447.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img496.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img496.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img136.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img136.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img200.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img200.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img002.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img002.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img195.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img195.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img085.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img085.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img694.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img694.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img533.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img533.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img651.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img651.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img545.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img545.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img507.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img507.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img493.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img493.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img086.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img086.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img510.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img510.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img435.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img435.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img386.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img386.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img048.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img048.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img519.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img519.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img429.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img429.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img505.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img505.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img334.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img334.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img706.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img706.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img477.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img477.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img705.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img705.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img600.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img600.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img661.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img661.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img494.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img494.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img227.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img227.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img039.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img039.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img448.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img448.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img469.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img469.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img237.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img237.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img509.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img509.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img591.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img591.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img486.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img486.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img649.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img649.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img230.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img230.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img616.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img616.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img492.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img492.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img099.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img099.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img659.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img659.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img056.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img056.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img442.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img442.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img410.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img410.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img174.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img174.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img373.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img373.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img207.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img207.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img032.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img032.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img051.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img051.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img331.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img331.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img335.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img335.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img671.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img671.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img688.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img688.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img639.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img639.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img443.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img443.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img240.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img240.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img211.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img211.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img534.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img534.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img182.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img182.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img672.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img672.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img338.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img338.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img050.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img050.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img590.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img590.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img098.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img098.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img209.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img209.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img414.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img414.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img613.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img613.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img402.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img402.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img125.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img125.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img243.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img243.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img296.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img296.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img293.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img293.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img452.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img452.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img479.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img479.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img596.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img596.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img615.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img615.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img625.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img625.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img110.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img110.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img249.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img249.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img343.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img343.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img697.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img697.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img122.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img122.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img264.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img264.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img690.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img690.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img339.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img339.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img664.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img664.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img070.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img070.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img620.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img620.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img061.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img061.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img073.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img073.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img008.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img008.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img682.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img682.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img236.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img236.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img022.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img022.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img347.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img347.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img585.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img585.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img231.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img231.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img254.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img254.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img124.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img124.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img463.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img463.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img449.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img449.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img558.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img558.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img597.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img597.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img320.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img320.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img206.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img206.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img614.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img614.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img434.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img434.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img606.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img606.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img170.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img170.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img487.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img487.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img132.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img132.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img129.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img129.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img071.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img071.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img498.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img498.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img088.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img088.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img657.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img657.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img247.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img247.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img060.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img060.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img246.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img246.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img315.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img315.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img372.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img372.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img573.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img573.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img020.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img020.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img501.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img501.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img332.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img332.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img001.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img001.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img544.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img544.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img553.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img553.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img166.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img166.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img383.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img383.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img588.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img588.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img686.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img686.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img564.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img564.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img306.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img306.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img109.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img109.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img520.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img520.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img183.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img183.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img513.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img513.nii.gz"
+    }
+  ],
+  "validation": [
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img601.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img601.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img004.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img004.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img640.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img640.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img162.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img162.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img446.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img446.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img708.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img708.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img707.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img707.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img675.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img675.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img653.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img653.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img660.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img660.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img118.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img118.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img012.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img012.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img567.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img567.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img258.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img258.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img542.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img542.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img480.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img480.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img391.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img391.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img395.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img395.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img066.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img066.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img676.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img676.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img677.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img677.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img157.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img157.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img113.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img113.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img049.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img049.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img094.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img094.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img506.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img506.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img522.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img522.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img142.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img142.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img623.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img623.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img652.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img652.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img409.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img409.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img598.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img598.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img439.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img439.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img599.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img599.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img270.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img270.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img552.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img552.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img687.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img687.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img253.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img253.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img702.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img702.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img272.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img272.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img147.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img147.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img470.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img470.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img406.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img406.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img512.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img512.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img218.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img218.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img323.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img323.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img581.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img581.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img217.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img217.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img068.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img068.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img275.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img275.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img411.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img411.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img324.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img324.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img695.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img695.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img235.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img235.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img058.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img058.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img333.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img333.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img225.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img225.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img571.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img571.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img277.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img277.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img389.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img389.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img474.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img474.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img168.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img168.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img704.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img704.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img547.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img547.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img176.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img176.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img624.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img624.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img074.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img074.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img274.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img274.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img215.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img215.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img364.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img364.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img380.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img380.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img167.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img167.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img374.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img374.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img465.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img465.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img674.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img674.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img668.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img668.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img104.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img104.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img691.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img691.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img082.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img082.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img297.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img297.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img234.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img234.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img047.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img047.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img072.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img072.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img197.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img197.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img592.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img592.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img371.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img371.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img634.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img634.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img644.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img644.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img301.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img301.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img566.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img566.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img081.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img081.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img388.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img388.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img128.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img128.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img550.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img550.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img471.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img471.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img045.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img045.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img271.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img271.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img619.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img619.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img353.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img353.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img368.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img368.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img100.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img100.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img390.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img390.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img095.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img095.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img701.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img701.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img345.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img345.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img221.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img221.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img160.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img160.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img679.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img679.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img349.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img349.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img696.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img696.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img164.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img164.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img007.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img007.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img285.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img285.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img604.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img604.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img460.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img460.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img226.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img226.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img430.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img430.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img699.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img699.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img666.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img666.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img204.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img204.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img575.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img575.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img028.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img028.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img617.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img617.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img518.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img518.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img239.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img239.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img224.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img224.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img096.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img096.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img031.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img031.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img033.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img033.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img433.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img433.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img605.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img605.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img090.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img090.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img559.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img559.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img693.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img693.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img105.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img105.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img143.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img143.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img229.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img229.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img251.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img251.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img282.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img282.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img026.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img026.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img115.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img115.nii.gz"
+    },
+    {
+      "image": [
+        "/scratch3/liu275/Data/dHCP/imagesTr/img655.nii.gz"
+      ],
+      "label": "/scratch3/liu275/Data/dHCP/labelsTr/img655.nii.gz"
+    }
+  ]
+}
