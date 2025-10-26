@@ -179,8 +179,8 @@ class SimplifiedDAUnetModule(nn.Module):
                 nn.ReLU(),
                 nn.Linear(age_embed_dim, 1)
             )
-            # Default: rely on GraphPriorLoss for volume prior, disable internal volume loss
-            self.enable_internal_volume_loss = False
+            # 默认启用内部体积/年龄辅助任务，让新增的先验在不开关的情况下直接生效
+            self.enable_internal_volume_loss = True
 
             # Load volume statistics if available
             self.volume_statistics = self._load_volume_statistics(volume_statistics_path)

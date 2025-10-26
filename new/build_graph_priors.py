@@ -8,23 +8,163 @@ Enhanced version with R_mask generation for dual-branch alignment
 import os
 import json
 import argparse
+import math
 import numpy as np
 import nibabel as nib
 from tqdm import tqdm
 from scipy.ndimage import binary_dilation, generate_binary_structure
 from collections import defaultdict
 import warnings
+import re
+from pathlib import Path
 
 warnings.filterwarnings('ignore')
 
 
+LABEL_KEYS = (
+    "label",
+    "label_path",
+    "seg",
+    "segmentation",
+    "label_relpath",
+)
+
+ROOT_KEYS = (
+    "dataset_root",
+    "root",
+    "root_dir",
+    "label_root",
+)
+
+AGE_KEYS = (
+    "age",
+    "age_weeks",
+    "scan_age",
+    "scan_age_weeks",
+    "pma",
+    "PMA",
+    "postmenstrual_age",
+    "post_menstrual_age",
+    "postnatal_age",
+    "postnatal_age_weeks",
+    "postnatal_age_days",
+    "gestational_age",
+    "gestational_age_weeks",
+)
+
+
+def _coerce_age(value):
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, (list, tuple)) and value:
+        return _coerce_age(value[0])
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        match = re.search(r"(\d+)\s*\+\s*(\d+)", text)
+        if match:
+            weeks = float(match.group(1))
+            days = float(match.group(2))
+            return weeks + days / 7.0
+        cleaned = re.sub(r"[^0-9.+-]", "", text)
+        try:
+            return float(cleaned)
+        except ValueError:
+            return None
+    return None
+
+
+def _extract_age(sample):
+    for key in AGE_KEYS:
+        if key in sample:
+            age = _coerce_age(sample[key])
+            if age is not None:
+                return age
+
+    ga = _coerce_age(sample.get("ga")) or _coerce_age(sample.get("GA")) or _coerce_age(sample.get("gestational_age"))
+    pna = _coerce_age(sample.get("pna")) or _coerce_age(sample.get("PNA")) or _coerce_age(sample.get("postnatal_age"))
+    if ga is not None and pna is not None:
+        return ga + pna
+
+    for key in ("metadata", "meta", "attributes", "info"):
+        nested = sample.get(key)
+        if isinstance(nested, dict):
+            age = _extract_age(nested)
+            if age is not None:
+                return age
+
+    return None
+
+
 def load_split(json_path):
-    """Load data split from JSON"""
     with open(json_path, 'r') as f:
         data = json.load(f)
-    # Combine training and validation for better statistics
-    files = data.get('training', []) + data.get('validation', [])
-    return files
+
+    default_root = None
+    for key in ROOT_KEYS:
+        root_val = data.get(key)
+        if isinstance(root_val, str) and root_val:
+            default_root = root_val
+            break
+
+    samples = []
+
+    def _extend(value):
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    samples.append(item)
+
+    for key in ("training", "validation", "testing", "test", "train", "val"):
+        _extend(data.get(key, []))
+
+    for maybe_splits in (data.get('splits'), data.get('data')):
+        if isinstance(maybe_splits, dict):
+            for value in maybe_splits.values():
+                _extend(value)
+
+    if isinstance(data, list):
+        _extend(data)
+
+    return samples, default_root
+
+
+def _resolve_label_path(sample, json_path, default_root, cli_root):
+    candidate = None
+    for key in LABEL_KEYS:
+        value = sample.get(key)
+        if value:
+            candidate = value
+            break
+    if candidate is None:
+        return None
+
+    candidate_path = Path(candidate)
+    if candidate_path.is_absolute() and candidate_path.exists():
+        return str(candidate_path)
+
+    roots = []
+    for key in ROOT_KEYS:
+        value = sample.get(key)
+        if isinstance(value, str):
+            roots.append(value)
+    roots.extend([default_root, cli_root, os.environ.get('DATA_ROOT')])
+    roots.append(str(Path(json_path).parent))
+
+    for root in roots:
+        if not root:
+            continue
+        resolved = Path(root) / candidate
+        if resolved.exists():
+            return str(resolved)
+
+    if roots:
+        fallback_root = roots[0] or str(Path(json_path).parent)
+        return str(Path(fallback_root) / candidate)
+    return str(candidate_path)
 
 
 def read_label(path):
@@ -220,7 +360,7 @@ def main(args):
     """Main function to build graph priors with restricted mask"""
 
     print(f"Loading data split from: {args.split_json}")
-    files = load_split(args.split_json)
+    files, default_root = load_split(args.split_json)
     print(f"Found {len(files)} files")
 
     # Initialize accumulators
@@ -244,7 +384,11 @@ def main(args):
     # Process each file for adjacency
     print("Computing adjacency statistics...")
     for item in tqdm(files):
-        label_path = item['label']
+        label_path = _resolve_label_path(item, args.split_json, default_root, args.data_root)
+        if not label_path or not os.path.exists(label_path):
+            print(f"⚠️  Skipping missing label: {label_path}")
+            continue
+
         label = read_label(label_path)
         if label is None:
             continue
@@ -259,16 +403,10 @@ def main(args):
         A_sum += A
         A_count += 1
         # --- NEW: age-binned accumulation ---
-        age_weeks = None
-        meta = item.get("metadata", {})
-        if isinstance(meta, dict) and "scan_age" in meta:
-            try:
-                age_weeks = float(meta["scan_age"])
-            except Exception:
-                age_weeks = None
+        age_weeks = _extract_age(item)
 
         if age_weeks is not None:
-            age_bin = int(age_weeks // age_bin_width) * int(age_bin_width)
+            age_bin = int(math.floor(age_weeks / age_bin_width) * age_bin_width)
 
             # (a) adjacency by age bin
             if age_bin not in age_adj_sums:
@@ -544,6 +682,8 @@ if __name__ == "__main__":
 
     parser.add_argument("--split_json", required=True, type=str,
                         help="Path to data split JSON file")
+    parser.add_argument("--data_root", type=str, default=None,
+                        help="Optional root directory for resolving relative label paths")
     parser.add_argument("--out_dir", required=True, type=str,
                         help="Output directory for priors")
     parser.add_argument("--num_classes", type=int, default=87,
