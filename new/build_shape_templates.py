@@ -13,6 +13,12 @@ import numpy as np
 import torch
 from scipy.ndimage import distance_transform_edt
 
+try:
+    from tqdm import tqdm
+except ImportError:  # pragma: no cover - tqdm is optional
+    tqdm = None  # type: ignore
+
+
 LABEL_KEYS = (
     "label",
     "label_path",
@@ -188,32 +194,60 @@ def _compute_signed_distance(mask: np.ndarray, spacing: Tuple[float, float, floa
     return inside - outside
 
 
-def _accumulate(age_bin: int,
-                sdf_stack: np.ndarray,
-                stats: Dict[int, Dict[str, np.ndarray]]) -> None:
-    bucket = stats.setdefault(age_bin, {})
-    if "count" not in bucket:
-        bucket["count"] = np.array(1, dtype=np.int64)
-        bucket["mean"] = sdf_stack.astype(np.float32)
-        bucket["m2"] = np.zeros_like(bucket["mean"], dtype=np.float32)
-    else:
-        bucket["count"] += 1
-        delta = sdf_stack - bucket["mean"]
-        bucket["mean"] += delta / bucket["count"]
-        bucket["m2"] += delta * (sdf_stack - bucket["mean"])
+def _ensure_bucket(stats: Dict[int, Dict[str, np.ndarray]],
+                   age_bin: int,
+                   num_classes: int,
+                   volume_shape: Tuple[int, ...],
+                   dtype: np.dtype = np.float32) -> Dict[str, np.ndarray]:
+    bucket = stats.get(age_bin)
+    if bucket is None:
+        bucket = {
+            "count": 0,
+            "mean": np.zeros((num_classes, *volume_shape), dtype=dtype),
+            "m2": np.zeros((num_classes, *volume_shape), dtype=np.float32),
+        }
+        stats[age_bin] = bucket
+    return bucket
+
+
+def _update_bucket(bucket: Dict[str, np.ndarray],
+                   cls_index: int,
+                   sdf: np.ndarray,
+                   count: int) -> None:
+    mean = bucket["mean"][cls_index]
+    m2 = bucket["m2"][cls_index]
+
+    delta = sdf - mean
+    mean += delta / count
+    m2 += delta * (sdf - mean)
+
 
 
 def build_shape_templates(split_paths: Iterable[str],
                           output_path: str,
                           num_classes: int,
                           age_bin_width: float,
-                          data_root: Optional[str] = None) -> Dict[str, torch.Tensor]:
+                          data_root: Optional[str] = None,
+                          progress: bool = True) -> Dict[str, torch.Tensor]:
     stats: Dict[int, Dict[str, np.ndarray]] = {}
     reference_shape: Optional[Tuple[int, ...]] = None
 
-    for label_path, age in _iter_samples(split_paths, data_root=data_root):
+    samples = list(_iter_samples(split_paths, data_root=data_root))
+    if not samples:
+        raise RuntimeError("No samples found in provided split files.")
+
+    iterator = samples
+    if progress and tqdm is not None:
+        iterator = tqdm(samples, desc="Accumulating SDTs", unit="label")
+
+    zero_sdf_cache: Dict[Tuple[int, ...], np.ndarray] = {}
+
+    for label_path, age in iterator:
         if not os.path.exists(label_path):
-            print(f"⚠️  Skipping missing label: {label_path}")
+            if tqdm is not None:
+                tqdm.write(f"⚠️  Skipping missing label: {label_path}")
+            else:
+                print(f"⚠️  Skipping missing label: {label_path}")
             continue
 
         label_img = nib.load(label_path)
@@ -227,19 +261,24 @@ def build_shape_templates(split_paths: Iterable[str],
                 f"All labels must share the same shape. Got {label.shape} vs {reference_shape} from {label_path}."
             )
 
-        sdf_stack = np.zeros((num_classes, *label.shape), dtype=np.float32)
+        age_bin = -1 if age is None else int(math.floor(age / age_bin_width) * age_bin_width)
+        bucket = _ensure_bucket(stats, age_bin, num_classes, label.shape)
+        bucket["count"] += 1
+        count = bucket["count"]
+
+        zero_key = label.shape
+        zero_sdf = zero_sdf_cache.get(zero_key)
+        if zero_sdf is None:
+            zero_sdf = np.zeros(label.shape, dtype=np.float32)
+            zero_sdf_cache[zero_key] = zero_sdf
+
         for cls in range(1, num_classes + 1):
             mask = label == cls
             if np.any(mask):
-                sdf_stack[cls - 1] = _compute_signed_distance(mask, spacing)
+                sdf = _compute_signed_distance(mask, spacing).astype(np.float32, copy=False)
             else:
-                sdf_stack[cls - 1] = 0.0
-
-        if age is None:
-            age_bin = -1
-        else:
-            age_bin = int(math.floor(age / age_bin_width) * age_bin_width)
-        _accumulate(age_bin, sdf_stack, stats)
+                sdf = zero_sdf
+            _update_bucket(bucket, cls - 1, sdf, count)
 
     if not stats:
         raise RuntimeError("No valid labels were processed; cannot build templates.")
@@ -249,9 +288,10 @@ def build_shape_templates(split_paths: Iterable[str],
 
     for age_bin, bucket in stats.items():
         mean = bucket["mean"]
-        count = bucket["count"].astype(np.float32)
+        count = float(bucket["count"])
         m2 = bucket["m2"]
-        std = np.sqrt(np.maximum(m2 / np.maximum(count - 1.0, 1.0), 0.0)).astype(np.float32)
+        denom = max(count - 1.0, 1.0)
+        std = np.sqrt(np.maximum(m2 / denom, 0.0)).astype(np.float32)
         key = "unknown_age" if age_bin < 0 else f"age_{age_bin:02d}w"
         templates[key] = torch.from_numpy(mean)
         stddevs[key] = torch.from_numpy(std)
@@ -283,6 +323,10 @@ def parse_args() -> argparse.Namespace:
         "--output", type=str, required=True,
         help="Destination .pt file to store the templates.",
     )
+    parser.add_argument(
+        "--no-progress", action="store_true",
+        help="Disable tqdm progress bar output.",
+    )
     return parser.parse_args()
 
 
@@ -294,6 +338,7 @@ def main() -> None:
         num_classes=args.num_classes,
         age_bin_width=args.age_bin_width,
         data_root=args.data_root,
+        progress=not args.no_progress,
     )
     print(f"✅ Saved shape templates for {len(payload['mean'])} age buckets to {args.output}")
 
