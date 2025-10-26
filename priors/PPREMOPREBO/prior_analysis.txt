@@ -1,0 +1,61 @@
+================================================================================
+ANATOMICAL PRIOR ANALYSIS REPORT
+================================================================================
+
+Data source: /datasets/work/hb-nhmrc-dhcp/work/liu275/PPREMOPREBO_split.json
+Number of samples: 250
+Number of classes: 87
+Foreground only: True
+Dilation iterations: 1
+Required threshold: 0.02
+Forbidden threshold: 0.0005
+
+ADJACENCY STATISTICS
+----------------------------------------
+Non-zero adjacencies: 2082
+Max adjacency probability: 0.8920
+Mean adjacency probability: 0.0418
+
+RESTRICTED MASK STATISTICS
+----------------------------------------
+Total possible edges: 7482
+Allowed edges: 1202 (16.1%)
+Restricted edges: 6280 (83.9%)
+Required edges enforced: 571
+Forbidden edges blocked: 6181
+Laterality pairs preserved: 0
+
+TOP 10 STRONGEST ADJACENCIES
+----------------------------------------
+1. Class 84 <-> Class 83: 0.8920 [✓]
+2. Class 65 <-> Class 22: 0.8566 [✓]
+3. Class 66 <-> Class 23: 0.8542 [✓]
+4. Class 80 <-> Class 37: 0.8494 [✓]
+5. Class 79 <-> Class 36: 0.8493 [✓]
+6. Class 86 <-> Class 42: 0.8287 [✓]
+7. Class 87 <-> Class 43: 0.8151 [✓]
+8. Class 82 <-> Class 39: 0.8012 [✓]
+9. Class 81 <-> Class 38: 0.7995 [✓]
+10. Class 53 <-> Class 7: 0.6402 [✓]
+
+CONNECTIVITY PATTERNS
+----------------------------------------
+Most connected classes:
+  Class 85: 21 connections
+  Class 49: 21 connections
+  Class 50: 19 connections
+  Class 48: 16 connections
+  Class 83: 12 connections
+
+Least connected classes:
+  Class 66: 4 connections
+  Class 87: 5 connections
+  Class 65: 5 connections
+  Class 86: 5 connections
+  Class 54: 5 connections
+
+RESTRICTED MASK IMPACT
+----------------------------------------
+Class with most edges removed: 86 (81 edges)
+Class with fewest edges removed: 83 (37 edges)
+Average edges removed per class: 72.2
