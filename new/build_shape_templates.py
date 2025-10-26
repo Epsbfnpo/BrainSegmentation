@@ -5,6 +5,9 @@ import json
 import math
 import os
 import re
+
+from concurrent.futures import ThreadPoolExecutor
+
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
@@ -17,6 +20,14 @@ try:
     from tqdm import tqdm
 except ImportError:  # pragma: no cover - tqdm is optional
     tqdm = None  # type: ignore
+
+
+try:  # pragma: no cover - optional GPU acceleration
+    import cupy as cp
+    from cupyx.scipy.ndimage import distance_transform_edt as cupy_distance_transform_edt
+except ImportError:  # pragma: no cover - cupy is optional
+    cp = None  # type: ignore
+    cupy_distance_transform_edt = None  # type: ignore
 
 
 LABEL_KEYS = (
@@ -188,10 +199,31 @@ def _iter_samples(split_paths: Iterable[str],
             yield label_path, _extract_age(sample)
 
 
-def _compute_signed_distance(mask: np.ndarray, spacing: Tuple[float, float, float]) -> np.ndarray:
+def _compute_signed_distance_cpu(mask: np.ndarray,
+                                 spacing: Tuple[float, float, float]) -> np.ndarray:
     inside = distance_transform_edt(mask, sampling=spacing)
     outside = distance_transform_edt(~mask, sampling=spacing)
-    return inside - outside
+    sdf = inside - outside
+    return sdf.astype(np.float32, copy=False)
+
+
+def _compute_signed_distance_gpu(cp_label,
+                                 spacing: Tuple[float, float, float],
+                                 cls: int) -> Optional[np.ndarray]:
+    if cp is None or cupy_distance_transform_edt is None:  # pragma: no cover - guarded at runtime
+        raise RuntimeError("CuPy is not available but CUDA device was requested.")
+
+    mask = cp.equal(cp_label, cls)
+    if not bool(cp.any(mask)):
+        return None
+
+    inside = cupy_distance_transform_edt(mask, sampling=spacing)
+    outside = cupy_distance_transform_edt(cp.logical_not(mask), sampling=spacing)
+    sdf = (inside - outside).astype(cp.float32)
+    result = cp.asnumpy(sdf)
+    cp.get_default_memory_pool().free_all_blocks()
+    return result
+
 
 
 def _ensure_bucket(stats: Dict[int, Dict[str, np.ndarray]],
@@ -203,24 +235,18 @@ def _ensure_bucket(stats: Dict[int, Dict[str, np.ndarray]],
     if bucket is None:
         bucket = {
             "count": 0,
-            "mean": np.zeros((num_classes, *volume_shape), dtype=dtype),
-            "m2": np.zeros((num_classes, *volume_shape), dtype=np.float32),
+            "sum": np.zeros((num_classes, *volume_shape), dtype=dtype),
+            "sum_sq": np.zeros((num_classes, *volume_shape), dtype=dtype),
         }
         stats[age_bin] = bucket
     return bucket
 
 
-def _update_bucket(bucket: Dict[str, np.ndarray],
-                   cls_index: int,
-                   sdf: np.ndarray,
-                   count: int) -> None:
-    mean = bucket["mean"][cls_index]
-    m2 = bucket["m2"][cls_index]
-
-    delta = sdf - mean
-    mean += delta / count
-    m2 += delta * (sdf - mean)
-
+def _accumulate_sdf(bucket: Dict[str, np.ndarray], cls_index: int, sdf: np.ndarray) -> None:
+    bucket_sum = bucket["sum"][cls_index]
+    bucket_sq = bucket["sum_sq"][cls_index]
+    bucket_sum += sdf
+    bucket_sq += sdf * sdf
 
 
 def build_shape_templates(split_paths: Iterable[str],
@@ -228,7 +254,9 @@ def build_shape_templates(split_paths: Iterable[str],
                           num_classes: int,
                           age_bin_width: float,
                           data_root: Optional[str] = None,
-                          progress: bool = True) -> Dict[str, torch.Tensor]:
+                          progress: bool = True,
+                          workers: int = 1,
+                          device: str = "cpu") -> Dict[str, torch.Tensor]:
     stats: Dict[int, Dict[str, np.ndarray]] = {}
     reference_shape: Optional[Tuple[int, ...]] = None
 
@@ -240,7 +268,13 @@ def build_shape_templates(split_paths: Iterable[str],
     if progress and tqdm is not None:
         iterator = tqdm(samples, desc="Accumulating SDTs", unit="label")
 
-    zero_sdf_cache: Dict[Tuple[int, ...], np.ndarray] = {}
+    device = device.lower()
+    if device not in {"cpu", "cuda"}:
+        raise ValueError("device must be either 'cpu' or 'cuda'")
+    if device == "cuda" and (cp is None or cupy_distance_transform_edt is None):
+        raise RuntimeError("CuPy is required for CUDA acceleration but is not installed.")
+
+    workers = max(1, int(workers)) if device == "cpu" else 1
 
     for label_path, age in iterator:
         if not os.path.exists(label_path):
@@ -264,21 +298,40 @@ def build_shape_templates(split_paths: Iterable[str],
         age_bin = -1 if age is None else int(math.floor(age / age_bin_width) * age_bin_width)
         bucket = _ensure_bucket(stats, age_bin, num_classes, label.shape)
         bucket["count"] += 1
-        count = bucket["count"]
+        present = np.unique(label)
+        present = present[(present >= 1) & (present <= num_classes)]
+        if not isinstance(present, np.ndarray):
+            present = np.asarray(present)
 
-        zero_key = label.shape
-        zero_sdf = zero_sdf_cache.get(zero_key)
-        if zero_sdf is None:
-            zero_sdf = np.zeros(label.shape, dtype=np.float32)
-            zero_sdf_cache[zero_key] = zero_sdf
+        if device == "cuda":
+            cp_label = cp.asarray(label)
+            for cls in present:
+                sdf = _compute_signed_distance_gpu(cp_label, spacing, int(cls))
+                if sdf is None:
+                    continue
+                _accumulate_sdf(bucket, int(cls) - 1, sdf)
+            cp.get_default_memory_pool().free_all_blocks()
+        else:
+            def _cpu_job(cls_id: int) -> Tuple[int, Optional[np.ndarray]]:
+                cls_mask = label == cls_id
+                if not np.any(cls_mask):
+                    return cls_id, None
+                sdf_local = _compute_signed_distance_cpu(cls_mask, spacing)
+                return cls_id, sdf_local
 
-        for cls in range(1, num_classes + 1):
-            mask = label == cls
-            if np.any(mask):
-                sdf = _compute_signed_distance(mask, spacing).astype(np.float32, copy=False)
+            if workers > 1 and present.size > 1:
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    for cls_id, sdf in pool.map(_cpu_job, [int(c) for c in present]):
+                        if sdf is None:
+                            continue
+                        _accumulate_sdf(bucket, cls_id - 1, sdf)
             else:
-                sdf = zero_sdf
-            _update_bucket(bucket, cls - 1, sdf, count)
+                for cls in present:
+                    cls_mask = label == int(cls)
+                    if not np.any(cls_mask):
+                        continue
+                    sdf = _compute_signed_distance_cpu(cls_mask, spacing)
+                    _accumulate_sdf(bucket, int(cls) - 1, sdf)
 
     if not stats:
         raise RuntimeError("No valid labels were processed; cannot build templates.")
@@ -287,13 +340,14 @@ def build_shape_templates(split_paths: Iterable[str],
     stddevs: Dict[str, torch.Tensor] = {}
 
     for age_bin, bucket in stats.items():
-        mean = bucket["mean"]
         count = float(bucket["count"])
-        m2 = bucket["m2"]
-        denom = max(count - 1.0, 1.0)
-        std = np.sqrt(np.maximum(m2 / denom, 0.0)).astype(np.float32)
+        sum_sdf = bucket["sum"]
+        sum_sq = bucket["sum_sq"]
+        mean = sum_sdf / count
+        var = np.maximum(sum_sq / count - mean ** 2, 0.0)
+        std = np.sqrt(var, dtype=np.float32).astype(np.float32, copy=False)
         key = "unknown_age" if age_bin < 0 else f"age_{age_bin:02d}w"
-        templates[key] = torch.from_numpy(mean)
+        templates[key] = torch.from_numpy(mean.astype(np.float32, copy=False))
         stddevs[key] = torch.from_numpy(std)
 
     payload = {"mean": templates, "std": stddevs, "num_classes": num_classes}
@@ -327,6 +381,14 @@ def parse_args() -> argparse.Namespace:
         "--no-progress", action="store_true",
         help="Disable tqdm progress bar output.",
     )
+    parser.add_argument(
+        "--workers", type=int, default=1,
+        help="Number of parallel CPU workers per volume (only for CPU backend).",
+    )
+    parser.add_argument(
+        "--device", type=str, default="cpu", choices=["cpu", "cuda"],
+        help="Execution device for distance transforms (default: cpu).",
+    )
     return parser.parse_args()
 
 
@@ -339,6 +401,8 @@ def main() -> None:
         age_bin_width=args.age_bin_width,
         data_root=args.data_root,
         progress=not args.no_progress,
+        workers=args.workers,
+        device=args.device,
     )
     print(f"✅ Saved shape templates for {len(payload['mean'])} age buckets to {args.output}")
 
