@@ -39,6 +39,12 @@ from dice_monitor import DiceMonitor
 from graph_prior_loss import AgeConditionedGraphPriorLoss
 
 
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, os.pardir))
+_DEFAULT_SOURCE_PRIOR = os.path.join(_REPO_ROOT, "dHCP_class_prior_foreground.json")
+_DEFAULT_TARGET_PRIOR = os.path.join(_REPO_ROOT, "PPREMOPREBO_class_prior_foreground.json")
+
+
 def is_dist():
     """Check if distributed training is enabled"""
     return int(os.environ.get("WORLD_SIZE", "1")) > 1
@@ -637,9 +643,14 @@ def main():
 
         # Set default class prior paths if not provided
         if args.target_prior_json is None:
-            args.target_prior_json = "/datasets/work/hb-nhmrc-dhcp/work/liu275/PPREMOPREBO_class_prior_standard.json"
+            args.target_prior_json = _DEFAULT_TARGET_PRIOR
         if args.source_prior_json is None:
-            args.source_prior_json = "/datasets/work/hb-nhmrc-dhcp/work/liu275/dHCP_class_prior_standard.json"
+            args.source_prior_json = _DEFAULT_SOURCE_PRIOR
+
+        if is_main:
+            for label, path in (("target", args.target_prior_json), ("source", args.source_prior_json)):
+                if not os.path.exists(path):
+                    print(f"⚠️  Default {label} class prior not found at {path}")
 
         # Enable H100 optimizations
         if args.use_amp:
