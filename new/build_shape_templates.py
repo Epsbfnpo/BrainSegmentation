@@ -18,6 +18,7 @@ try:
 except ImportError:  # pragma: no cover - tqdm is optional
     tqdm = None  # type: ignore
 
+
 LABEL_KEYS = (
     "label",
     "label_path",
@@ -219,6 +220,7 @@ def _update_bucket(bucket: Dict[str, np.ndarray],
     delta = sdf - mean
     mean += delta / count
     m2 += delta * (sdf - mean)
+
 
 
 def build_shape_templates(split_paths: Iterable[str],
