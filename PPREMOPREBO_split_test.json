@@ -1,0 +1,212 @@
+{
+  "testing": [
+    {
+      "image": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PPREMO_dHCPpipeline/data/extra/bt30/derivatives/sub-bt30/ses-42w/anat/sub-bt30_ses-42w_T2w.nii.gz",
+      "label": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PPREMO_dHCPpipeline/data/extra/bt30/derivatives/sub-bt30/ses-42w/anat/sub-bt30_ses-42w_drawem_all_labels.nii.gz",
+      "metadata": {
+        "subject_id": "bt30",
+        "scan_age": 42.0
+      }
+    },
+    {
+      "image": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PPREMO_dHCPpipeline/data/p006/derivatives/sub-p006/ses-30w/anat/sub-p006_ses-30w_T2w.nii.gz",
+      "label": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PPREMO_dHCPpipeline/data/p006/derivatives/sub-p006/ses-30w/anat/sub-p006_ses-30w_drawem_all_labels.nii.gz",
+      "metadata": {
+        "subject_id": "p006",
+        "scan_age": 30.0
+      }
+    },
+    {
+      "image": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PPREMO_dHCPpipeline/data/p006/derivatives/sub-p006/ses-40w/anat/sub-p006_ses-40w_T2w.nii.gz",
+      "label": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PPREMO_dHCPpipeline/data/p006/derivatives/sub-p006/ses-40w/anat/sub-p006_ses-40w_drawem_all_labels.nii.gz",
+      "metadata": {
+        "subject_id": "p006",
+        "scan_age": 40.0
+      }
+    },
+    {
+      "image": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PPREMO_dHCPpipeline/data/p017/derivatives/sub-p017/ses-30w/anat/sub-p017_ses-30w_T2w.nii.gz",
+      "label": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PPREMO_dHCPpipeline/data/p017/derivatives/sub-p017/ses-30w/anat/sub-p017_ses-30w_drawem_all_labels.nii.gz",
+      "metadata": {
+        "subject_id": "p017",
+        "scan_age": 30.0
+      }
+    },
+    {
+      "image": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PPREMO_dHCPpipeline/data/p017/derivatives/sub-p017/ses-40w/anat/sub-p017_ses-40w_T2w.nii.gz",
+      "label": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PPREMO_dHCPpipeline/data/p017/derivatives/sub-p017/ses-40w/anat/sub-p017_ses-40w_drawem_all_labels.nii.gz",
+      "metadata": {
+        "subject_id": "p017",
+        "scan_age": 40.0
+      }
+    },
+    {
+      "image": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PPREMO_dHCPpipeline/data/p028/derivatives/sub-p028/ses-30w/anat/sub-p028_ses-30w_T2w.nii.gz",
+      "label": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PPREMO_dHCPpipeline/data/p028/derivatives/sub-p028/ses-30w/anat/sub-p028_ses-30w_drawem_all_labels.nii.gz",
+      "metadata": {
+        "subject_id": "p028",
+        "scan_age": 30.0
+      }
+    },
+    {
+      "image": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PPREMO_dHCPpipeline/data/p028/derivatives/sub-p028/ses-40w/anat/sub-p028_ses-40w_T2w.nii.gz",
+      "label": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PPREMO_dHCPpipeline/data/p028/derivatives/sub-p028/ses-40w/anat/sub-p028_ses-40w_drawem_all_labels.nii.gz",
+      "metadata": {
+        "subject_id": "p028",
+        "scan_age": 40.0
+      }
+    },
+    {
+      "image": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PPREMO_dHCPpipeline/data/p072/workdir/p072-30w/T2/p072-30w.nii.gz",
+      "label": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PPREMO_dHCPpipeline/data/p072/workdir/p072-30w/segmentations/p072-30w_all_labels.nii.gz",
+      "metadata": {
+        "subject_id": "p072",
+        "scan_age": 30.0
+      }
+    },
+    {
+      "image": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PPREMO_dHCPpipeline/data/p076/derivatives/sub-p076/ses-40w/anat/sub-p076_ses-40w_T2w.nii.gz",
+      "label": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PPREMO_dHCPpipeline/data/p076/derivatives/sub-p076/ses-40w/anat/sub-p076_ses-40w_drawem_all_labels.nii.gz",
+      "metadata": {
+        "subject_id": "p076",
+        "scan_age": 40.0
+      }
+    },
+    {
+      "image": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PPREMO_dHCPpipeline/data/p104/derivatives/sub-p104/ses-30w/anat/sub-p104_ses-30w_T2w.nii.gz",
+      "label": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PPREMO_dHCPpipeline/data/p104/derivatives/sub-p104/ses-30w/anat/sub-p104_ses-30w_drawem_all_labels.nii.gz",
+      "metadata": {
+        "subject_id": "p104",
+        "scan_age": 30.0
+      }
+    },
+    {
+      "image": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PPREMO_dHCPpipeline/data/p104/derivatives/sub-p104/ses-40w/anat/sub-p104_ses-40w_T2w.nii.gz",
+      "label": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PPREMO_dHCPpipeline/data/p104/derivatives/sub-p104/ses-40w/anat/sub-p104_ses-40w_drawem_all_labels.nii.gz",
+      "metadata": {
+        "subject_id": "p104",
+        "scan_age": 40.0
+      }
+    },
+    {
+      "image": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PPREMO_dHCPpipeline/data/p113/derivatives/sub-p113/ses-30w/anat/sub-p113_ses-30w_T2w.nii.gz",
+      "label": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PPREMO_dHCPpipeline/data/p113/derivatives/sub-p113/ses-30w/anat/sub-p113_ses-30w_drawem_all_labels.nii.gz",
+      "metadata": {
+        "subject_id": "p113",
+        "scan_age": 30.0
+      }
+    },
+    {
+      "image": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PPREMO_dHCPpipeline/data/p113/derivatives/sub-p113/ses-40w/anat/sub-p113_ses-40w_T2w.nii.gz",
+      "label": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PPREMO_dHCPpipeline/data/p113/derivatives/sub-p113/ses-40w/anat/sub-p113_ses-40w_drawem_all_labels.nii.gz",
+      "metadata": {
+        "subject_id": "p113",
+        "scan_age": 40.0
+      }
+    },
+    {
+      "image": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PPREMO_dHCPpipeline/data/p114/derivatives/sub-p114/ses-30w/anat/sub-p114_ses-30w_T2w.nii.gz",
+      "label": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PPREMO_dHCPpipeline/data/p114/derivatives/sub-p114/ses-30w/anat/sub-p114_ses-30w_drawem_all_labels.nii.gz",
+      "metadata": {
+        "subject_id": "p114",
+        "scan_age": 30.0
+      }
+    },
+    {
+      "image": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PPREMO_dHCPpipeline/data/p114/derivatives/sub-p114/ses-40w/anat/sub-p114_ses-40w_T2w.nii.gz",
+      "label": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PPREMO_dHCPpipeline/data/p114/derivatives/sub-p114/ses-40w/anat/sub-p114_ses-40w_drawem_all_labels.nii.gz",
+      "metadata": {
+        "subject_id": "p114",
+        "scan_age": 40.0
+      }
+    },
+    {
+      "image": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PREBO_dHCPpipeline_archive/bp168/derivatives/sub-bp168/ses-30w/anat/sub-bp168_ses-30w_T2w.nii.gz",
+      "label": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PREBO_dHCPpipeline_archive/bp168/derivatives/sub-bp168/ses-30w/anat/sub-bp168_ses-30w_drawem_all_labels.nii.gz",
+      "metadata": {
+        "subject_id": "bp168",
+        "scan_age": 30.0
+      }
+    },
+    {
+      "image": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PREBO_dHCPpipeline_archive/bp168/derivatives/sub-bp168/ses-40w/anat/sub-bp168_ses-40w_T2w.nii.gz",
+      "label": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PREBO_dHCPpipeline_archive/bp168/derivatives/sub-bp168/ses-40w/anat/sub-bp168_ses-40w_drawem_all_labels.nii.gz",
+      "metadata": {
+        "subject_id": "bp168",
+        "scan_age": 40.0
+      }
+    },
+    {
+      "image": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PREBO_dHCPpipeline_archive/bp183/derivatives/sub-bp183/ses-30w/anat/sub-bp183_ses-30w_T2w.nii.gz",
+      "label": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PREBO_dHCPpipeline_archive/bp183/derivatives/sub-bp183/ses-30w/anat/sub-bp183_ses-30w_drawem_all_labels.nii.gz",
+      "metadata": {
+        "subject_id": "bp183",
+        "scan_age": 30.0
+      }
+    },
+    {
+      "image": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PREBO_dHCPpipeline_archive/bp183/derivatives/sub-bp183/ses-40w/anat/sub-bp183_ses-40w_T2w.nii.gz",
+      "label": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PREBO_dHCPpipeline_archive/bp183/derivatives/sub-bp183/ses-40w/anat/sub-bp183_ses-40w_drawem_all_labels.nii.gz",
+      "metadata": {
+        "subject_id": "bp183",
+        "scan_age": 40.0
+      }
+    },
+    {
+      "image": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PREBO_dHCPpipeline_archive/bp190/original/workdir/bp190-30w/T2/bp190-30w.nii.gz",
+      "label": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PREBO_dHCPpipeline_archive/bp190/original/workdir/sub-bp190/workdir/bp190-30w/segmentations/bp190-30w_all_labels.nii.gz",
+      "metadata": {
+        "subject_id": "bp190",
+        "scan_age": 30.0
+      }
+    },
+    {
+      "image": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PREBO_dHCPpipeline_archive/bp190/derivatives/sub-bp190/ses-40w/anat/sub-bp190_ses-40w_T2w.nii.gz",
+      "label": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PREBO_dHCPpipeline_archive/bp190/derivatives/sub-bp190/ses-40w/anat/sub-bp190_ses-40w_drawem_all_labels.nii.gz",
+      "metadata": {
+        "subject_id": "bp190",
+        "scan_age": 40.0
+      }
+    },
+    {
+      "image": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PREBO_dHCPpipeline_archive/bp222/original/derivatives/sub-bp222/ses-30w/anat/sub-bp222_ses-30w_T2w.nii.gz",
+      "label": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PREBO_dHCPpipeline_archive/bp222/original/derivatives/sub-bp222/ses-30w/anat/sub-bp222_ses-30w_drawem_all_labels.nii.gz",
+      "metadata": {
+        "subject_id": "bp222",
+        "scan_age": 30.0
+      }
+    },
+    {
+      "image": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PREBO_dHCPpipeline_archive/bp238/derivatives/sub-bp238/ses-30w/anat/sub-bp238_ses-30w_T2w.nii.gz",
+      "label": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PREBO_dHCPpipeline_archive/bp238/derivatives/sub-bp238/ses-30w/anat/sub-bp238_ses-30w_drawem_all_labels.nii.gz",
+      "metadata": {
+        "subject_id": "bp238",
+        "scan_age": 30.0
+      }
+    },
+    {
+      "image": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PREBO_dHCPpipeline_archive/bp257/original/derivatives/sub-bp257/ses-40w/anat/sub-bp257_ses-40w_T2w.nii.gz",
+      "label": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PREBO_dHCPpipeline_archive/bp257/original/derivatives/sub-bp257/ses-40w/anat/sub-bp257_ses-40w_drawem_all_labels.nii.gz",
+      "metadata": {
+        "subject_id": "bp257",
+        "scan_age": 40.0
+      }
+    },
+    {
+      "image": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PREBO_dHCPpipeline_archive/bp268/derivatives/sub-bp268/ses-30w/anat/sub-bp268_ses-30w_T2w.nii.gz",
+      "label": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PREBO_dHCPpipeline_archive/bp268/derivatives/sub-bp268/ses-30w/anat/sub-bp268_ses-30w_drawem_all_labels.nii.gz",
+      "metadata": {
+        "subject_id": "bp268",
+        "scan_age": 30.0
+      }
+    },
+    {
+      "image": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PREBO_dHCPpipeline_archive/bp281/derivatives/sub-bp281/ses-40w/anat/sub-bp281_ses-40w_T2w.nii.gz",
+      "label": "/datasets/work/hb-prebo6/reference/STRUCTURAL/neonate/CDC_Liza/PREBO_dHCPpipeline_archive/bp281/derivatives/sub-bp281/ses-40w/anat/sub-bp281_ses-40w_drawem_all_labels.nii.gz",
+      "metadata": {
+        "subject_id": "bp281",
+        "scan_age": 40.0
+      }
+    }
+  ]
+}

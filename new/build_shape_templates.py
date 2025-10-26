@@ -5,7 +5,9 @@ import json
 import math
 import os
 import re
+
 from concurrent.futures import ThreadPoolExecutor
+
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
@@ -19,12 +21,14 @@ try:
 except ImportError:  # pragma: no cover - tqdm is optional
     tqdm = None  # type: ignore
 
+
 try:  # pragma: no cover - optional GPU acceleration
     import cupy as cp
     from cupyx.scipy.ndimage import distance_transform_edt as cupy_distance_transform_edt
 except ImportError:  # pragma: no cover - cupy is optional
     cp = None  # type: ignore
     cupy_distance_transform_edt = None  # type: ignore
+
 
 LABEL_KEYS = (
     "label",
@@ -219,6 +223,7 @@ def _compute_signed_distance_gpu(cp_label,
     result = cp.asnumpy(sdf)
     cp.get_default_memory_pool().free_all_blocks()
     return result
+
 
 
 def _ensure_bucket(stats: Dict[int, Dict[str, np.ndarray]],
