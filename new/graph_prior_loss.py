@@ -875,10 +875,8 @@ class AgeConditionedGraphPriorLoss(nn.Module):
         # If a dominant background channel is detected we disable prior terms to avoid
         # enforcing incorrect constraints (old priors were generated before foreground
         # remapping). Users should rebuild priors with the updated script.
-        if background_idx is not None:
-            self._prior_alignment_ok = False
-        else:
-            self._prior_alignment_ok = True
+        # 无论是否检测到背景通道，都保持先验有效；若存在背景通道则仅剔除该通道
+        self._prior_alignment_ok = True
 
         if mask_np is None or mask_np.size == 0:
             mask_tensor = torch.ones(num_classes, dtype=torch.float32)
@@ -898,7 +896,7 @@ class AgeConditionedGraphPriorLoss(nn.Module):
             and ((not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0)
         ):
             print(
-                f"[GraphPrior] Volume prior alignment: removed channel {background_idx} from priors "
+                f"[GraphPrior] Volume prior alignment: removed dominant channel {background_idx} from priors "
                 f"and matched statistics to {num_classes} model classes"
             )
             self._volume_alignment_logged = True
