@@ -5,22 +5,19 @@ import json
 import math
 import os
 import re
-
 from concurrent.futures import ThreadPoolExecutor
-
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
 import nibabel as nib
 import numpy as np
 import torch
-from scipy.ndimage import distance_transform_edt
+from scipy.ndimage import distance_transform_edt, zoom
 
 try:
     from tqdm import tqdm
 except ImportError:  # pragma: no cover - tqdm is optional
     tqdm = None  # type: ignore
-
 
 try:  # pragma: no cover - optional GPU acceleration
     import cupy as cp
@@ -28,7 +25,6 @@ try:  # pragma: no cover - optional GPU acceleration
 except ImportError:  # pragma: no cover - cupy is optional
     cp = None  # type: ignore
     cupy_distance_transform_edt = None  # type: ignore
-
 
 LABEL_KEYS = (
     "label",
@@ -225,7 +221,6 @@ def _compute_signed_distance_gpu(cp_label,
     return result
 
 
-
 def _ensure_bucket(stats: Dict[int, Dict[str, np.ndarray]],
                    age_bin: int,
                    num_classes: int,
@@ -249,6 +244,42 @@ def _accumulate_sdf(bucket: Dict[str, np.ndarray], cls_index: int, sdf: np.ndarr
     bucket_sq += sdf * sdf
 
 
+def _resample_label_to_shape(label: np.ndarray,
+                             target_shape: Tuple[int, int, int]) -> np.ndarray:
+    if label.shape == target_shape:
+        return label
+
+    zoom_factors = tuple(t / float(s) for t, s in zip(target_shape, label.shape))
+    resampled = zoom(
+        label.astype(np.float32, copy=False),
+        zoom=zoom_factors,
+        order=0,
+        mode="nearest",
+    )
+    return resampled.astype(np.int32, copy=False)
+
+
+def _adjust_spacing(spacing: Tuple[float, float, float],
+                    original_shape: Tuple[int, int, int],
+                    target_shape: Tuple[int, int, int]) -> Tuple[float, float, float]:
+    if original_shape == target_shape:
+        return spacing
+    physical = np.array(spacing) * np.array(original_shape)
+    adjusted = physical / np.array(target_shape)
+    return tuple(float(v) for v in adjusted)
+
+
+def _parse_shape_arg(shape: Optional[str]) -> Optional[Tuple[int, int, int]]:
+    if not shape:
+        return None
+    parts = [p.strip() for p in re.split(r"[xX,]", shape) if p.strip()]
+    if len(parts) != 3:
+        raise ValueError(
+            "--target-shape must specify exactly three integers separated by 'x' or ','"
+        )
+    return tuple(int(p) for p in parts)
+
+
 def build_shape_templates(split_paths: Iterable[str],
                           output_path: str,
                           num_classes: int,
@@ -256,9 +287,10 @@ def build_shape_templates(split_paths: Iterable[str],
                           data_root: Optional[str] = None,
                           progress: bool = True,
                           workers: int = 1,
-                          device: str = "cpu") -> Dict[str, torch.Tensor]:
+                          device: str = "cpu",
+                          target_shape: Optional[Tuple[int, int, int]] = None) -> Dict[str, torch.Tensor]:
     stats: Dict[int, Dict[str, np.ndarray]] = {}
-    reference_shape: Optional[Tuple[int, ...]] = None
+    reference_shape: Optional[Tuple[int, int, int]] = tuple(target_shape) if target_shape else None
 
     samples = list(_iter_samples(split_paths, data_root=data_root))
     if not samples:
@@ -287,16 +319,16 @@ def build_shape_templates(split_paths: Iterable[str],
         label_img = nib.load(label_path)
         label = label_img.get_fdata().astype(np.int32)
         spacing = tuple(float(v) for v in label_img.header.get_zooms()[:3])
+        original_shape = tuple(int(x) for x in label.shape)
 
         if reference_shape is None:
-            reference_shape = label.shape
-        elif label.shape != reference_shape:
-            raise ValueError(
-                f"All labels must share the same shape. Got {label.shape} vs {reference_shape} from {label_path}."
-            )
+            reference_shape = original_shape
+        if original_shape != reference_shape:
+            label = _resample_label_to_shape(label, reference_shape)
+            spacing = _adjust_spacing(spacing, original_shape, reference_shape)
 
         age_bin = -1 if age is None else int(math.floor(age / age_bin_width) * age_bin_width)
-        bucket = _ensure_bucket(stats, age_bin, num_classes, label.shape)
+        bucket = _ensure_bucket(stats, age_bin, num_classes, reference_shape)
         bucket["count"] += 1
         present = np.unique(label)
         present = present[(present >= 1) & (present <= num_classes)]
@@ -389,11 +421,16 @@ def parse_args() -> argparse.Namespace:
         "--device", type=str, default="cpu", choices=["cpu", "cuda"],
         help="Execution device for distance transforms (default: cpu).",
     )
+    parser.add_argument(
+        "--target-shape", type=str, default=None,
+        help="Optional 'XxYxZ' shape to which all labels will be resampled before computing SDTs.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    target_shape = _parse_shape_arg(args.target_shape)
     payload = build_shape_templates(
         split_paths=args.splits,
         output_path=args.output,
@@ -403,6 +440,7 @@ def main() -> None:
         progress=not args.no_progress,
         workers=args.workers,
         device=args.device,
+        target_shape=target_shape,
     )
     print(f"✅ Saved shape templates for {len(payload['mean'])} age buckets to {args.output}")
 
