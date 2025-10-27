@@ -3,6 +3,10 @@
 # Aligns target domain predictions to source domain graph structure
 # WITH AUTO-RESUME SUPPORT AND SMART TIME MANAGEMENT
 
+# Paths relative to this repository
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
 # Configuration
 RESULTS_DIR="/datasets/work/hb-nhmrc-dhcp/work/liu275/new/results"
 BATCH_SIZE=2
@@ -14,7 +18,10 @@ JOB_TIME_LIMIT=115  # 115 minutes for 2-hour jobs (leaving 5 min buffer)
 TIME_BUFFER=10      # 10 minutes buffer before job ends (extra safety)
 
 # Laterality pairs JSON file path
-LATERALITY_PAIRS_JSON="/datasets/work/hb-nhmrc-dhcp/work/liu275/new/dhcp_lr_swap.json"
+LATERALITY_PAIRS_JSON="${SCRIPT_DIR}/dhcp_lr_swap.json"
+
+SOURCE_CLASS_PRIOR="${REPO_ROOT}/dHCP_class_prior_foreground.json"
+TARGET_CLASS_PRIOR="${REPO_ROOT}/PPREMOPREBO_class_prior_foreground.json"
 
 # ========== TARGET DOMAIN GRAPH PRIORS ==========
 TARGET_PRIORS_DIR="/datasets/work/hb-nhmrc-dhcp/work/liu275/new/priors/PPREMOPREBO"
@@ -332,8 +339,8 @@ torchrun --standalone --nproc_per_node=$NUM_GPUS train_graphalign_age.py \
     --pretrained_model=/datasets/work/hb-nhmrc-dhcp/work/liu275/Tuning/results_fixed/dHCP_registered_fixed/best_model.pth \
     --source_split_json=/scratch3/liu275/Data/dHCP/dHCP_split.json \
     --split_json=/datasets/work/hb-nhmrc-dhcp/work/liu275/PPREMOPREBO_split.json \
-    --target_prior_json=/datasets/work/hb-nhmrc-dhcp/work/liu275/PPREMOPREBO_class_prior_standard.json \
-    --source_prior_json=/datasets/work/hb-nhmrc-dhcp/work/liu275/dHCP_class_prior_standard.json \
+    --target_prior_json="$TARGET_CLASS_PRIOR" \
+    --source_prior_json="$SOURCE_CLASS_PRIOR" \
     --target_spacing 0.5 0.5 0.5 \
     --apply_spacing \
     --apply_orientation \
