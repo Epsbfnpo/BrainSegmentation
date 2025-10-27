@@ -367,20 +367,43 @@ class SimplifiedDAUnetModule(nn.Module):
                 if is_main:
                     print(f"  ⚠️  Clamping labels from {max_label} to {self.num_classes - 1}")
                 valid_mask = source_labels >= 0
-                source_labels = torch.where(valid_mask, torch.clamp(source_labels, min=0, max=self.num_classes - 1),
-                                            source_labels)
+                source_labels = torch.where(
+                    valid_mask,
+                    torch.clamp(source_labels, min=0, max=self.num_classes - 1),
+                    source_labels,
+                )
             if debug_active and step not in self._debug_logged_steps:
-                print(f"\n🐞 [SimplifiedDAUnet][Step {step}] Input diagnostics")
-                print(f"  Source images shape: {tuple(source_images.shape)}, dtype={source_images.dtype}")
-                print(f"  Source labels shape: {tuple(source_labels.shape)}, dtype={source_labels.dtype}")
-                print(f"  Unique labels (after clamp): count={len(unique_labels)}, min={min_label}, max={max_label}")
                 neg_count = int((source_labels == -1).sum().item())
-                print(f"  Ignored voxels (-1): {neg_count}")
                 img_view = source_images.detach()
-                print(f"  Image stats: min={img_view.min():.4f}, max={img_view.max():.4f}, mean={img_view.mean():.4f}, std={img_view.std():.4f}")
+                msg = (
+                    "\n🐞 [SimplifiedDAUnet][Step {step}] Input diagnostics\n"
+                    "  Images: shape={img_shape}, dtype={img_dtype}, min={img_min:.4f}, max={img_max:.4f}, "
+                    "mean={img_mean:.4f}, std={img_std:.4f}\n"
+                    "  Labels: shape={lbl_shape}, dtype={lbl_dtype}, unique={uniq_cnt}, "
+                    "range=[{lbl_min}, {lbl_max}], ignored(-1)={neg_cnt}"
+                ).format(
+                    step=step,
+                    img_shape=tuple(source_images.shape),
+                    img_dtype=source_images.dtype,
+                    img_min=img_view.min(),
+                    img_max=img_view.max(),
+                    img_mean=img_view.mean(),
+                    img_std=img_view.std(),
+                    lbl_shape=tuple(source_labels.shape),
+                    lbl_dtype=source_labels.dtype,
+                    uniq_cnt=len(unique_labels),
+                    lbl_min=min_label,
+                    lbl_max=max_label,
+                    neg_cnt=neg_count,
+                )
+                print(msg)
                 if source_ages is not None:
                     ages_np = source_ages.detach().cpu().flatten()
-                    print(f"  Age stats: min={ages_np.min():.2f}, max={ages_np.max():.2f}, mean={ages_np.mean():.2f}")
+                    print(
+                        "  Ages: min={:.2f}, max={:.2f}, mean={:.2f}".format(
+                            ages_np.min(), ages_np.max(), ages_np.mean()
+                        )
+                    )
 
         if len(source_labels.shape) == 4:
             source_labels = source_labels.unsqueeze(1)
@@ -397,16 +420,24 @@ class SimplifiedDAUnetModule(nn.Module):
         if debug_active and step not in self._debug_logged_steps:
             with torch.no_grad():
                 logits = source_seg.detach()
-                print(f"  Logits stats: min={logits.min():.4f}, max={logits.max():.4f}, mean={logits.mean():.4f}, std={logits.std():.4f}")
+                print(
+                    "  Logits stats: min={:.4f}, max={:.4f}, mean={:.4f}, std={:.4f}".format(
+                        logits.min(), logits.max(), logits.mean(), logits.std()
+                    )
+                )
                 if torch.isnan(logits).any():
-                    print(f"  ⚠️  NaNs detected in logits! count={int(torch.isnan(logits).sum().item())}")
+                    print(
+                        f"  ⚠️  NaNs detected in logits! count={int(torch.isnan(logits).sum().item())}"
+                    )
                 probs = torch.softmax(logits, dim=1)
                 probs_sum = probs.sum(dim=(2, 3, 4))
-                row = probs_sum[0]
-                topk = torch.topk(row, k=min(5, row.numel()))
-                print(f"  Top-{topk.indices.numel()} class probability masses (sample 0):")
-                for idx in topk.indices.cpu().tolist():
-                    print(f"    Class {idx}: mass={row[idx].item():.5f}")
+                total_mass = probs_sum[0].sum().clamp(min=1e-6)
+                frac = probs_sum[0] / total_mass
+                topk = torch.topk(frac, k=min(5, frac.numel()))
+                top_entries = ", ".join(
+                    f"c{idx}={frac[idx].item():.4f}" for idx in topk.indices.cpu().tolist()
+                )
+                print(f"  Top-{topk.indices.numel()} predicted fractions (sample 0): {top_entries}")
 
         try:
             seg_loss_output = seg_criterion(source_seg, source_labels)
@@ -453,11 +484,30 @@ class SimplifiedDAUnetModule(nn.Module):
             # Get expected volumes given age
             expected_mean, expected_std = self.volume_predictor(source_ages)
 
-            # Compute volume loss (KL divergence style)
-            volume_loss = F.smooth_l1_loss(predicted_volumes, expected_mean)
-            losses['volume_loss'] = volume_loss * 0.1
+            volume_loss_raw = F.smooth_l1_loss(predicted_volumes, expected_mean)
+            losses['volume_loss'] = volume_loss_raw * 0.1
+
             if debug_active and step not in self._debug_logged_steps:
-                print(f"  Internal volume loss: {losses['volume_loss'].item():.6f}")
+                pv = predicted_volumes[0].detach()
+                ev = expected_mean[0].detach()
+                pv_total = float(pv.sum().item())
+                ev_total = float(ev.sum().item())
+                pv_frac = (pv / max(pv_total, 1e-6)).cpu().numpy()
+                ev_frac = (ev / max(ev_total, 1e-6)).cpu().numpy()
+                diff = pv_frac - ev_frac
+                top_diff_idx = np.argsort(np.abs(diff))[-5:][::-1]
+                diff_str = ", ".join(
+                    f"c{int(idx)}={diff[idx]:+.4f}" for idx in top_diff_idx
+                )
+                print(
+                    "  Internal volume diagnostics: total_pred={:.1f}, total_exp={:.1f}, raw_loss={:.2f}, scaled={:.2f}".format(
+                        pv_total,
+                        ev_total,
+                        volume_loss_raw.item(),
+                        losses['volume_loss'].item(),
+                    )
+                )
+                print(f"  Top fraction gaps (pred-exp): {diff_str}")
 
         # Total loss
         total_loss = seg_loss

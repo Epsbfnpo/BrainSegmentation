@@ -142,12 +142,13 @@ class RemapLabelsd(MapTransform):
                 print(f"  Original unique values: {len(unique_before)} values")
                 print(f"  Original range: [{unique_before.min()}, {unique_before.max()}]")
                 if len(unique_before) < 100:
-                    print(f"  Label distribution:")
-                    for val in unique_before[:10]:
+                    print(f"  Label distribution (first {min(5, len(unique_before))} shown):")
+                    top_n = min(5, len(unique_before))
+                    for val in unique_before[:top_n]:
                         count = (label_np == val).sum()
                         print(f"    Label {val}: {count} voxels")
-                    if len(unique_before) > 10:
-                        print(f"    ... and {len(unique_before) - 10} more labels")
+                    if len(unique_before) > top_n:
+                        print(f"    ... and {len(unique_before) - top_n} more labels")
             unique_before = np.unique(label_np)
             if unique_before.max() > 87 or unique_before.min() < 0:
                 if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
