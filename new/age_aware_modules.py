@@ -69,6 +69,68 @@ def prepare_class_ratios(prior_data: Dict,
     return class_ratios
 
 
+_FOREGROUND_ONLY_MODES = {"foreground_only", "foreground-only", "foreground"}
+
+
+def prepare_class_ratios(prior_data: Dict,
+                         expected_num_classes: int,
+                         foreground_only: bool,
+                         *,
+                         is_main: bool = False,
+                         context: str = "class prior") -> np.ndarray:
+    """Normalize class ratios from a prior file to match the label space.
+
+    This helper inspects the metadata stored in the prior JSON and removes or
+    injects the background entry when necessary.  It prevents accidental
+    off-by-one errors when a foreground-only prior (87 classes) is used with a
+    foreground-only training setup, while still supporting the older 88-class
+    priors that include background statistics.
+    """
+
+    class_ratios = np.asarray(prior_data.get("class_ratios", []), dtype=np.float64)
+    mode = str(prior_data.get("mode", "")).lower()
+    removed_background = False
+
+    if foreground_only:
+        # Drop the leading background bin only when the prior explicitly
+        # includes it.  New foreground-only priors already have 87 entries and
+        # should stay untouched.
+        if mode not in _FOREGROUND_ONLY_MODES and class_ratios.size > 0:
+            class_ratios = class_ratios[1:]
+            removed_background = True
+        elif class_ratios.size == expected_num_classes + 1:
+            class_ratios = class_ratios[1:]
+            removed_background = True
+    else:
+        # If we are training with background but the prior was generated in
+        # foreground-only mode, add a synthetic background bin so the tensor
+        # shapes remain consistent.
+        if mode in _FOREGROUND_ONLY_MODES:
+            background_ratio = prior_data.get("background_ratio")
+            if background_ratio is None:
+                background_ratio = max(0.0, 1.0 - class_ratios.sum())
+            class_ratios = np.concatenate(([background_ratio], class_ratios))
+
+    if class_ratios.size != expected_num_classes:
+        if class_ratios.size > expected_num_classes:
+            if is_main:
+                print(f"  ⚠️  {context}: trimming ratios from {class_ratios.size} to {expected_num_classes}")
+            class_ratios = class_ratios[:expected_num_classes]
+        else:
+            if is_main:
+                print(f"  ⚠️  {context}: padding ratios from {class_ratios.size} to {expected_num_classes}")
+            class_ratios = np.pad(class_ratios, (0, expected_num_classes - class_ratios.size), constant_values=0.0)
+
+    if removed_background and is_main and foreground_only:
+        print(f"  Detected and removed background entry to keep {expected_num_classes} foreground classes")
+
+    ratio_sum = class_ratios.sum()
+    if ratio_sum <= 0 and is_main:
+        print(f"  ⚠️  {context}: class ratio sum is {ratio_sum:.6f}. Please verify the prior file.")
+
+    return class_ratios
+
+
 class AgeConditionedModule(nn.Module):
     """Age conditioning module using FiLM (Feature-wise Linear Modulation)"""
 
