@@ -492,8 +492,12 @@ class SimplifiedDAUnetModule(nn.Module):
                 ev = expected_mean[0].detach()
                 pv_total = float(pv.sum().item())
                 ev_total = float(ev.sum().item())
-                pv_frac = (pv / max(pv_total, 1e-6)).cpu().numpy()
-                ev_frac = (ev / max(ev_total, 1e-6)).cpu().numpy()
+                pv_frac = (
+                    pv.float() / max(pv_total, 1e-6)
+                ).cpu().numpy()
+                ev_frac = (
+                    ev.float() / max(ev_total, 1e-6)
+                ).cpu().numpy()
                 diff = pv_frac - ev_frac
                 top_diff_idx = np.argsort(np.abs(diff))[-5:][::-1]
                 diff_str = ", ".join(
