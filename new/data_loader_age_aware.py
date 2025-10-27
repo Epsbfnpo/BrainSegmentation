@@ -15,6 +15,9 @@ import os
 import gc
 import nibabel as nib
 import warnings
+from typing import Optional
+
+from age_aware_modules import prepare_class_ratios
 
 warnings.filterwarnings('ignore')
 
@@ -304,13 +307,24 @@ def _load_lr_pairs(args):
 
 
 def get_weighted_ratios_for_small_classes(class_prior_path: str, num_small_classes: int = 20,
-                                          boost_factor: float = 2.0):
+                                          boost_factor: float = 2.0,
+                                          foreground_only: bool = True,
+                                          expected_num_classes: Optional[int] = None):
     if class_prior_path is None or not os.path.exists(class_prior_path):
         return None
     with open(class_prior_path, 'r') as f:
         prior_data = json.load(f)
-    class_ratios = np.array(prior_data['class_ratios'])
-    class_ratios = class_ratios[1:]
+    if expected_num_classes is None:
+        expected_num_classes = prior_data.get('num_classes')
+        if expected_num_classes is None:
+            expected_num_classes = 87 if foreground_only else 88
+    class_ratios = prepare_class_ratios(
+        prior_data,
+        expected_num_classes=expected_num_classes,
+        foreground_only=foreground_only,
+        is_main=(not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0),
+        context="Weighted sampling prior"
+    )
     epsilon = 1e-7
     weights = 1.0 / (class_ratios + epsilon)
     weights = weights / weights.mean()
@@ -384,7 +398,9 @@ def get_cache_transforms(args, is_registered=False):
         ratios = get_weighted_ratios_for_small_classes(
             args.target_prior_json,
             num_small_classes=getattr(args, 'num_small_classes_boost', 20),
-            boost_factor=getattr(args, 'small_class_boost_factor', 2.0)
+            boost_factor=getattr(args, 'small_class_boost_factor', 2.0),
+            foreground_only=args.foreground_only,
+            expected_num_classes=args.out_channels
         )
         if ratios is None:
             ratios = [1] * args.out_channels
