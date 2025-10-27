@@ -7,6 +7,68 @@ import json
 import os
 
 
+_FOREGROUND_ONLY_MODES = {"foreground_only", "foreground-only", "foreground"}
+
+
+def prepare_class_ratios(prior_data: Dict,
+                         expected_num_classes: int,
+                         foreground_only: bool,
+                         *,
+                         is_main: bool = False,
+                         context: str = "class prior") -> np.ndarray:
+    """Normalize class ratios from a prior file to match the label space.
+
+    This helper inspects the metadata stored in the prior JSON and removes or
+    injects the background entry when necessary.  It prevents accidental
+    off-by-one errors when a foreground-only prior (87 classes) is used with a
+    foreground-only training setup, while still supporting the older 88-class
+    priors that include background statistics.
+    """
+
+    class_ratios = np.asarray(prior_data.get("class_ratios", []), dtype=np.float64)
+    mode = str(prior_data.get("mode", "")).lower()
+    removed_background = False
+
+    if foreground_only:
+        # Drop the leading background bin only when the prior explicitly
+        # includes it.  New foreground-only priors already have 87 entries and
+        # should stay untouched.
+        if mode not in _FOREGROUND_ONLY_MODES and class_ratios.size > 0:
+            class_ratios = class_ratios[1:]
+            removed_background = True
+        elif class_ratios.size == expected_num_classes + 1:
+            class_ratios = class_ratios[1:]
+            removed_background = True
+    else:
+        # If we are training with background but the prior was generated in
+        # foreground-only mode, add a synthetic background bin so the tensor
+        # shapes remain consistent.
+        if mode in _FOREGROUND_ONLY_MODES:
+            background_ratio = prior_data.get("background_ratio")
+            if background_ratio is None:
+                background_ratio = max(0.0, 1.0 - class_ratios.sum())
+            class_ratios = np.concatenate(([background_ratio], class_ratios))
+
+    if class_ratios.size != expected_num_classes:
+        if class_ratios.size > expected_num_classes:
+            if is_main:
+                print(f"  ⚠️  {context}: trimming ratios from {class_ratios.size} to {expected_num_classes}")
+            class_ratios = class_ratios[:expected_num_classes]
+        else:
+            if is_main:
+                print(f"  ⚠️  {context}: padding ratios from {class_ratios.size} to {expected_num_classes}")
+            class_ratios = np.pad(class_ratios, (0, expected_num_classes - class_ratios.size), constant_values=0.0)
+
+    if removed_background and is_main and foreground_only:
+        print(f"  Detected and removed background entry to keep {expected_num_classes} foreground classes")
+
+    ratio_sum = class_ratios.sum()
+    if ratio_sum <= 0 and is_main:
+        print(f"  ⚠️  {context}: class ratio sum is {ratio_sum:.6f}. Please verify the prior file.")
+
+    return class_ratios
+
+
 class AgeConditionedModule(nn.Module):
     """Age conditioning module using FiLM (Feature-wise Linear Modulation)"""
 
@@ -56,7 +118,7 @@ class AgeConditionedModule(nn.Module):
 
 
 class VolumePredictor(nn.Module):
-    """Predict expected volume for each class given age"""
+    """Predict expected volume fractions for each class given age."""
 
     def __init__(self, num_classes, age_embed_dim=64):
         super().__init__()
@@ -74,18 +136,18 @@ class VolumePredictor(nn.Module):
         self.volume_mean = nn.Linear(age_embed_dim * 2, num_classes)
         self.volume_std = nn.Linear(age_embed_dim * 2, num_classes)
 
-    def forward(self, age):
-        """
-        Predict volume statistics given age
-        Args:
-            age: (B, 1) age tensor
-        Returns:
-            mean: (B, C) expected volume mean for each class
-            std: (B, C) expected volume std for each class
-        """
+    def forward(self, age: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Return age-conditioned fractional volumes and dispersion."""
+
         age_feat = self.age_encoder(age)
-        mean = self.volume_mean(age_feat)
-        std = F.softplus(self.volume_std(age_feat)) + 0.01  # Ensure positive
+
+        # Convert unconstrained logits into a simplex so the expected volumes
+        # remain comparable with empirical fractions from the priors.
+        mean_logits = self.volume_mean(age_feat)
+        mean = torch.softmax(mean_logits, dim=1)
+
+        # Dispersion stays positive but does not need to sum to one.
+        std = F.softplus(self.volume_std(age_feat)) + 1e-4
         return mean, std
 
 
@@ -181,9 +243,22 @@ class SimplifiedDAUnetModule(nn.Module):
             )
             # 默认启用内部体积/年龄辅助任务，让新增的先验在不开关的情况下直接生效
             self.enable_internal_volume_loss = True
+            self.volume_loss_weight = 0.1
+            self._volume_age_bins: Optional[torch.Tensor] = None
+            self._volume_means_table: Optional[torch.Tensor] = None
+            self._volume_stds_table: Optional[torch.Tensor] = None
 
             # Load volume statistics if available
             self.volume_statistics = self._load_volume_statistics(volume_statistics_path)
+            if self.volume_statistics:
+                self._initialize_volume_tables()
+                if is_main:
+                    min_age = float(self._volume_age_bins.min().item())
+                    max_age = float(self._volume_age_bins.max().item())
+                    print(
+                        f"    - Volume priors loaded for {self._volume_age_bins.numel()} ages "
+                        f"({min_age:.1f}-{max_age:.1f} weeks)"
+                    )
 
             if is_main:
                 print(f"  ✨ Age conditioning modules initialized")
@@ -202,18 +277,18 @@ class SimplifiedDAUnetModule(nn.Module):
             print(f"  Loading class weights from: {class_prior_path}")
         with open(class_prior_path, 'r') as f:
             prior_data = json.load(f)
-        class_ratios = np.array(prior_data['class_ratios'])
-        if self.foreground_only:
-            class_ratios = class_ratios[1:]
-            if is_main:
-                print(f"  Foreground-only mode: Using {len(class_ratios)} foreground class ratios")
-                print(f"  Model expects {self.num_classes} classes")
-            if len(class_ratios) != self.num_classes:
-                if is_main:
-                    print(
-                        f"  ⚠️  WARNING: Mismatch! Prior has {len(class_ratios)} classes, model expects {self.num_classes}")
-                if self.num_classes == 87 and len(class_ratios) == 88:
-                    class_ratios = class_ratios[:87]
+
+        class_ratios = prepare_class_ratios(
+            prior_data,
+            expected_num_classes=self.num_classes,
+            foreground_only=self.foreground_only,
+            is_main=is_main,
+            context="Class prior"
+        )
+
+        if self.foreground_only and is_main:
+            print(f"  Foreground-only mode: Using {len(class_ratios)} foreground class ratios")
+            print(f"  Model expects {self.num_classes} classes")
         epsilon = 1e-7
         class_weights = 1.0 / (class_ratios + epsilon)
         if self.enhanced_class_weights:
@@ -262,6 +337,63 @@ class SimplifiedDAUnetModule(nn.Module):
         with open(volume_statistics_path, 'r') as f:
             return json.load(f)
 
+    def _initialize_volume_tables(self) -> None:
+        """Convert JSON volume stats into torch tensors for fast interpolation."""
+
+        if not self.volume_statistics:
+            return
+
+        age_pairs = sorted((float(age_key), age_key) for age_key in self.volume_statistics.keys())
+        ages = [pair[0] for pair in age_pairs]
+        means = []
+        stds = []
+        for _, key in age_pairs:
+            entry = self.volume_statistics[key]
+            means.append(entry['means'])
+            stds.append(entry.get('stds', [0.05] * self.num_classes))
+
+        means_tensor = torch.tensor(means, dtype=torch.float32)
+        stds_tensor = torch.tensor(stds, dtype=torch.float32)
+        age_tensor = torch.tensor(ages, dtype=torch.float32)
+
+        self.register_buffer('_volume_age_bins', age_tensor, persistent=False)
+        self.register_buffer('_volume_means_table', means_tensor, persistent=False)
+        self.register_buffer('_volume_stds_table', stds_tensor, persistent=False)
+
+    def _lookup_volume_fraction(
+        self, ages: torch.Tensor, device: torch.device
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """Interpolate expected fractional volumes from empirical statistics."""
+
+        if self._volume_age_bins is None:
+            return None, None
+
+        bins = self._volume_age_bins
+        means_table = self._volume_means_table
+        stds_table = self._volume_stds_table
+
+        if bins.device != device:
+            bins = bins.to(device)
+        if means_table.device != device:
+            means_table = means_table.to(device)
+        if stds_table.device != device:
+            stds_table = stds_table.to(device)
+
+        ages = ages.view(-1).to(device)
+
+        idx = torch.searchsorted(bins, ages)
+        idx1 = torch.clamp(idx, 0, bins.numel() - 1)
+        idx0 = torch.clamp(idx1 - 1, 0, bins.numel() - 1)
+
+        denom = (bins[idx1] - bins[idx0]).clamp(min=1e-6)
+        t = torch.where(idx1 == idx0, torch.zeros_like(ages), (ages - bins[idx0]) / denom)
+
+        mean = (1 - t).unsqueeze(1) * means_table[idx0] + t.unsqueeze(1) * means_table[idx1]
+        std = (1 - t).unsqueeze(1) * stds_table[idx0] + t.unsqueeze(1) * stds_table[idx1]
+
+        mean = mean / (mean.sum(dim=1, keepdim=True) + 1e-8)
+        return mean, std
+
     def get_small_class_indices(self, top_k: int = 20) -> Optional[np.ndarray]:
         if self.class_weights is None:
             return None
@@ -305,20 +437,43 @@ class SimplifiedDAUnetModule(nn.Module):
                 if is_main:
                     print(f"  ⚠️  Clamping labels from {max_label} to {self.num_classes - 1}")
                 valid_mask = source_labels >= 0
-                source_labels = torch.where(valid_mask, torch.clamp(source_labels, min=0, max=self.num_classes - 1),
-                                            source_labels)
+                source_labels = torch.where(
+                    valid_mask,
+                    torch.clamp(source_labels, min=0, max=self.num_classes - 1),
+                    source_labels,
+                )
             if debug_active and step not in self._debug_logged_steps:
-                print(f"\n🐞 [SimplifiedDAUnet][Step {step}] Input diagnostics")
-                print(f"  Source images shape: {tuple(source_images.shape)}, dtype={source_images.dtype}")
-                print(f"  Source labels shape: {tuple(source_labels.shape)}, dtype={source_labels.dtype}")
-                print(f"  Unique labels (after clamp): count={len(unique_labels)}, min={min_label}, max={max_label}")
                 neg_count = int((source_labels == -1).sum().item())
-                print(f"  Ignored voxels (-1): {neg_count}")
                 img_view = source_images.detach()
-                print(f"  Image stats: min={img_view.min():.4f}, max={img_view.max():.4f}, mean={img_view.mean():.4f}, std={img_view.std():.4f}")
+                msg = (
+                    "\n🐞 [SimplifiedDAUnet][Step {step}] Input diagnostics\n"
+                    "  Images: shape={img_shape}, dtype={img_dtype}, min={img_min:.4f}, max={img_max:.4f}, "
+                    "mean={img_mean:.4f}, std={img_std:.4f}\n"
+                    "  Labels: shape={lbl_shape}, dtype={lbl_dtype}, unique={uniq_cnt}, "
+                    "range=[{lbl_min}, {lbl_max}], ignored(-1)={neg_cnt}"
+                ).format(
+                    step=step,
+                    img_shape=tuple(source_images.shape),
+                    img_dtype=source_images.dtype,
+                    img_min=img_view.min(),
+                    img_max=img_view.max(),
+                    img_mean=img_view.mean(),
+                    img_std=img_view.std(),
+                    lbl_shape=tuple(source_labels.shape),
+                    lbl_dtype=source_labels.dtype,
+                    uniq_cnt=len(unique_labels),
+                    lbl_min=min_label,
+                    lbl_max=max_label,
+                    neg_cnt=neg_count,
+                )
+                print(msg)
                 if source_ages is not None:
                     ages_np = source_ages.detach().cpu().flatten()
-                    print(f"  Age stats: min={ages_np.min():.2f}, max={ages_np.max():.2f}, mean={ages_np.mean():.2f}")
+                    print(
+                        "  Ages: min={:.2f}, max={:.2f}, mean={:.2f}".format(
+                            ages_np.min(), ages_np.max(), ages_np.mean()
+                        )
+                    )
 
         if len(source_labels.shape) == 4:
             source_labels = source_labels.unsqueeze(1)
@@ -335,16 +490,24 @@ class SimplifiedDAUnetModule(nn.Module):
         if debug_active and step not in self._debug_logged_steps:
             with torch.no_grad():
                 logits = source_seg.detach()
-                print(f"  Logits stats: min={logits.min():.4f}, max={logits.max():.4f}, mean={logits.mean():.4f}, std={logits.std():.4f}")
+                print(
+                    "  Logits stats: min={:.4f}, max={:.4f}, mean={:.4f}, std={:.4f}".format(
+                        logits.min(), logits.max(), logits.mean(), logits.std()
+                    )
+                )
                 if torch.isnan(logits).any():
-                    print(f"  ⚠️  NaNs detected in logits! count={int(torch.isnan(logits).sum().item())}")
+                    print(
+                        f"  ⚠️  NaNs detected in logits! count={int(torch.isnan(logits).sum().item())}"
+                    )
                 probs = torch.softmax(logits, dim=1)
                 probs_sum = probs.sum(dim=(2, 3, 4))
-                row = probs_sum[0]
-                topk = torch.topk(row, k=min(5, row.numel()))
-                print(f"  Top-{topk.indices.numel()} class probability masses (sample 0):")
-                for idx in topk.indices.cpu().tolist():
-                    print(f"    Class {idx}: mass={row[idx].item():.5f}")
+                total_mass = probs_sum[0].sum().clamp(min=1e-6)
+                frac = probs_sum[0] / total_mass
+                topk = torch.topk(frac, k=min(5, frac.numel()))
+                top_entries = ", ".join(
+                    f"c{idx}={frac[idx].item():.4f}" for idx in topk.indices.cpu().tolist()
+                )
+                print(f"  Top-{topk.indices.numel()} predicted fractions (sample 0): {top_entries}")
 
         try:
             seg_loss_output = seg_criterion(source_seg, source_labels)
@@ -387,15 +550,38 @@ class SimplifiedDAUnetModule(nn.Module):
             # Get predicted volumes from softmax probabilities
             probs = F.softmax(source_seg, dim=1)
             predicted_volumes = probs.sum(dim=(2, 3, 4))  # (B, C)
+            voxel_totals = predicted_volumes.sum(dim=1, keepdim=True).clamp(min=1e-6)
+            predicted_fractions = predicted_volumes / voxel_totals
 
-            # Get expected volumes given age
-            expected_mean, expected_std = self.volume_predictor(source_ages)
+            # Get expected fractional volumes given age
+            expected_fraction, expected_std = self._lookup_volume_fraction(source_ages, source_seg.device)
+            if expected_fraction is None:
+                expected_fraction, expected_std = self.volume_predictor(source_ages)
 
-            # Compute volume loss (KL divergence style)
-            volume_loss = F.smooth_l1_loss(predicted_volumes, expected_mean)
-            losses['volume_loss'] = volume_loss * 0.1
+            volume_loss_raw = F.smooth_l1_loss(predicted_fractions, expected_fraction)
+            losses['volume_loss'] = volume_loss_raw * self.volume_loss_weight
+
             if debug_active and step not in self._debug_logged_steps:
-                print(f"  Internal volume loss: {losses['volume_loss'].item():.6f}")
+                pv = predicted_volumes[0].detach()
+                pv_total = float(pv.sum().item())
+                ef = expected_fraction[0].detach()
+                ef_counts = ef * pv_total
+                pv_frac = (pv.float() / max(pv_total, 1e-6)).cpu().numpy()
+                ev_frac = ef.float().cpu().numpy()
+                diff = pv_frac - ev_frac
+                top_diff_idx = np.argsort(np.abs(diff))[-5:][::-1]
+                diff_str = ", ".join(
+                    f"c{int(idx)}={diff[idx]:+.4f}" for idx in top_diff_idx
+                )
+                print(
+                    "  Internal volume diagnostics: total_pred={:.1f}, total_exp={:.1f}, raw_loss={:.4f}, scaled={:.4f}".format(
+                        pv_total,
+                        float(ef_counts.sum().item()),
+                        volume_loss_raw.item(),
+                        losses['volume_loss'].item(),
+                    )
+                )
+                print(f"  Top fraction gaps (pred-exp): {diff_str}")
 
         # Total loss
         total_loss = seg_loss
