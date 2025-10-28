@@ -193,6 +193,68 @@ def prepare_class_ratios(prior_data: Dict,
     return class_ratios
 
 
+_FOREGROUND_ONLY_MODES = {"foreground_only", "foreground-only", "foreground"}
+
+
+def prepare_class_ratios(prior_data: Dict,
+                         expected_num_classes: int,
+                         foreground_only: bool,
+                         *,
+                         is_main: bool = False,
+                         context: str = "class prior") -> np.ndarray:
+    """Normalize class ratios from a prior file to match the label space.
+
+    This helper inspects the metadata stored in the prior JSON and removes or
+    injects the background entry when necessary.  It prevents accidental
+    off-by-one errors when a foreground-only prior (87 classes) is used with a
+    foreground-only training setup, while still supporting the older 88-class
+    priors that include background statistics.
+    """
+
+    class_ratios = np.asarray(prior_data.get("class_ratios", []), dtype=np.float64)
+    mode = str(prior_data.get("mode", "")).lower()
+    removed_background = False
+
+    if foreground_only:
+        # Drop the leading background bin only when the prior explicitly
+        # includes it.  New foreground-only priors already have 87 entries and
+        # should stay untouched.
+        if mode not in _FOREGROUND_ONLY_MODES and class_ratios.size > 0:
+            class_ratios = class_ratios[1:]
+            removed_background = True
+        elif class_ratios.size == expected_num_classes + 1:
+            class_ratios = class_ratios[1:]
+            removed_background = True
+    else:
+        # If we are training with background but the prior was generated in
+        # foreground-only mode, add a synthetic background bin so the tensor
+        # shapes remain consistent.
+        if mode in _FOREGROUND_ONLY_MODES:
+            background_ratio = prior_data.get("background_ratio")
+            if background_ratio is None:
+                background_ratio = max(0.0, 1.0 - class_ratios.sum())
+            class_ratios = np.concatenate(([background_ratio], class_ratios))
+
+    if class_ratios.size != expected_num_classes:
+        if class_ratios.size > expected_num_classes:
+            if is_main:
+                print(f"  ⚠️  {context}: trimming ratios from {class_ratios.size} to {expected_num_classes}")
+            class_ratios = class_ratios[:expected_num_classes]
+        else:
+            if is_main:
+                print(f"  ⚠️  {context}: padding ratios from {class_ratios.size} to {expected_num_classes}")
+            class_ratios = np.pad(class_ratios, (0, expected_num_classes - class_ratios.size), constant_values=0.0)
+
+    if removed_background and is_main and foreground_only:
+        print(f"  Detected and removed background entry to keep {expected_num_classes} foreground classes")
+
+    ratio_sum = class_ratios.sum()
+    if ratio_sum <= 0 and is_main:
+        print(f"  ⚠️  {context}: class ratio sum is {ratio_sum:.6f}. Please verify the prior file.")
+
+    return class_ratios
+
+
 class AgeConditionedModule(nn.Module):
     """Age conditioning module using FiLM (Feature-wise Linear Modulation)"""
 
@@ -461,6 +523,63 @@ class SimplifiedDAUnetModule(nn.Module):
             return None
         with open(volume_statistics_path, 'r') as f:
             return json.load(f)
+
+    def _initialize_volume_tables(self) -> None:
+        """Convert JSON volume stats into torch tensors for fast interpolation."""
+
+        if not self.volume_statistics:
+            return
+
+        age_pairs = sorted((float(age_key), age_key) for age_key in self.volume_statistics.keys())
+        ages = [pair[0] for pair in age_pairs]
+        means = []
+        stds = []
+        for _, key in age_pairs:
+            entry = self.volume_statistics[key]
+            means.append(entry['means'])
+            stds.append(entry.get('stds', [0.05] * self.num_classes))
+
+        means_tensor = torch.tensor(means, dtype=torch.float32)
+        stds_tensor = torch.tensor(stds, dtype=torch.float32)
+        age_tensor = torch.tensor(ages, dtype=torch.float32)
+
+        self._volume_age_bins = age_tensor
+        self._volume_means_table = means_tensor
+        self._volume_stds_table = stds_tensor
+
+    def _lookup_volume_fraction(
+        self, ages: torch.Tensor, device: torch.device
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """Interpolate expected fractional volumes from empirical statistics."""
+
+        if self._volume_age_bins is None:
+            return None, None
+
+        bins = self._volume_age_bins
+        means_table = self._volume_means_table
+        stds_table = self._volume_stds_table
+
+        if bins.device != device:
+            bins = bins.to(device)
+        if means_table.device != device:
+            means_table = means_table.to(device)
+        if stds_table.device != device:
+            stds_table = stds_table.to(device)
+
+        ages = ages.view(-1).to(device)
+
+        idx = torch.searchsorted(bins, ages)
+        idx1 = torch.clamp(idx, 0, bins.numel() - 1)
+        idx0 = torch.clamp(idx1 - 1, 0, bins.numel() - 1)
+
+        denom = (bins[idx1] - bins[idx0]).clamp(min=1e-6)
+        t = torch.where(idx1 == idx0, torch.zeros_like(ages), (ages - bins[idx0]) / denom)
+
+        mean = (1 - t).unsqueeze(1) * means_table[idx0] + t.unsqueeze(1) * means_table[idx1]
+        std = (1 - t).unsqueeze(1) * stds_table[idx0] + t.unsqueeze(1) * stds_table[idx1]
+
+        mean = mean / (mean.sum(dim=1, keepdim=True) + 1e-8)
+        return mean, std
 
     def _initialize_volume_tables(self) -> None:
         """Convert JSON volume stats into torch tensors for fast interpolation."""

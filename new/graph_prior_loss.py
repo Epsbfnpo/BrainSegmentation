@@ -15,6 +15,9 @@ from typing import Optional, Dict, List, Tuple
 from monai.data import MetaTensor
 
 
+_DEFAULT_VOLUME_STD_FLOOR = 0.02
+
+
 def _to_tensor(x):
     """Convert MetaTensor to regular torch.Tensor if needed"""
     if x is None:
@@ -347,7 +350,8 @@ def _detect_background_index(volume_stats: Dict, num_classes: int) -> Optional[i
     return None
 
 
-def _align_volume_stats(volume_stats: Dict, num_classes: int) -> Tuple[Dict, Optional[int], np.ndarray]:
+def _align_volume_stats(volume_stats: Dict, num_classes: int,
+                        std_floor: float = _DEFAULT_VOLUME_STD_FLOOR) -> Tuple[Dict, Optional[int], np.ndarray]:
     """Align raw volume statistics to match the model's foreground classes."""
 
     if not volume_stats:
@@ -357,6 +361,10 @@ def _align_volume_stats(volume_stats: Dict, num_classes: int) -> Tuple[Dict, Opt
     aligned: Dict[float, Dict[str, List[float]]] = {}
 
     valid_mask = np.ones(num_classes, dtype=np.float32)
+
+    min_std = std_floor if std_floor is not None else 0.0
+    if min_std <= 0:
+        min_std = 1e-6
 
     for age_key, stats in volume_stats.items():
         means = np.asarray(stats.get('means', []), dtype=np.float64)
@@ -392,6 +400,8 @@ def _align_volume_stats(volume_stats: Dict, num_classes: int) -> Tuple[Dict, Opt
             fg_means = fg_means / total
             fg_stds = fg_stds / total
 
+        fg_stds = np.maximum(fg_stds, min_std)
+
         aligned[float(age_key)] = {
             'means': fg_means.astype(np.float32).tolist(),
             'stds': fg_stds.astype(np.float32).tolist(),
@@ -425,7 +435,8 @@ def _align_shape_channels(template: torch.Tensor, target_channels: int) -> torch
 
 def volume_consistency_loss(probs: torch.Tensor, age: torch.Tensor,
                             volume_stats: Dict, num_classes: int,
-                            valid_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+                            valid_mask: Optional[torch.Tensor] = None,
+                            std_floor: float = _DEFAULT_VOLUME_STD_FLOOR) -> torch.Tensor:
     """
     Compute volume consistency loss based on age-specific statistics
 
@@ -451,12 +462,21 @@ def volume_consistency_loss(probs: torch.Tensor, age: torch.Tensor,
 
     for b in range(B):
         age_val = age[b].item()
-        volumes, stds = get_expected_volumes(age_val, volume_stats, num_classes)
+        volumes, stds = get_expected_volumes(
+            age_val,
+            volume_stats,
+            num_classes,
+            std_floor=std_floor,
+        )
         expected_volumes[b] = torch.tensor(volumes, device=probs.device)
         expected_stds[b] = torch.tensor(stds, device=probs.device)
 
     # Normalize by expected std
-    normalized_diff = (predicted_volumes - expected_volumes) / (expected_stds + 1e-6)
+    min_std = std_floor if std_floor is not None else 0.0
+    if min_std <= 0:
+        min_std = 1e-6
+    expected_stds = torch.clamp(expected_stds, min=min_std)
+    normalized_diff = (predicted_volumes - expected_volumes) / expected_stds
 
     if valid_mask is not None:
         mask = valid_mask.view(1, -1).to(device=probs.device, dtype=probs.dtype)
@@ -472,7 +492,8 @@ def volume_consistency_loss(probs: torch.Tensor, age: torch.Tensor,
 
 
 def get_expected_volumes(age: float, volume_stats: Dict,
-                         num_classes: int) -> Tuple[np.ndarray, np.ndarray]:
+                         num_classes: int,
+                         std_floor: float = _DEFAULT_VOLUME_STD_FLOOR) -> Tuple[np.ndarray, np.ndarray]:
     """
     Get expected volume statistics for a given age
 
@@ -485,19 +506,29 @@ def get_expected_volumes(age: float, volume_stats: Dict,
         means: Expected volume means
         stds: Expected volume stds
     """
+    min_std = std_floor if std_floor is not None else 0.0
+    if min_std <= 0:
+        min_std = 1e-6
+
     if not volume_stats:
-        return np.ones(num_classes), np.ones(num_classes)
+        means = np.ones(num_classes)
+        stds = np.maximum(np.ones(num_classes), min_std)
+        return means, stds
 
     # Find closest age or interpolate
     ages = sorted(list(volume_stats.keys()))
 
     if age <= ages[0]:
         stats = volume_stats[ages[0]]
-        return np.array(stats['means']), np.array(stats['stds'])
+        means = np.array(stats['means'])
+        stds = np.maximum(np.array(stats['stds']), min_std)
+        return means, stds
 
     if age >= ages[-1]:
         stats = volume_stats[ages[-1]]
-        return np.array(stats['means']), np.array(stats['stds'])
+        means = np.array(stats['means'])
+        stds = np.maximum(np.array(stats['stds']), min_std)
+        return means, stds
 
     # Linear interpolation
     for i in range(len(ages) - 1):
@@ -510,9 +541,12 @@ def get_expected_volumes(age: float, volume_stats: Dict,
 
             means = (1 - alpha) * means1 + alpha * means2
             stds = (1 - alpha) * stds1 + alpha * stds2
+            stds = np.maximum(stds, min_std)
             return means, stds
 
-    return np.ones(num_classes), np.ones(num_classes)
+    means = np.ones(num_classes)
+    stds = np.maximum(np.ones(num_classes), min_std)
+    return means, stds
 
 
 def shape_consistency_loss(probs: torch.Tensor,
@@ -651,6 +685,7 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                  dyn_ramp_epochs: int = 50,
                  prior_warmup_epochs: Optional[int] = None,
                  prior_temperature: Optional[float] = None,
+                 volume_std_floor: float = _DEFAULT_VOLUME_STD_FLOOR,
                  debug_mode: bool = False,
                  debug_max_batches: int = 2,
                  **extra_kwargs):
@@ -672,6 +707,7 @@ class AgeConditionedGraphPriorLoss(nn.Module):
         self.normalize_shape_templates = bool(
             extra_kwargs.pop('normalize_shape_templates', True)
         )
+        self.volume_std_floor = float(volume_std_floor)
 
         # Graph alignment coefficients
         self.graph_align_mode = graph_align_mode
@@ -867,7 +903,11 @@ class AgeConditionedGraphPriorLoss(nn.Module):
         if self._volume_stats_aligned_to == num_classes:
             return
 
-        aligned, background_idx, mask_np = _align_volume_stats(self.volume_stats, num_classes)
+        aligned, background_idx, mask_np = _align_volume_stats(
+            self.volume_stats,
+            num_classes,
+            std_floor=self.volume_std_floor,
+        )
         if aligned:
             self.volume_stats = aligned
         self.volume_background_idx = background_idx
@@ -980,7 +1020,12 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                     )
                 )
                 if self.volume_stats is not None:
-                    exp_mean, _ = get_expected_volumes(float(age[0].item()), self.volume_stats, num_classes)
+                    exp_mean, _ = get_expected_volumes(
+                        float(age[0].item()),
+                        self.volume_stats,
+                        num_classes,
+                        std_floor=self.volume_std_floor,
+                    )
                     exp = torch.tensor(exp_mean, device=vf.device, dtype=vf.dtype)
                     diff = vf - exp
                     top_diff = torch.topk(diff.abs(), k=min(5, diff.numel()))
@@ -995,7 +1040,14 @@ class AgeConditionedGraphPriorLoss(nn.Module):
             mask = None
             if self.volume_valid_mask.numel() == num_classes:
                 mask = self.volume_valid_mask.to(device=probs.device, dtype=probs.dtype)
-            loss_volume = volume_consistency_loss(probs, age, self.volume_stats, num_classes, valid_mask=mask)
+            loss_volume = volume_consistency_loss(
+                probs,
+                age,
+                self.volume_stats,
+                num_classes,
+                valid_mask=mask,
+                std_floor=self.volume_std_floor,
+            )
             loss_dict['volume_loss'] = loss_volume.detach()
             age_loss_sum = age_loss_sum + age_warmup * self.lambda_volume * loss_volume
             if debug_active:
