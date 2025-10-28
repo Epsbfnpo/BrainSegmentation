@@ -998,6 +998,12 @@ class AgeConditionedGraphPriorLoss(nn.Module):
             loss_volume = volume_consistency_loss(probs, age, self.volume_stats, num_classes, valid_mask=mask)
             loss_dict['volume_loss'] = loss_volume.detach()
             age_loss_sum = age_loss_sum + age_warmup * self.lambda_volume * loss_volume
+            if debug_active:
+                scaled = age_warmup * self.lambda_volume * loss_volume.detach()
+                print(
+                    f"{debug_prefix} volume_loss raw={float(loss_volume.detach().item()):.6f}, "
+                    f"scaled={float(scaled.item()):.6f} (λ={self.lambda_volume:.3f}, warmup={age_warmup:.3f})"
+                )
 
         if self.lambda_shape > 0 and self.shape_templates is not None:
             loss_shape = shape_consistency_loss(
@@ -1009,6 +1015,12 @@ class AgeConditionedGraphPriorLoss(nn.Module):
             )
             loss_dict['shape_loss'] = loss_shape.detach()
             age_loss_sum = age_loss_sum + age_warmup * self.lambda_shape * loss_shape
+            if debug_active:
+                scaled = age_warmup * self.lambda_shape * loss_shape.detach()
+                print(
+                    f"{debug_prefix} shape_loss raw={float(loss_shape.detach().item()):.6f}, "
+                    f"scaled={float(scaled.item()):.6f} (λ={self.lambda_shape:.3f}, warmup={age_warmup:.3f})"
+                )
 
         if self.lambda_weighted_adj > 0:
             age_weight_dict = self.age_weights if self.age_weights is not None else None
@@ -1070,7 +1082,11 @@ class AgeConditionedGraphPriorLoss(nn.Module):
             loss_dict['weighted_adj_loss'] = loss_adj.detach()
             age_loss_sum = age_loss_sum + age_warmup * self.lambda_weighted_adj * loss_adj
             if debug_active:
-                print(f"{debug_prefix} weighted adjacency loss={float(loss_adj.detach().item()):.6f}")
+                scaled = age_warmup * self.lambda_weighted_adj * loss_adj.detach()
+                print(
+                    f"{debug_prefix} weighted_adj raw={float(loss_adj.detach().item()):.6f}, "
+                    f"scaled={float(scaled.item()):.6f} (λ={self.lambda_weighted_adj:.3f}, warmup={age_warmup:.3f})"
+                )
                 if 'weighted_adj_active_classes' in loss_dict:
                     print(
                         f"{debug_prefix} active classes={float(loss_dict['weighted_adj_active_classes'].item()):.2f}"
