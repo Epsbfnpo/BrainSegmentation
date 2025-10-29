@@ -57,6 +57,9 @@ SHAPE_TEMPLATE_ARGS="--shape_templates_pt ${SHAPE_TEMPLATES_PATH}"
 SHAPE_TEMPLATES_PATH="/datasets/work/hb-nhmrc-dhcp/work/liu275/new/priors/shape_templates.pt"
 SHAPE_TEMPLATE_ARGS="--shape_templates_pt ${SHAPE_TEMPLATES_PATH}"
 
+SHAPE_TEMPLATES_PATH="/datasets/work/hb-nhmrc-dhcp/work/liu275/new/priors/shape_templates.pt"
+SHAPE_TEMPLATE_ARGS="--shape_templates_pt ${SHAPE_TEMPLATES_PATH}"
+
 
 # ========== SOURCE DOMAIN GRAPH PRIORS (NEW) ==========
 SOURCE_PRIORS_DIR="/datasets/work/hb-nhmrc-dhcp/work/liu275/new/priors/dHCP"
