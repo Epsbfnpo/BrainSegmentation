@@ -149,6 +149,83 @@ def soft_adjacency_from_probs(probs: torch.Tensor,
 
     return A_batch.mean(dim=0)
 
+
+def _parse_age_key(raw_key: Union[str, int, float]) -> Optional[float]:
+    """Parse various age bucket keys into a float value."""
+
+    if isinstance(raw_key, (int, float)):
+        return float(raw_key)
+
+    if not isinstance(raw_key, str):
+        return None
+
+    token = raw_key.strip().lower()
+    if not token:
+        return None
+
+    if token in {"unknown", "unknown_age", "nan"}:
+        return -1.0
+
+    match = re.search(r"-?\d+(?:\.\d+)?", token)
+    if match is None:
+        return None
+
+    try:
+        return float(match.group(0))
+    except ValueError:
+        return None
+
+
+def _coerce_shape_template_payload(payload: Any) -> Tuple[Dict[float, torch.Tensor], Dict[str, Any]]:
+    """Convert torch.load payloads into an age→template dictionary."""
+
+    metadata: Dict[str, Any] = {}
+    if payload is None:
+        return {}, metadata
+
+    mapping: Optional[Dict] = None
+    if isinstance(payload, dict):
+        if 'mean' in payload and isinstance(payload['mean'], dict):
+            mapping = payload['mean']
+            metadata['has_std'] = bool(payload.get('std'))
+            if 'num_classes' in payload:
+                metadata['num_classes'] = int(payload['num_classes'])
+        else:
+            mapping = payload
+
+    if mapping is None:
+        return {}, metadata
+
+    templates: Dict[float, torch.Tensor] = {}
+    ignored_keys: List[str] = []
+
+    for raw_key, value in mapping.items():
+        age_key = _parse_age_key(raw_key)
+        if age_key is None:
+            ignored_keys.append(str(raw_key))
+            continue
+
+        if isinstance(value, torch.Tensor):
+            tensor = value.detach().cpu().float()
+        else:
+            tensor = torch.as_tensor(value, dtype=torch.float32)
+
+        templates[age_key] = tensor
+
+    if not templates:
+        metadata['ignored_keys'] = ignored_keys
+        return {}, metadata
+
+    ages_sorted = sorted(templates.keys())
+    metadata['ages'] = ages_sorted
+    first_template = templates[ages_sorted[0]]
+    metadata['spatial_shape'] = tuple(first_template.shape[1:])
+    metadata['num_classes_in_template'] = first_template.shape[0]
+    if ignored_keys:
+        metadata['ignored_keys'] = ignored_keys
+
+    return templates, metadata
+
 def compute_laplacian(A: torch.Tensor, normalized: bool = True) -> torch.Tensor:
     """Compute (optionally normalized) graph Laplacian from adjacency matrix."""
 
@@ -479,6 +556,24 @@ def _align_volume_stats(volume_stats: Dict, num_classes: int,
         if total > 1e-6:
             fg_means = fg_means / total
             fg_stds = fg_stds / total
+
+        fg_stds = np.maximum(fg_stds, min_std)
+
+        fg_stds = np.maximum(fg_stds, min_std)
+
+        fg_stds = np.maximum(fg_stds, min_std)
+
+        fg_stds = np.maximum(fg_stds, min_std)
+
+        fg_stds = np.maximum(fg_stds, min_std)
+
+        fg_stds = np.maximum(fg_stds, min_std)
+
+        fg_stds = np.maximum(fg_stds, min_std)
+
+        fg_stds = np.maximum(fg_stds, min_std)
+
+        fg_stds = np.maximum(fg_stds, min_std)
 
         fg_stds = np.maximum(fg_stds, min_std)
 
@@ -1222,6 +1317,1095 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                 )
                 duration = time.time() - start_time
                 print(f"  ↳ Preprocessing time: {duration:.1f}s using CPU workers")
+
+        if is_dist and world_size > 1:
+            dist.barrier()
+
+        return processed
+
+    def _process_shape_template_payload(
+        self,
+        payload: object,
+        target_shape: Optional[Tuple[int, int, int]],
+        dtype: torch.dtype,
+        num_workers: int = 1,
+        show_progress: bool = False,
+        workers_is_auto: bool = False,
+    ) -> Dict[float, torch.Tensor]:
+        """Convert raw template payload to a compact dictionary keyed by age."""
+
+        if isinstance(payload, dict) and 'mean' in payload:
+            templates = payload['mean']
+        elif isinstance(payload, dict):
+            templates = payload
+        else:
+            raise TypeError(
+                "Shape template payload must be a dict containing 'mean' entries or age bins."
+            )
+
+        processed: Dict[float, torch.Tensor] = {}
+        target_shape_tuple: Optional[Tuple[int, int, int]] = None
+        if target_shape is not None:
+            target_shape_tuple = tuple(int(v) for v in target_shape)
+
+        items = list(templates.items())
+        total = len(items)
+
+        if total == 0:
+            if show_progress:
+                print("🧩 Building age-aware shape templates (0 age bins)", flush=True)
+            return processed
+
+        start_time = time.time()
+        last_progress_print = 0.0
+        progress_step = max(1, total // 20)
+
+        def emit_progress(done: int, *, final: bool = False, force: bool = False):
+            nonlocal last_progress_print
+
+            if not show_progress:
+                return
+
+            now = time.time()
+            if not force and not final:
+                if done % progress_step != 0 and (now - last_progress_print) < 5.0:
+                    return
+
+            percent = (done / total) * 100.0
+            elapsed = now - start_time
+            print(
+                f"    ↳ progress {done}/{total} ({percent:5.1f}%) elapsed {elapsed:6.1f}s",
+                flush=True,
+            )
+            last_progress_print = now
+
+            if final and done != total:
+                final_elapsed = now - start_time
+                print(
+                    f"    ↳ progress {total}/{total} (100.0%) elapsed {final_elapsed:6.1f}s",
+                    flush=True,
+                )
+
+        def process_single(item):
+            raw_key, tensor = item
+            age_value = _parse_age_key(raw_key)
+
+            tmpl = _to_tensor(tensor)
+            if not isinstance(tmpl, torch.Tensor):
+                raise TypeError(f"Template for age bin {raw_key!r} is not convertible to torch.Tensor")
+
+            tmpl = tmpl.detach().to(torch.float32, copy=True)
+
+            if target_shape_tuple is not None and tuple(int(v) for v in tmpl.shape[1:]) != target_shape_tuple:
+                tmpl = F.interpolate(
+                    tmpl.unsqueeze(0),
+                    size=target_shape_tuple,
+                    mode='trilinear',
+                    align_corners=False,
+                ).squeeze(0)
+
+            tmpl = tmpl.to(dtype).contiguous()
+            return age_value, tmpl
+
+        resolved_workers = max(1, num_workers)
+
+        if show_progress:
+            shape_desc = (
+                f"{target_shape_tuple[0]}x{target_shape_tuple[1]}x{target_shape_tuple[2]}"
+                if target_shape_tuple is not None
+                else "native"
+            )
+            if workers_is_auto:
+                worker_desc = f"auto≈{resolved_workers}"
+            else:
+                worker_desc = str(resolved_workers)
+            print(
+                f"🧩 Building age-aware shape templates ({total} age bins, dtype={dtype}, target={shape_desc}, "
+                f"CPU workers={worker_desc})",
+                flush=True,
+            )
+
+        emit_progress(0, force=True)
+
+        if resolved_workers > 1:
+            with ThreadPoolExecutor(max_workers=resolved_workers) as executor:
+                futures = {
+                    executor.submit(process_single, item): idx
+                    for idx, item in enumerate(items, 1)
+                }
+                for count, future in enumerate(as_completed(futures), 1):
+                    age_value, tmpl = future.result()
+                    processed[age_value] = tmpl
+                    emit_progress(count)
+        else:
+            for idx, item in enumerate(items, 1):
+                age_value, tmpl = process_single(item)
+                processed[age_value] = tmpl
+                emit_progress(idx)
+
+        emit_progress(total, final=True, force=True)
+
+        return processed
+
+    def _load_and_prepare_shape_templates(
+        self,
+        template_path: str,
+        target_shape: Optional[Tuple[int, int, int]],
+        dtype_spec: Optional[str],
+        num_workers: Optional[int] = None,
+        show_progress: bool = False,
+        workers_is_auto: bool = False,
+        cache_override: Optional[str] = None,
+        require_cache: bool = False,
+        **_ignored: object,
+    ) -> Dict[float, torch.Tensor]:
+        """Load heavy shape templates once, compress, and cache for subsequent ranks."""
+
+        dtype = _resolve_dtype(dtype_spec)
+        derived_cache = _derive_shape_template_cache_path(template_path, target_shape, dtype)
+
+        if num_workers is None:
+            num_workers = 1
+
+        cache_override = os.path.abspath(cache_override) if cache_override else None
+        derived_cache = os.path.abspath(derived_cache)
+
+        def load_cache(path: str) -> Dict[float, torch.Tensor]:
+            if is_main:
+                print(f"✓ Loaded cached shape templates from {path}")
+            if is_dist:
+                dist.barrier()
+            return torch.load(path, map_location='cpu')
+
+        if cache_override and os.path.exists(cache_override):
+            return load_cache(cache_override)
+
+        if os.path.exists(derived_cache):
+            return load_cache(derived_cache)
+
+        if cache_override and require_cache:
+            raise FileNotFoundError(
+                f"Required shape template cache not found: {cache_override}. "
+                "Please run preprocess_shape_templates.py before launching training."
+            )
+
+        cache_path = cache_override or derived_cache
+
+        is_dist = dist.is_available() and dist.is_initialized()
+        rank = dist.get_rank() if is_dist else 0
+        world_size = dist.get_world_size() if is_dist else 1
+        is_main = (rank == 0)
+
+        if os.path.exists(cache_path):
+            return load_cache(cache_path)
+
+        if is_dist and not is_main:
+            # Wait for rank 0 to finish preprocessing and writing the cache.
+            dist.barrier()
+            if os.path.exists(cache_path):
+                return torch.load(cache_path, map_location='cpu')
+
+        # Rank 0 (or single-process) performs the heavy lifting.
+        payload = torch.load(template_path, map_location='cpu')
+        start_time = time.time()
+        processed = self._process_shape_template_payload(
+            payload,
+            target_shape,
+            dtype,
+            num_workers=num_workers,
+            show_progress=show_progress,
+            workers_is_auto=workers_is_auto,
+        )
+        del payload
+
+        os.makedirs(os.path.dirname(cache_path) or '.', exist_ok=True)
+        torch.save(processed, cache_path)
+
+        if is_main:
+            first_template = next(iter(processed.values())) if processed else None
+            print(f"✓ Loaded shape templates from {template_path}")
+            print(f"  ↳ Cached processed templates at {cache_path}")
+            if first_template is not None:
+                spatial_shape = tuple(int(v) for v in first_template.shape[1:])
+                print(
+                    f"  ↳ Template dtype {first_template.dtype}, spatial shape {spatial_shape}, classes {first_template.shape[0]}"
+                )
+                duration = time.time() - start_time
+                print(f"  ↳ Preprocessing time: {duration:.1f}s using CPU workers")
+
+        if is_dist and world_size > 1:
+            dist.barrier()
+
+        return processed
+
+    def _process_shape_template_payload(
+        self,
+        payload: object,
+        target_shape: Optional[Tuple[int, int, int]],
+        dtype: torch.dtype,
+        num_workers: int = 1,
+        show_progress: bool = False,
+        workers_is_auto: bool = False,
+    ) -> Dict[float, torch.Tensor]:
+        """Convert raw template payload to a compact dictionary keyed by age."""
+
+        if isinstance(payload, dict) and 'mean' in payload:
+            templates = payload['mean']
+        elif isinstance(payload, dict):
+            templates = payload
+        else:
+            raise TypeError(
+                "Shape template payload must be a dict containing 'mean' entries or age bins."
+            )
+
+        processed: Dict[float, torch.Tensor] = {}
+        target_shape_tuple: Optional[Tuple[int, int, int]] = None
+        if target_shape is not None:
+            target_shape_tuple = tuple(int(v) for v in target_shape)
+
+        items = list(templates.items())
+        total = len(items)
+
+        if total == 0:
+            if show_progress:
+                print("🧩 Building age-aware shape templates (0 age bins)", flush=True)
+            return processed
+
+        start_time = time.time()
+        last_progress_print = 0.0
+        progress_step = max(1, total // 20)
+
+        def emit_progress(done: int, *, final: bool = False, force: bool = False):
+            nonlocal last_progress_print
+
+            if not show_progress:
+                return
+
+            now = time.time()
+            if not force and not final:
+                if done % progress_step != 0 and (now - last_progress_print) < 5.0:
+                    return
+
+            percent = (done / total) * 100.0
+            elapsed = now - start_time
+            print(
+                f"    ↳ progress {done}/{total} ({percent:5.1f}%) elapsed {elapsed:6.1f}s",
+                flush=True,
+            )
+            last_progress_print = now
+
+            if final and done != total:
+                final_elapsed = now - start_time
+                print(
+                    f"    ↳ progress {total}/{total} (100.0%) elapsed {final_elapsed:6.1f}s",
+                    flush=True,
+                )
+
+        def process_single(item):
+            raw_key, tensor = item
+            age_value = _parse_age_key(raw_key)
+
+            tmpl = _to_tensor(tensor)
+            if not isinstance(tmpl, torch.Tensor):
+                raise TypeError(f"Template for age bin {raw_key!r} is not convertible to torch.Tensor")
+
+            tmpl = tmpl.detach().to(torch.float32, copy=True)
+
+            if target_shape_tuple is not None and tuple(int(v) for v in tmpl.shape[1:]) != target_shape_tuple:
+                tmpl = F.interpolate(
+                    tmpl.unsqueeze(0),
+                    size=target_shape_tuple,
+                    mode='trilinear',
+                    align_corners=False,
+                ).squeeze(0)
+
+            tmpl = tmpl.to(dtype).contiguous()
+            return age_value, tmpl
+
+        resolved_workers = max(1, num_workers)
+
+        if show_progress:
+            shape_desc = (
+                f"{target_shape_tuple[0]}x{target_shape_tuple[1]}x{target_shape_tuple[2]}"
+                if target_shape_tuple is not None
+                else "native"
+            )
+            if workers_is_auto:
+                worker_desc = f"auto≈{resolved_workers}"
+            else:
+                worker_desc = str(resolved_workers)
+            print(
+                f"🧩 Building age-aware shape templates ({total} age bins, dtype={dtype}, target={shape_desc}, "
+                f"CPU workers={worker_desc})",
+                flush=True,
+            )
+
+        emit_progress(0, force=True)
+
+        if resolved_workers > 1:
+            with ThreadPoolExecutor(max_workers=resolved_workers) as executor:
+                futures = {
+                    executor.submit(process_single, item): idx
+                    for idx, item in enumerate(items, 1)
+                }
+                for count, future in enumerate(as_completed(futures), 1):
+                    age_value, tmpl = future.result()
+                    processed[age_value] = tmpl
+                    emit_progress(count)
+        else:
+            for idx, item in enumerate(items, 1):
+                age_value, tmpl = process_single(item)
+                processed[age_value] = tmpl
+                emit_progress(idx)
+
+        emit_progress(total, final=True, force=True)
+
+        return processed
+
+    def _load_and_prepare_shape_templates(
+        self,
+        template_path: str,
+        target_shape: Optional[Tuple[int, int, int]],
+        dtype_spec: Optional[str],
+        num_workers: int = 1,
+        show_progress: bool = False,
+        workers_is_auto: bool = False,
+        cache_override: Optional[str] = None,
+        require_cache: bool = False,
+    ) -> Dict[float, torch.Tensor]:
+        """Load heavy shape templates once, compress, and cache for subsequent ranks."""
+
+        dtype = _resolve_dtype(dtype_spec)
+        derived_cache = _derive_shape_template_cache_path(template_path, target_shape, dtype)
+
+        cache_override = os.path.abspath(cache_override) if cache_override else None
+        derived_cache = os.path.abspath(derived_cache)
+
+        def load_cache(path: str) -> Dict[float, torch.Tensor]:
+            if is_main:
+                print(f"✓ Loaded cached shape templates from {path}")
+            if is_dist:
+                dist.barrier()
+            return torch.load(path, map_location='cpu')
+
+        if cache_override and os.path.exists(cache_override):
+            return load_cache(cache_override)
+
+        if os.path.exists(derived_cache):
+            return load_cache(derived_cache)
+
+        if cache_override and require_cache:
+            raise FileNotFoundError(
+                f"Required shape template cache not found: {cache_override}. "
+                "Please run preprocess_shape_templates.py before launching training."
+            )
+
+        cache_path = cache_override or derived_cache
+
+        is_dist = dist.is_available() and dist.is_initialized()
+        rank = dist.get_rank() if is_dist else 0
+        world_size = dist.get_world_size() if is_dist else 1
+        is_main = (rank == 0)
+
+        if os.path.exists(cache_path):
+            return load_cache(cache_path)
+
+        if is_dist and not is_main:
+            # Wait for rank 0 to finish preprocessing and writing the cache.
+            dist.barrier()
+            if os.path.exists(cache_path):
+                return torch.load(cache_path, map_location='cpu')
+
+        # Rank 0 (or single-process) performs the heavy lifting.
+        payload = torch.load(template_path, map_location='cpu')
+        start_time = time.time()
+        processed = self._process_shape_template_payload(
+            payload,
+            target_shape,
+            dtype,
+            num_workers=num_workers,
+            show_progress=show_progress,
+            workers_is_auto=workers_is_auto,
+        )
+        del payload
+
+        os.makedirs(os.path.dirname(cache_path) or '.', exist_ok=True)
+        torch.save(processed, cache_path)
+
+        if is_main:
+            first_template = next(iter(processed.values())) if processed else None
+            print(f"✓ Loaded shape templates from {template_path}")
+            print(f"  ↳ Cached processed templates at {cache_path}")
+            if first_template is not None:
+                spatial_shape = tuple(int(v) for v in first_template.shape[1:])
+                print(
+                    f"  ↳ Template dtype {first_template.dtype}, spatial shape {spatial_shape}, classes {first_template.shape[0]}"
+                )
+                duration = time.time() - start_time
+                print(f"  ↳ Preprocessing time: {duration:.1f}s using CPU workers")
+
+        if is_dist and world_size > 1:
+            dist.barrier()
+
+        return processed
+
+    def _process_shape_template_payload(
+        self,
+        payload: object,
+        target_shape: Optional[Tuple[int, int, int]],
+        dtype: torch.dtype,
+        num_workers: int = 1,
+        show_progress: bool = False,
+        workers_is_auto: bool = False,
+    ) -> Dict[float, torch.Tensor]:
+        """Convert raw template payload to a compact dictionary keyed by age."""
+
+        if isinstance(payload, dict) and 'mean' in payload:
+            templates = payload['mean']
+        elif isinstance(payload, dict):
+            templates = payload
+        else:
+            raise TypeError(
+                "Shape template payload must be a dict containing 'mean' entries or age bins."
+            )
+
+        processed: Dict[float, torch.Tensor] = {}
+        target_shape_tuple: Optional[Tuple[int, int, int]] = None
+        if target_shape is not None:
+            target_shape_tuple = tuple(int(v) for v in target_shape)
+
+        items = list(templates.items())
+        total = len(items)
+
+        if total == 0:
+            if show_progress:
+                print("🧩 Building age-aware shape templates (0 age bins)", flush=True)
+            return processed
+
+        start_time = time.time()
+        last_progress_print = 0.0
+        progress_step = max(1, total // 20)
+
+        def emit_progress(done: int, *, final: bool = False, force: bool = False):
+            nonlocal last_progress_print
+
+            if not show_progress:
+                return
+
+            now = time.time()
+            if not force and not final:
+                if done % progress_step != 0 and (now - last_progress_print) < 5.0:
+                    return
+
+            percent = (done / total) * 100.0
+            elapsed = now - start_time
+            print(
+                f"    ↳ progress {done}/{total} ({percent:5.1f}%) elapsed {elapsed:6.1f}s",
+                flush=True,
+            )
+            last_progress_print = now
+
+            if final and done != total:
+                final_elapsed = now - start_time
+                print(
+                    f"    ↳ progress {total}/{total} (100.0%) elapsed {final_elapsed:6.1f}s",
+                    flush=True,
+                )
+
+        def process_single(item):
+            raw_key, tensor = item
+            age_value = _parse_age_key(raw_key)
+
+            tmpl = _to_tensor(tensor)
+            if not isinstance(tmpl, torch.Tensor):
+                raise TypeError(f"Template for age bin {raw_key!r} is not convertible to torch.Tensor")
+
+            tmpl = tmpl.detach().to(torch.float32, copy=True)
+
+            if target_shape_tuple is not None and tuple(int(v) for v in tmpl.shape[1:]) != target_shape_tuple:
+                tmpl = F.interpolate(
+                    tmpl.unsqueeze(0),
+                    size=target_shape_tuple,
+                    mode='trilinear',
+                    align_corners=False,
+                ).squeeze(0)
+
+            tmpl = tmpl.to(dtype).contiguous()
+            return age_value, tmpl
+
+        resolved_workers = max(1, num_workers)
+
+        if show_progress:
+            shape_desc = (
+                f"{target_shape_tuple[0]}x{target_shape_tuple[1]}x{target_shape_tuple[2]}"
+                if target_shape_tuple is not None
+                else "native"
+            )
+            if workers_is_auto:
+                worker_desc = f"auto≈{resolved_workers}"
+            else:
+                worker_desc = str(resolved_workers)
+            print(
+                f"🧩 Building age-aware shape templates ({total} age bins, dtype={dtype}, target={shape_desc}, "
+                f"CPU workers={worker_desc})",
+                flush=True,
+            )
+
+        emit_progress(0, force=True)
+
+        if resolved_workers > 1:
+            with ThreadPoolExecutor(max_workers=resolved_workers) as executor:
+                futures = {
+                    executor.submit(process_single, item): idx
+                    for idx, item in enumerate(items, 1)
+                }
+                for count, future in enumerate(as_completed(futures), 1):
+                    age_value, tmpl = future.result()
+                    processed[age_value] = tmpl
+                    emit_progress(count)
+        else:
+            for idx, item in enumerate(items, 1):
+                age_value, tmpl = process_single(item)
+                processed[age_value] = tmpl
+                emit_progress(idx)
+
+        emit_progress(total, final=True, force=True)
+
+        return processed
+
+    def _load_and_prepare_shape_templates(
+        self,
+        template_path: str,
+        target_shape: Optional[Tuple[int, int, int]],
+        dtype_spec: Optional[str],
+        num_workers: int = 1,
+        show_progress: bool = False,
+        workers_is_auto: bool = False,
+        cache_override: Optional[str] = None,
+        require_cache: bool = False,
+    ) -> Dict[float, torch.Tensor]:
+        """Load heavy shape templates once, compress, and cache for subsequent ranks."""
+
+        dtype = _resolve_dtype(dtype_spec)
+        derived_cache = _derive_shape_template_cache_path(template_path, target_shape, dtype)
+
+        cache_override = os.path.abspath(cache_override) if cache_override else None
+        derived_cache = os.path.abspath(derived_cache)
+
+        def load_cache(path: str) -> Dict[float, torch.Tensor]:
+            if is_main:
+                print(f"✓ Loaded cached shape templates from {path}")
+            if is_dist:
+                dist.barrier()
+            return torch.load(path, map_location='cpu')
+
+        if cache_override and os.path.exists(cache_override):
+            return load_cache(cache_override)
+
+        if os.path.exists(derived_cache):
+            return load_cache(derived_cache)
+
+        if cache_override and require_cache:
+            raise FileNotFoundError(
+                f"Required shape template cache not found: {cache_override}. "
+                "Please run preprocess_shape_templates.py before launching training."
+            )
+
+        cache_path = cache_override or derived_cache
+
+        is_dist = dist.is_available() and dist.is_initialized()
+        rank = dist.get_rank() if is_dist else 0
+        world_size = dist.get_world_size() if is_dist else 1
+        is_main = (rank == 0)
+
+        if os.path.exists(cache_path):
+            return load_cache(cache_path)
+
+        if is_dist and not is_main:
+            # Wait for rank 0 to finish preprocessing and writing the cache.
+            dist.barrier()
+            if os.path.exists(cache_path):
+                return torch.load(cache_path, map_location='cpu')
+
+        # Rank 0 (or single-process) performs the heavy lifting.
+        payload = torch.load(template_path, map_location='cpu')
+        start_time = time.time()
+        processed = self._process_shape_template_payload(
+            payload,
+            target_shape,
+            dtype,
+            num_workers=num_workers,
+            show_progress=show_progress,
+            workers_is_auto=workers_is_auto,
+        )
+        del payload
+
+        os.makedirs(os.path.dirname(cache_path) or '.', exist_ok=True)
+        torch.save(processed, cache_path)
+
+        if is_main:
+            first_template = next(iter(processed.values())) if processed else None
+            print(f"✓ Loaded shape templates from {template_path}")
+            print(f"  ↳ Cached processed templates at {cache_path}")
+            if first_template is not None:
+                spatial_shape = tuple(int(v) for v in first_template.shape[1:])
+                print(
+                    f"  ↳ Template dtype {first_template.dtype}, spatial shape {spatial_shape}, classes {first_template.shape[0]}"
+                )
+                duration = time.time() - start_time
+                print(f"  ↳ Preprocessing time: {duration:.1f}s using CPU workers")
+
+        if is_dist and world_size > 1:
+            dist.barrier()
+
+        return processed
+
+    def _process_shape_template_payload(
+        self,
+        payload: object,
+        target_shape: Optional[Tuple[int, int, int]],
+        dtype: torch.dtype,
+        num_workers: int = 1,
+        show_progress: bool = False,
+        workers_is_auto: bool = False,
+    ) -> Dict[float, torch.Tensor]:
+        """Convert raw template payload to a compact dictionary keyed by age."""
+
+        if isinstance(payload, dict) and 'mean' in payload:
+            templates = payload['mean']
+        elif isinstance(payload, dict):
+            templates = payload
+        else:
+            raise TypeError(
+                "Shape template payload must be a dict containing 'mean' entries or age bins."
+            )
+
+        processed: Dict[float, torch.Tensor] = {}
+        target_shape_tuple: Optional[Tuple[int, int, int]] = None
+        if target_shape is not None:
+            target_shape_tuple = tuple(int(v) for v in target_shape)
+
+        items = list(templates.items())
+        total = len(items)
+
+        if total == 0:
+            if show_progress:
+                print("🧩 Building age-aware shape templates (0 age bins)", flush=True)
+            return processed
+
+        start_time = time.time()
+        last_progress_print = 0.0
+        progress_step = max(1, total // 20)
+
+        def emit_progress(done: int, *, final: bool = False, force: bool = False):
+            nonlocal last_progress_print
+
+            if not show_progress:
+                return
+
+            now = time.time()
+            if not force and not final:
+                if done % progress_step != 0 and (now - last_progress_print) < 5.0:
+                    return
+
+            percent = (done / total) * 100.0
+            elapsed = now - start_time
+            print(
+                f"    ↳ progress {done}/{total} ({percent:5.1f}%) elapsed {elapsed:6.1f}s",
+                flush=True,
+            )
+            last_progress_print = now
+
+            if final and done != total:
+                final_elapsed = now - start_time
+                print(
+                    f"    ↳ progress {total}/{total} (100.0%) elapsed {final_elapsed:6.1f}s",
+                    flush=True,
+                )
+
+        def process_single(item):
+            raw_key, tensor = item
+            age_value = _parse_age_key(raw_key)
+
+            tmpl = _to_tensor(tensor)
+            if not isinstance(tmpl, torch.Tensor):
+                raise TypeError(f"Template for age bin {raw_key!r} is not convertible to torch.Tensor")
+
+            tmpl = tmpl.detach().to(torch.float32, copy=True)
+
+            if target_shape_tuple is not None and tuple(int(v) for v in tmpl.shape[1:]) != target_shape_tuple:
+                tmpl = F.interpolate(
+                    tmpl.unsqueeze(0),
+                    size=target_shape_tuple,
+                    mode='trilinear',
+                    align_corners=False,
+                ).squeeze(0)
+
+            tmpl = tmpl.to(dtype).contiguous()
+            return age_value, tmpl
+
+        resolved_workers = max(1, num_workers)
+
+        if show_progress:
+            shape_desc = (
+                f"{target_shape_tuple[0]}x{target_shape_tuple[1]}x{target_shape_tuple[2]}"
+                if target_shape_tuple is not None
+                else "native"
+            )
+            if workers_is_auto:
+                worker_desc = f"auto≈{resolved_workers}"
+            else:
+                worker_desc = str(resolved_workers)
+            print(
+                f"🧩 Building age-aware shape templates ({total} age bins, dtype={dtype}, target={shape_desc}, "
+                f"CPU workers={worker_desc})",
+                flush=True,
+            )
+
+        emit_progress(0, force=True)
+
+        if resolved_workers > 1:
+            with ThreadPoolExecutor(max_workers=resolved_workers) as executor:
+                futures = {
+                    executor.submit(process_single, item): idx
+                    for idx, item in enumerate(items, 1)
+                }
+                for count, future in enumerate(as_completed(futures), 1):
+                    age_value, tmpl = future.result()
+                    processed[age_value] = tmpl
+                    emit_progress(count)
+        else:
+            for idx, item in enumerate(items, 1):
+                age_value, tmpl = process_single(item)
+                processed[age_value] = tmpl
+                emit_progress(idx)
+
+        emit_progress(total, final=True, force=True)
+
+        return processed
+
+    def _load_and_prepare_shape_templates(
+        self,
+        template_path: str,
+        target_shape: Optional[Tuple[int, int, int]],
+        dtype_spec: Optional[str],
+        num_workers: int = 1,
+        show_progress: bool = False,
+        workers_is_auto: bool = False,
+    ) -> Dict[float, torch.Tensor]:
+        """Load heavy shape templates once, compress, and cache for subsequent ranks."""
+
+        dtype = _resolve_dtype(dtype_spec)
+        cache_path = _derive_shape_template_cache_path(template_path, target_shape, dtype)
+
+        is_dist = dist.is_available() and dist.is_initialized()
+        rank = dist.get_rank() if is_dist else 0
+        world_size = dist.get_world_size() if is_dist else 1
+        is_main = (rank == 0)
+
+        if os.path.exists(cache_path):
+            if is_main:
+                print(f"✓ Loaded cached shape templates from {cache_path}")
+            if is_dist:
+                dist.barrier()
+            return torch.load(cache_path, map_location='cpu')
+
+        if is_dist and not is_main:
+            # Wait for rank 0 to finish preprocessing and writing the cache.
+            dist.barrier()
+            if os.path.exists(cache_path):
+                return torch.load(cache_path, map_location='cpu')
+
+        # Rank 0 (or single-process) performs the heavy lifting.
+        payload = torch.load(template_path, map_location='cpu')
+        start_time = time.time()
+        processed = self._process_shape_template_payload(
+            payload,
+            target_shape,
+            dtype,
+            num_workers=num_workers,
+            show_progress=show_progress,
+            workers_is_auto=workers_is_auto,
+        )
+        del payload
+
+        os.makedirs(os.path.dirname(cache_path) or '.', exist_ok=True)
+        torch.save(processed, cache_path)
+
+        if is_main:
+            first_template = next(iter(processed.values())) if processed else None
+            print(f"✓ Loaded shape templates from {template_path}")
+            print(f"  ↳ Cached processed templates at {cache_path}")
+            if first_template is not None:
+                spatial_shape = tuple(int(v) for v in first_template.shape[1:])
+                print(
+                    f"  ↳ Template dtype {first_template.dtype}, spatial shape {spatial_shape}, classes {first_template.shape[0]}"
+                )
+                duration = time.time() - start_time
+                print(f"  ↳ Preprocessing time: {duration:.1f}s using CPU workers")
+
+        if is_dist and world_size > 1:
+            dist.barrier()
+
+        return processed
+
+    def _process_shape_template_payload(
+        self,
+        payload: object,
+        target_shape: Optional[Tuple[int, int, int]],
+        dtype: torch.dtype,
+        num_workers: int = 1,
+        show_progress: bool = False,
+        workers_is_auto: bool = False,
+    ) -> Dict[float, torch.Tensor]:
+        """Convert raw template payload to a compact dictionary keyed by age."""
+
+        if isinstance(payload, dict) and 'mean' in payload:
+            templates = payload['mean']
+        elif isinstance(payload, dict):
+            templates = payload
+        else:
+            raise TypeError(
+                "Shape template payload must be a dict containing 'mean' entries or age bins."
+            )
+
+        processed: Dict[float, torch.Tensor] = {}
+        target_shape_tuple: Optional[Tuple[int, int, int]] = None
+        if target_shape is not None:
+            target_shape_tuple = tuple(int(v) for v in target_shape)
+
+        items = list(templates.items())
+        total = len(items)
+
+        if total == 0:
+            if show_progress:
+                print("🧩 Building age-aware shape templates (0 age bins)", flush=True)
+            return processed
+
+        def emit_progress(done: int):
+            if not show_progress:
+                return
+            if done == 1 or done == total:
+                pass
+            else:
+                step = max(1, total // 20)
+                if done % step != 0:
+                    return
+            percent = (done / total) * 100.0
+            print(f"    ↳ processed {done}/{total} ({percent:5.1f}%)", flush=True)
+
+        def process_single(item):
+            raw_key, tensor = item
+            age_value = _parse_age_key(raw_key)
+
+            tmpl = _to_tensor(tensor)
+            if not isinstance(tmpl, torch.Tensor):
+                raise TypeError(f"Template for age bin {raw_key!r} is not convertible to torch.Tensor")
+
+            tmpl = tmpl.detach().to(torch.float32, copy=True)
+
+            if target_shape_tuple is not None and tuple(int(v) for v in tmpl.shape[1:]) != target_shape_tuple:
+                tmpl = F.interpolate(
+                    tmpl.unsqueeze(0),
+                    size=target_shape_tuple,
+                    mode='trilinear',
+                    align_corners=False,
+                ).squeeze(0)
+
+            tmpl = tmpl.to(dtype).contiguous()
+            return age_value, tmpl
+
+        resolved_workers = max(1, num_workers)
+
+        if show_progress:
+            shape_desc = (
+                f"{target_shape_tuple[0]}x{target_shape_tuple[1]}x{target_shape_tuple[2]}"
+                if target_shape_tuple is not None
+                else "native"
+            )
+            if workers_is_auto:
+                worker_desc = f"auto≈{resolved_workers}"
+            else:
+                worker_desc = str(resolved_workers)
+            print(
+                f"🧩 Building age-aware shape templates ({total} age bins, dtype={dtype}, target={shape_desc}, "
+                f"CPU workers={worker_desc})",
+                flush=True,
+            )
+
+        if resolved_workers > 1:
+            with ThreadPoolExecutor(max_workers=resolved_workers) as executor:
+                futures = {
+                    executor.submit(process_single, item): idx
+                    for idx, item in enumerate(items, 1)
+                }
+                for count, future in enumerate(as_completed(futures), 1):
+                    age_value, tmpl = future.result()
+                    processed[age_value] = tmpl
+                    emit_progress(count)
+        else:
+            for idx, item in enumerate(items, 1):
+                age_value, tmpl = process_single(item)
+                processed[age_value] = tmpl
+                emit_progress(idx)
+
+        return processed
+
+    def _load_and_prepare_shape_templates(
+        self,
+        template_path: str,
+        target_shape: Optional[Tuple[int, int, int]],
+        dtype_spec: Optional[str],
+        num_workers: int = 1,
+        show_progress: bool = False,
+        workers_is_auto: bool = False,
+    ) -> Dict[float, torch.Tensor]:
+        """Load heavy shape templates once, compress, and cache for subsequent ranks."""
+
+        dtype = _resolve_dtype(dtype_spec)
+        cache_path = _derive_shape_template_cache_path(template_path, target_shape, dtype)
+
+        is_dist = dist.is_available() and dist.is_initialized()
+        rank = dist.get_rank() if is_dist else 0
+        world_size = dist.get_world_size() if is_dist else 1
+        is_main = (rank == 0)
+
+        if os.path.exists(cache_path):
+            if is_main:
+                print(f"✓ Loaded cached shape templates from {cache_path}")
+            if is_dist:
+                dist.barrier()
+            return torch.load(cache_path, map_location='cpu')
+
+        if is_dist and not is_main:
+            # Wait for rank 0 to finish preprocessing and writing the cache.
+            dist.barrier()
+            if os.path.exists(cache_path):
+                return torch.load(cache_path, map_location='cpu')
+
+        # Rank 0 (or single-process) performs the heavy lifting.
+        payload = torch.load(template_path, map_location='cpu')
+        start_time = time.time()
+        processed = self._process_shape_template_payload(
+            payload,
+            target_shape,
+            dtype,
+            num_workers=num_workers,
+            show_progress=show_progress,
+            workers_is_auto=workers_is_auto,
+        )
+        del payload
+
+        os.makedirs(os.path.dirname(cache_path) or '.', exist_ok=True)
+        torch.save(processed, cache_path)
+
+        if is_main:
+            first_template = next(iter(processed.values())) if processed else None
+            print(f"✓ Loaded shape templates from {template_path}")
+            print(f"  ↳ Cached processed templates at {cache_path}")
+            if first_template is not None:
+                spatial_shape = tuple(int(v) for v in first_template.shape[1:])
+                print(
+                    f"  ↳ Template dtype {first_template.dtype}, spatial shape {spatial_shape}, classes {first_template.shape[0]}"
+                )
+                duration = time.time() - start_time
+                print(f"  ↳ Preprocessing time: {duration:.1f}s using CPU workers")
+
+        if is_dist and world_size > 1:
+            dist.barrier()
+
+        return processed
+
+    def _process_shape_template_payload(
+        self,
+        payload: object,
+        target_shape: Optional[Tuple[int, int, int]],
+        dtype: torch.dtype,
+    ) -> Dict[float, torch.Tensor]:
+        """Convert raw template payload to a compact dictionary keyed by age."""
+
+        if isinstance(payload, dict) and 'mean' in payload:
+            templates = payload['mean']
+        elif isinstance(payload, dict):
+            templates = payload
+        else:
+            raise TypeError(
+                "Shape template payload must be a dict containing 'mean' entries or age bins."
+            )
+
+        processed: Dict[float, torch.Tensor] = {}
+        target_shape_tuple: Optional[Tuple[int, int, int]] = None
+        if target_shape is not None:
+            target_shape_tuple = tuple(int(v) for v in target_shape)
+
+        for raw_key, tensor in templates.items():
+            age_value = _parse_age_key(raw_key)
+
+            tmpl = _to_tensor(tensor)
+            if not isinstance(tmpl, torch.Tensor):
+                raise TypeError(f"Template for age bin {raw_key!r} is not convertible to torch.Tensor")
+
+            tmpl = tmpl.detach().to(torch.float32, copy=True)
+
+            if target_shape_tuple is not None and tuple(int(v) for v in tmpl.shape[1:]) != target_shape_tuple:
+                tmpl = F.interpolate(
+                    tmpl.unsqueeze(0),
+                    size=target_shape_tuple,
+                    mode='trilinear',
+                    align_corners=False,
+                ).squeeze(0)
+
+            tmpl = tmpl.to(dtype).contiguous()
+            processed[age_value] = tmpl
+
+        return processed
+
+    def _load_and_prepare_shape_templates(
+        self,
+        template_path: str,
+        target_shape: Optional[Tuple[int, int, int]],
+        dtype_spec: Optional[str],
+    ) -> Dict[float, torch.Tensor]:
+        """Load heavy shape templates once, compress, and cache for subsequent ranks."""
+
+        dtype = _resolve_dtype(dtype_spec)
+        cache_path = _derive_shape_template_cache_path(template_path, target_shape, dtype)
+
+        is_dist = dist.is_available() and dist.is_initialized()
+        rank = dist.get_rank() if is_dist else 0
+        world_size = dist.get_world_size() if is_dist else 1
+        is_main = (rank == 0)
+
+        if os.path.exists(cache_path):
+            if is_main:
+                print(f"✓ Loaded cached shape templates from {cache_path}")
+            if is_dist:
+                dist.barrier()
+            return torch.load(cache_path, map_location='cpu')
+
+        if is_dist and not is_main:
+            # Wait for rank 0 to finish preprocessing and writing the cache.
+            dist.barrier()
+            if os.path.exists(cache_path):
+                return torch.load(cache_path, map_location='cpu')
+
+        # Rank 0 (or single-process) performs the heavy lifting.
+        payload = torch.load(template_path, map_location='cpu')
+        processed = self._process_shape_template_payload(payload, target_shape, dtype)
+        del payload
+
+        os.makedirs(os.path.dirname(cache_path) or '.', exist_ok=True)
+        torch.save(processed, cache_path)
+
+        if is_main:
+            first_template = next(iter(processed.values())) if processed else None
+            print(f"✓ Loaded shape templates from {template_path}")
+            print(f"  ↳ Cached processed templates at {cache_path}")
+            if first_template is not None:
+                spatial_shape = tuple(int(v) for v in first_template.shape[1:])
+                print(
+                    f"  ↳ Template dtype {first_template.dtype}, spatial shape {spatial_shape}, classes {first_template.shape[0]}"
+                )
 
         if is_dist and world_size > 1:
             dist.barrier()

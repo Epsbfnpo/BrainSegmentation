@@ -541,6 +541,15 @@ def main():
         parser = get_parser()
         args = parser.parse_args()
 
+        auto_inferred_shape_templates = False
+        if args.shape_templates_pt:
+            args.shape_templates_pt = os.path.abspath(args.shape_templates_pt)
+        else:
+            default_shape_templates = os.path.join(_REPO_ROOT, 'priors', 'shape_templates.pt')
+            if os.path.exists(default_shape_templates):
+                args.shape_templates_pt = default_shape_templates
+                auto_inferred_shape_templates = True
+
         if not args.debug_mode:
             env_debug = os.environ.get("TRAIN_DEBUG", "")
             if env_debug.lower() in {"1", "true", "yes", "y", "on", "debug"}:
