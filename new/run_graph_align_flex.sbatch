@@ -2,8 +2,8 @@
 #SBATCH --job-name=graph_align_flex_new
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=32
-#SBATCH --mem=128G
+#SBATCH --cpus-per-task=64
+#SBATCH --mem=256G
 #SBATCH --account=OD-210257
 #SBATCH --partition=gpu
 #SBATCH --gpus-per-node=4
@@ -47,5 +47,9 @@ echo "=============================================================="
 RESULTS_DIR="/datasets/work/hb-nhmrc-dhcp/work/liu275/new/results"
 if [ ! -f "${RESULTS_DIR}/final_model.pth" ] && [ -f "${RESULTS_DIR}/latest.pth" ]; then
     echo "Training not complete, resubmitting job..."
-    sbatch --dependency=singleton --job-name=graph_align_flex_new "$0"
+    SUBMIT_DIR=${SLURM_SUBMIT_DIR:-$(dirname "$0")}
+    SCRIPT_PATH="${SUBMIT_DIR}/$(basename "$0")"
+    JOB_NAME=${SLURM_JOB_NAME:-graph_align_flex_new}
+    sbatch --dependency=singleton --job-name="$JOB_NAME" "$SCRIPT_PATH"
 fi
+
