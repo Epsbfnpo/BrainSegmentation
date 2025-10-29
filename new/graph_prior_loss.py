@@ -18,6 +18,12 @@ from monai.data import MetaTensor
 _DEFAULT_VOLUME_STD_FLOOR = 0.02
 
 
+_DEFAULT_VOLUME_STD_FLOOR = 0.02
+
+
+_DEFAULT_VOLUME_STD_FLOOR = 0.02
+
+
 def _to_tensor(x):
     """Convert MetaTensor to regular torch.Tensor if needed"""
     if x is None:
@@ -399,6 +405,10 @@ def _align_volume_stats(volume_stats: Dict, num_classes: int,
         if total > 1e-6:
             fg_means = fg_means / total
             fg_stds = fg_stds / total
+
+        fg_stds = np.maximum(fg_stds, min_std)
+
+        fg_stds = np.maximum(fg_stds, min_std)
 
         fg_stds = np.maximum(fg_stds, min_std)
 

@@ -23,6 +23,7 @@ from datetime import datetime, timedelta
 import numpy as np
 import copy
 from collections import deque
+from typing import Dict, List, Optional
 import glob
 import signal
 import subprocess
@@ -31,23 +32,55 @@ import shutil
 import traceback
 from datetime import datetime
 
-# Ensure repository root is on path for package imports
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-REPO_ROOT = os.path.dirname(CURRENT_DIR)
-if REPO_ROOT not in sys.path:
-    sys.path.append(REPO_ROOT)
-
 # Import simplified DAUnet components
-from causal.age_aware_modules import SimplifiedDAUnetModule
-from causal.trainer_age_aware import train_epoch_age_aware, val_epoch_age_aware, save_checkpoint_simplified
-from causal.data_loader_age_aware import get_source_target_dataloaders
-from causal.dice_monitor import DiceMonitor
-from causal.graph_prior_loss import AgeConditionedGraphPriorLoss
+from age_aware_modules import SimplifiedDAUnetModule
+from trainer_causal import train_epoch_causal, val_epoch_causal, save_checkpoint_simplified
+from data_loader_age_aware import get_source_target_dataloaders
+from dice_monitor import DiceMonitor
+from graph_prior_loss import AgeConditionedGraphPriorLoss
+
+
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, os.pardir))
+_DEFAULT_SOURCE_PRIOR = os.path.join(_REPO_ROOT, "dHCP_class_prior_foreground.json")
+_DEFAULT_TARGET_PRIOR = os.path.join(_REPO_ROOT, "PPREMOPREBO_class_prior_foreground.json")
 
 
 def is_dist():
     """Check if distributed training is enabled"""
     return int(os.environ.get("WORLD_SIZE", "1")) > 1
+
+
+def extract_age_from_metadata(metadata: Dict) -> Optional[float]:
+    if not metadata:
+        return None
+    if 'scan_age' in metadata:
+        return float(metadata['scan_age'])
+    if 'PMA' in metadata:
+        return float(metadata['PMA'])
+    if 'pma' in metadata:
+        return float(metadata['pma'])
+    if 'GA' in metadata and 'PNA' in metadata:
+        try:
+            return float(metadata['GA']) + float(metadata['PNA'])
+        except Exception:
+            return None
+    if 'ga' in metadata and 'pna' in metadata:
+        try:
+            return float(metadata['ga']) + float(metadata['pna'])
+        except Exception:
+            return None
+    return None
+
+
+def compute_hist_from_ages(ages: List[float], bin_edges: np.ndarray) -> np.ndarray:
+    if len(ages) == 0:
+        return np.ones(len(bin_edges) - 1, dtype=np.float32) / (len(bin_edges) - 1)
+    counts, _ = np.histogram(ages, bins=bin_edges)
+    counts = counts.astype(np.float32)
+    if counts.sum() == 0:
+        return np.ones_like(counts) / len(counts)
+    return counts / counts.sum()
 
 
 def get_parser():
@@ -67,7 +100,7 @@ def get_parser():
     # Model parameters
     parser.add_argument('--in_channels', default=1, type=int,
                         help='Number of input channels')
-    parser.add_argument('--out_channels', default=87, type=int,
+    parser.add_argument('--out_channels', default=88, type=int,
                         help='Number of segmentation classes')
     parser.add_argument('--feature_size', default=48, type=int,
                         help='Feature size for transformer')
@@ -131,6 +164,10 @@ def get_parser():
                         help='Path to target domain required edges JSON file')
     parser.add_argument('--prior_forbidden_json', type=str, default=None,
                         help='Path to target domain forbidden edges JSON file')
+    parser.add_argument('--prior_containment_json', type=str, default=None,
+                        help='Path to containment relations JSON file')
+    parser.add_argument('--prior_exclusive_json', type=str, default=None,
+                        help='Path to exclusive pairs JSON file')
 
     # ========== AGE-AWARE PRIORS (NEW, minimal-intrusion) ==========
     parser.add_argument('--use_age_conditioning', action='store_true', default=True,
@@ -201,36 +238,6 @@ def get_parser():
                         choices=['src_only', 'tgt_only', 'joint'],
                         help='Graph alignment mode: align to source only, target only, or both')
 
-    # ========== CAUSAL REGULARIZATION & AGE BINNING ==========
-    parser.add_argument('--age_bin_min', type=float, default=32.0,
-                        help='Minimum age (weeks) for age-conditioned binning')
-    parser.add_argument('--age_bin_max', type=float, default=46.0,
-                        help='Maximum age (weeks) for age-conditioned binning')
-    parser.add_argument('--age_bin_size', type=float, default=2.0,
-                        help='Width of age bins in weeks')
-    parser.add_argument('--age_bin_min_count', type=int, default=2,
-                        help='Minimum total samples per bin across domains to apply invariance penalties')
-    parser.add_argument('--irm_penalty_weight', type=float, default=0.0,
-                        help='Weight for VREx/IRM-style age-conditioned risk invariance')
-    parser.add_argument('--irm_penalty_type', type=str, default='vrex', choices=['vrex', 'irm'],
-                        help='Type of conditional invariance penalty to use (variance or IRM approximation)')
-    parser.add_argument('--graph_invariance_weight', type=float, default=0.0,
-                        help='Weight for age-conditioned adjacency invariance between domains')
-    parser.add_argument('--graph_invariance_use_spectral', action='store_true',
-                        help='Include Laplacian spectral alignment in graph invariance penalty')
-    parser.add_argument('--ci_weight', type=float, default=0.0,
-                        help='Weight for conditional independence (HSIC/MMD) regularization between features and domain')
-    parser.add_argument('--ci_bandwidths', type=str, default='1.0,5.0,10.0',
-                        help='Comma-separated RBF bandwidths for MMD-based conditional independence penalty')
-    parser.add_argument('--cf_domain_weight', type=float, default=0.0,
-                        help='Weight for counterfactual domain-style consistency loss')
-    parser.add_argument('--cf_noise_scale', type=float, default=0.05,
-                        help='Noise scale for counterfactual domain augmentation')
-    parser.add_argument('--cf_age_weight', type=float, default=0.0,
-                        help='Weight for counterfactual age-volume consistency loss')
-    parser.add_argument('--cf_age_delta', type=float, default=0.5,
-                        help='Maximum absolute age perturbation (weeks) for age counterfactuals')
-
     # ========== NEW: DYNAMIC SPECTRAL ALIGNMENT PARAMETERS ==========
     parser.add_argument('--lambda_dyn', type=float, default=0.2,
                         help='Weight for dynamic spectral alignment (relative to lambda_spec_src)')
@@ -248,6 +255,48 @@ def get_parser():
                         help='Use restricted alignment mask for forbidden/required/symmetry')
     parser.add_argument('--restricted_mask_path', type=str, default=None,
                         help='Path to precomputed restricted mask R_mask.npy')
+
+    # ========== CAUSAL REGULARIZATION SETTINGS ==========
+    parser.add_argument('--causal_age_bin_width', type=float, default=2.0,
+                        help='Bin width (weeks) for age-conditional invariance losses')
+    parser.add_argument('--causal_vrex_lambda', type=float, default=0.15,
+                        help='Weight for conditional V-REx loss (set to 0 to disable)')
+    parser.add_argument('--causal_vrex_start', type=int, default=10,
+                        help='Epoch to start V-REx regularization')
+    parser.add_argument('--causal_vrex_min_count', type=int, default=1,
+                        help='Minimum samples per domain/age bin to include in V-REx')
+    parser.add_argument('--causal_lapinv_lambda', type=float, default=0.08,
+                        help='Weight for Laplacian residual invariance loss (0 to disable)')
+    parser.add_argument('--causal_lapinv_start', type=int, default=10,
+                        help='Epoch to start Laplacian invariance loss')
+    parser.add_argument('--causal_lapinv_min_count', type=int, default=1,
+                        help='Minimum samples per bin for Laplacian invariance')
+    parser.add_argument('--causal_lapinv_pool_kernel', type=int, default=3,
+                        help='Pooling kernel size when forming soft adjacency for Laplacian invariance')
+    parser.add_argument('--causal_lapinv_pool_stride', type=int, default=2,
+                        help='Pooling stride for Laplacian invariance adjacency')
+    parser.add_argument('--causal_lapinv_temperature', type=float, default=1.0,
+                        help='Temperature for Laplacian invariance adjacency')
+    parser.add_argument('--causal_cf_lambda', type=float, default=0.05,
+                        help='Weight for counterfactual consistency loss (0 to disable)')
+    parser.add_argument('--causal_cf_start', type=int, default=10,
+                        help='Epoch to start counterfactual consistency')
+    parser.add_argument('--causal_cf_sample_rate', type=float, default=0.2,
+                        help='Probability of sampling a counterfactual per source sample')
+    parser.add_argument('--causal_cf_intensity_scale', type=float, default=0.25,
+                        help='Scale of multiplicative intensity perturbation for counterfactuals')
+    parser.add_argument('--causal_cf_intensity_shift', type=float, default=0.15,
+                        help='Magnitude of additive intensity shift for counterfactuals')
+    parser.add_argument('--causal_cf_noise_std', type=float, default=0.03,
+                        help='Standard deviation of Gaussian noise for counterfactuals')
+    parser.add_argument('--causal_cf_bias_strength', type=float, default=0.1,
+                        help='Bias field strength for counterfactual generation')
+    parser.add_argument('--causal_cf_confidence', type=float, default=0.6,
+                        help='Confidence threshold for counterfactual consistency weighting')
+    parser.add_argument('--disable_causal_age_balance', action='store_true',
+                        help='Disable age distribution reweighting between domains')
+    parser.add_argument('--causal_age_balance_start', type=int, default=10,
+                        help='Epoch to activate age balance reweighting')
 
     # Graph loss scheduling
     parser.add_argument('--graph_warmup_epochs', type=int, default=10,
@@ -365,16 +414,6 @@ def get_parser():
                         help='Buffer time in minutes before job ends')
 
     return parser
-
-
-def _enforce_foreground_only_config(args, verbose: bool = True):
-    """Ensure foreground-only mode consistently predicts 87 brain regions."""
-    if getattr(args, 'foreground_only', False):
-        if args.out_channels != 87 and verbose:
-            print(
-                f"⚙️ Foreground-only模式启用：自动将out_channels从{args.out_channels}调整为87，确保仅预测87个脑区")
-        args.out_channels = 87
-    return args
 
 
 def load_pretrained_model(model, checkpoint_path, device):
@@ -553,12 +592,6 @@ def main():
         # Parse arguments
         parser = get_parser()
         args = parser.parse_args()
-        args = _enforce_foreground_only_config(args)
-
-        if isinstance(args.ci_bandwidths, str):
-            args.ci_bandwidths = [float(x) for x in args.ci_bandwidths.split(',') if x.strip()]
-        if not isinstance(args.ci_bandwidths, (list, tuple)) or len(args.ci_bandwidths) == 0:
-            args.ci_bandwidths = [1.0, 5.0, 10.0]
 
         if not args.debug_mode:
             env_debug = os.environ.get("TRAIN_DEBUG", "")
@@ -685,9 +718,57 @@ def main():
 
         # Set default class prior paths if not provided
         if args.target_prior_json is None:
-            args.target_prior_json = "/datasets/work/hb-nhmrc-dhcp/work/liu275/PPREMOPREBO_class_prior_standard.json"
+            args.target_prior_json = _DEFAULT_TARGET_PRIOR
         if args.source_prior_json is None:
-            args.source_prior_json = "/datasets/work/hb-nhmrc-dhcp/work/liu275/dHCP_class_prior_standard.json"
+            args.source_prior_json = _DEFAULT_SOURCE_PRIOR
+
+        # Pre-compute age histograms for causal losses
+        try:
+            with open(args.source_split_json, 'r') as f_src:
+                source_preview = json.load(f_src)
+            with open(args.split_json, 'r') as f_tgt:
+                target_preview = json.load(f_tgt)
+            src_ages = [
+                extract_age_from_metadata(item.get('metadata'))
+                for item in source_preview.get('training', [])
+                if extract_age_from_metadata(item.get('metadata')) is not None
+            ]
+            tgt_ages = [
+                extract_age_from_metadata(item.get('metadata'))
+                for item in target_preview.get('training', [])
+                if extract_age_from_metadata(item.get('metadata')) is not None
+            ]
+            combined = src_ages + tgt_ages
+            if not combined:
+                combined = [40.0]
+            min_age = float(np.floor(min(combined)))
+            max_age = float(np.ceil(max(combined)))
+            bin_width = max(0.5, float(args.causal_age_bin_width))
+            num_bins = max(1, int(np.ceil((max_age - min_age) / bin_width)))
+            bin_edges = np.linspace(min_age, min_age + bin_width * (num_bins + 1), num_bins + 1, dtype=np.float32)
+            src_hist = compute_hist_from_ages(src_ages, bin_edges)
+            tgt_hist = compute_hist_from_ages(tgt_ages, bin_edges)
+            args.age_hist_info = {
+                'bin_edges': torch.tensor(bin_edges, dtype=torch.float32),
+                'source_hist': torch.tensor(src_hist, dtype=torch.float32),
+                'target_hist': torch.tensor(tgt_hist, dtype=torch.float32),
+                'min_age': min_age,
+                'max_age': max_age,
+            }
+            if is_main:
+                print(
+                    f"📈 Age bins prepared: {num_bins} bins spanning {min_age:.1f}-{max_age:.1f} weeks "
+                    f"(width {bin_width:.1f})"
+                )
+        except Exception as age_exc:
+            args.age_hist_info = None
+            if is_main:
+                print(f"⚠️  Failed to prepare age histograms: {age_exc}")
+
+        if is_main:
+            for label, path in (("target", args.target_prior_json), ("source", args.source_prior_json)):
+                if not os.path.exists(path):
+                    print(f"⚠️  Default {label} class prior not found at {path}")
 
         # Enable H100 optimizations
         if args.use_amp:
@@ -1043,6 +1124,36 @@ def main():
             print(f"  Stage C (Adaptive): Epoch {args.dyn_start_epoch + args.dyn_ramp_epochs}-{args.epochs}")
             time_manager.print_status(is_main)
 
+        causal_config = {
+            'enable_vrex': args.causal_vrex_lambda > 0,
+            'vrex_lambda': args.causal_vrex_lambda,
+            'vrex_start_epoch': args.causal_vrex_start,
+            'vrex_min_count': args.causal_vrex_min_count,
+            'enable_lapinv': args.causal_lapinv_lambda > 0,
+            'lapinv_lambda': args.causal_lapinv_lambda,
+            'lapinv_start_epoch': args.causal_lapinv_start,
+            'lapinv_min_count': args.causal_lapinv_min_count,
+            'lapinv_pool_kernel': args.causal_lapinv_pool_kernel,
+            'lapinv_pool_stride': args.causal_lapinv_pool_stride,
+            'lapinv_temperature': args.causal_lapinv_temperature,
+            'enable_counterfactual': args.causal_cf_lambda > 0 and args.causal_cf_sample_rate > 0,
+            'cf_lambda': args.causal_cf_lambda,
+            'cf_start_epoch': args.causal_cf_start,
+            'cf_sample_rate': args.causal_cf_sample_rate,
+            'cf_intensity_scale': args.causal_cf_intensity_scale,
+            'cf_intensity_shift': args.causal_cf_intensity_shift,
+            'cf_noise_std': args.causal_cf_noise_std,
+            'cf_bias_strength': args.causal_cf_bias_strength,
+            'cf_confidence_threshold': args.causal_cf_confidence,
+            'enable_age_balance': not args.disable_causal_age_balance,
+            'age_balance_start': args.causal_age_balance_start,
+            'causal_age_bin_width': args.causal_age_bin_width,
+        }
+        age_hist_info = getattr(args, 'age_hist_info', None)
+        if causal_config['enable_age_balance'] and age_hist_info is None and is_main:
+            print("⚠️  Age balance requested but no histogram info available; disabling reweighting.")
+            causal_config['enable_age_balance'] = False
+
         # Track why we exited the training loop
         exit_reason = None
         final_epoch = start_epoch - 1
@@ -1095,7 +1206,7 @@ def main():
 
                 # Train one epoch (trainer will consume args.graph_loss_kwargs if present)
                 train_start = time.time()
-                train_metrics = train_epoch_age_aware(
+                train_metrics = train_epoch_causal(
                     model=model,
                     source_loader=source_train_loader,
                     target_loader=target_train_loader,
@@ -1108,7 +1219,9 @@ def main():
                     is_distributed=is_dist(),
                     world_size=world_size,
                     rank=local_rank,
-                    age_graph_loss=age_graph_loss
+                    age_graph_loss=age_graph_loss,
+                    causal_config=causal_config,
+                    age_hist_info=age_hist_info
                 )
                 train_time = time.time() - train_start
                 time_manager.record_train_time(train_time)
@@ -1125,7 +1238,7 @@ def main():
                         break
 
                     val_start = time.time()
-                    val_metrics = val_epoch_age_aware(
+                    val_metrics = val_epoch_causal(
                         model=model,
                         loader=target_val_loader,
                         epoch=epoch,
@@ -1324,11 +1437,6 @@ def safe_main():
     # Parse args first to get results_dir
     parser = get_parser()
     args = parser.parse_args()
-    args = _enforce_foreground_only_config(args, verbose=False)
-    if isinstance(args.ci_bandwidths, str):
-        args.ci_bandwidths = [float(x) for x in args.ci_bandwidths.split(',') if x.strip()]
-    if not isinstance(args.ci_bandwidths, (list, tuple)) or len(args.ci_bandwidths) == 0:
-        args.ci_bandwidths = [1.0, 5.0, 10.0]
 
     # Get rank info
     rank = int(os.environ.get("LOCAL_RANK", -1))
