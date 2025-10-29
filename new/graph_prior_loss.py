@@ -11,8 +11,91 @@ import torch.nn.functional as F
 import json
 import numpy as np
 import os
-from typing import Optional, Dict, List, Tuple
+import math
+import re
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Optional, Dict, List, Tuple, Union
 from monai.data import MetaTensor
+
+
+_DEFAULT_VOLUME_STD_FLOOR = 0.02
+
+
+def _resolve_dtype(dtype: Optional[str]) -> torch.dtype:
+    """Map a string dtype specifier to a torch.dtype with sensible defaults."""
+
+    if dtype is None:
+        return torch.float32
+
+    normalized = str(dtype).lower()
+    if normalized in {"fp16", "float16", "half"}:
+        return torch.float16
+    if normalized in {"bf16", "bfloat16"}:
+        return torch.bfloat16
+    if normalized in {"float", "float32", "fp32"}:
+        return torch.float32
+
+    raise ValueError(
+        f"Unsupported shape template dtype '{dtype}'. Supported values: float32, float16, bfloat16."
+    )
+
+
+def _derive_shape_template_cache_path(
+    template_path: str,
+    target_shape: Optional[Tuple[int, int, int]],
+    dtype: torch.dtype,
+) -> str:
+    """Create a deterministic cache path for processed shape templates."""
+
+    base = f"{template_path}.processed"
+    if target_shape is not None:
+        base += f".roi{int(target_shape[0])}x{int(target_shape[1])}x{int(target_shape[2])}"
+
+    if dtype == torch.float16:
+        base += ".fp16"
+    elif dtype == torch.bfloat16:
+        base += ".bf16"
+    else:
+        base += ".fp32"
+
+    return base + ".pt"
+
+
+def _parse_age_key(key: object) -> float:
+    """Convert an age-bin key from the template file to a float value."""
+
+    if isinstance(key, (int, float)):
+        return float(key)
+
+    if isinstance(key, str):
+        if key == "unknown_age":
+            return -1.0
+
+        match = re.match(r"age_([0-9]+(?:\.[0-9]+)?)w", key)
+        if match:
+            return float(match.group(1))
+
+    raise ValueError(f"Unrecognised age-bin key in shape templates: {key!r}")
+
+
+def _resolve_shape_template_workers(workers: Optional[int]) -> int:
+    """Derive a sensible worker count for shape template preprocessing."""
+
+    if workers is None:
+        workers = 0
+
+    try:
+        workers = int(workers)
+    except (TypeError, ValueError):
+        workers = 0
+
+    if workers <= 0:
+        cpu_count = os.cpu_count() or 1
+        auto = max(1, int(math.floor(cpu_count * 0.8)))
+        return auto
+
+    return max(1, workers)
 
 
 def _to_tensor(x):
@@ -347,7 +430,8 @@ def _detect_background_index(volume_stats: Dict, num_classes: int) -> Optional[i
     return None
 
 
-def _align_volume_stats(volume_stats: Dict, num_classes: int) -> Tuple[Dict, Optional[int], np.ndarray]:
+def _align_volume_stats(volume_stats: Dict, num_classes: int,
+                        std_floor: float = _DEFAULT_VOLUME_STD_FLOOR) -> Tuple[Dict, Optional[int], np.ndarray]:
     """Align raw volume statistics to match the model's foreground classes."""
 
     if not volume_stats:
@@ -357,6 +441,10 @@ def _align_volume_stats(volume_stats: Dict, num_classes: int) -> Tuple[Dict, Opt
     aligned: Dict[float, Dict[str, List[float]]] = {}
 
     valid_mask = np.ones(num_classes, dtype=np.float32)
+
+    min_std = std_floor if std_floor is not None else 0.0
+    if min_std <= 0:
+        min_std = 1e-6
 
     for age_key, stats in volume_stats.items():
         means = np.asarray(stats.get('means', []), dtype=np.float64)
@@ -392,6 +480,8 @@ def _align_volume_stats(volume_stats: Dict, num_classes: int) -> Tuple[Dict, Opt
             fg_means = fg_means / total
             fg_stds = fg_stds / total
 
+        fg_stds = np.maximum(fg_stds, min_std)
+
         aligned[float(age_key)] = {
             'means': fg_means.astype(np.float32).tolist(),
             'stds': fg_stds.astype(np.float32).tolist(),
@@ -425,7 +515,8 @@ def _align_shape_channels(template: torch.Tensor, target_channels: int) -> torch
 
 def volume_consistency_loss(probs: torch.Tensor, age: torch.Tensor,
                             volume_stats: Dict, num_classes: int,
-                            valid_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+                            valid_mask: Optional[torch.Tensor] = None,
+                            std_floor: float = _DEFAULT_VOLUME_STD_FLOOR) -> torch.Tensor:
     """
     Compute volume consistency loss based on age-specific statistics
 
@@ -451,12 +542,21 @@ def volume_consistency_loss(probs: torch.Tensor, age: torch.Tensor,
 
     for b in range(B):
         age_val = age[b].item()
-        volumes, stds = get_expected_volumes(age_val, volume_stats, num_classes)
+        volumes, stds = get_expected_volumes(
+            age_val,
+            volume_stats,
+            num_classes,
+            std_floor=std_floor,
+        )
         expected_volumes[b] = torch.tensor(volumes, device=probs.device)
         expected_stds[b] = torch.tensor(stds, device=probs.device)
 
     # Normalize by expected std
-    normalized_diff = (predicted_volumes - expected_volumes) / (expected_stds + 1e-6)
+    min_std = std_floor if std_floor is not None else 0.0
+    if min_std <= 0:
+        min_std = 1e-6
+    expected_stds = torch.clamp(expected_stds, min=min_std)
+    normalized_diff = (predicted_volumes - expected_volumes) / expected_stds
 
     if valid_mask is not None:
         mask = valid_mask.view(1, -1).to(device=probs.device, dtype=probs.dtype)
@@ -472,7 +572,8 @@ def volume_consistency_loss(probs: torch.Tensor, age: torch.Tensor,
 
 
 def get_expected_volumes(age: float, volume_stats: Dict,
-                         num_classes: int) -> Tuple[np.ndarray, np.ndarray]:
+                         num_classes: int,
+                         std_floor: float = _DEFAULT_VOLUME_STD_FLOOR) -> Tuple[np.ndarray, np.ndarray]:
     """
     Get expected volume statistics for a given age
 
@@ -485,19 +586,29 @@ def get_expected_volumes(age: float, volume_stats: Dict,
         means: Expected volume means
         stds: Expected volume stds
     """
+    min_std = std_floor if std_floor is not None else 0.0
+    if min_std <= 0:
+        min_std = 1e-6
+
     if not volume_stats:
-        return np.ones(num_classes), np.ones(num_classes)
+        means = np.ones(num_classes)
+        stds = np.maximum(np.ones(num_classes), min_std)
+        return means, stds
 
     # Find closest age or interpolate
     ages = sorted(list(volume_stats.keys()))
 
     if age <= ages[0]:
         stats = volume_stats[ages[0]]
-        return np.array(stats['means']), np.array(stats['stds'])
+        means = np.array(stats['means'])
+        stds = np.maximum(np.array(stats['stds']), min_std)
+        return means, stds
 
     if age >= ages[-1]:
         stats = volume_stats[ages[-1]]
-        return np.array(stats['means']), np.array(stats['stds'])
+        means = np.array(stats['means'])
+        stds = np.maximum(np.array(stats['stds']), min_std)
+        return means, stds
 
     # Linear interpolation
     for i in range(len(ages) - 1):
@@ -510,9 +621,12 @@ def get_expected_volumes(age: float, volume_stats: Dict,
 
             means = (1 - alpha) * means1 + alpha * means2
             stds = (1 - alpha) * stds1 + alpha * stds2
+            stds = np.maximum(stds, min_std)
             return means, stds
 
-    return np.ones(num_classes), np.ones(num_classes)
+    means = np.ones(num_classes)
+    stds = np.maximum(np.ones(num_classes), min_std)
+    return means, stds
 
 
 def shape_consistency_loss(probs: torch.Tensor,
@@ -651,6 +765,11 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                  dyn_ramp_epochs: int = 50,
                  prior_warmup_epochs: Optional[int] = None,
                  prior_temperature: Optional[float] = None,
+                 shape_template_target_shape: Optional[Tuple[int, int, int]] = None,
+                 shape_template_dtype: Optional[str] = None,
+                 shape_templates_cache_path: Optional[str] = None,
+                 shape_template_require_cache: bool = False,
+                 volume_std_floor: float = _DEFAULT_VOLUME_STD_FLOOR,
                  debug_mode: bool = False,
                  debug_max_batches: int = 2,
                  **extra_kwargs):
@@ -672,6 +791,13 @@ class AgeConditionedGraphPriorLoss(nn.Module):
         self.normalize_shape_templates = bool(
             extra_kwargs.pop('normalize_shape_templates', True)
         )
+        self.volume_std_floor = float(volume_std_floor)
+        requested_workers = extra_kwargs.pop('shape_template_workers', 0)
+        self.shape_template_workers = _resolve_shape_template_workers(requested_workers)
+        self._shape_template_workers_auto = requested_workers <= 0
+        self.shape_template_progress = bool(extra_kwargs.pop('shape_template_progress', True))
+        self.shape_templates_cache_path = shape_templates_cache_path
+        self.shape_template_require_cache = bool(shape_template_require_cache)
 
         # Graph alignment coefficients
         self.graph_align_mode = graph_align_mode
@@ -726,8 +852,16 @@ class AgeConditionedGraphPriorLoss(nn.Module):
 
         self.shape_templates = None
         if shape_templates_path and os.path.exists(shape_templates_path):
-            self.shape_templates = torch.load(shape_templates_path)
-            print(f"✓ Loaded shape templates from {shape_templates_path}")
+            self.shape_templates = self._load_and_prepare_shape_templates(
+                shape_templates_path,
+                target_shape=shape_template_target_shape,
+                dtype_spec=shape_template_dtype,
+                num_workers=self.shape_template_workers,
+                show_progress=self.shape_template_progress,
+                workers_is_auto=self._shape_template_workers_auto,
+                cache_override=self.shape_templates_cache_path,
+                require_cache=self.shape_template_require_cache,
+            )
 
         self.age_weights = None
         if age_weights_path and os.path.exists(age_weights_path):
@@ -847,6 +981,217 @@ class AgeConditionedGraphPriorLoss(nn.Module):
         self.use_restricted_mask = use_restricted_mask and mask_tensor.numel() > 0
         self.register_buffer('R_mask', mask_tensor if mask_tensor.numel() > 0 else torch.empty(0))
 
+    def _process_shape_template_payload(
+        self,
+        payload: object,
+        target_shape: Optional[Tuple[int, int, int]],
+        dtype: torch.dtype,
+        num_workers: int = 1,
+        show_progress: bool = False,
+        workers_is_auto: bool = False,
+    ) -> Dict[float, torch.Tensor]:
+        """Convert raw template payload to a compact dictionary keyed by age."""
+
+        if isinstance(payload, dict) and 'mean' in payload:
+            templates = payload['mean']
+        elif isinstance(payload, dict):
+            templates = payload
+        else:
+            raise TypeError(
+                "Shape template payload must be a dict containing 'mean' entries or age bins."
+            )
+
+        processed: Dict[float, torch.Tensor] = {}
+        target_shape_tuple: Optional[Tuple[int, int, int]] = None
+        if target_shape is not None:
+            target_shape_tuple = tuple(int(v) for v in target_shape)
+
+        items = list(templates.items())
+        total = len(items)
+
+        if total == 0:
+            if show_progress:
+                print("🧩 Building age-aware shape templates (0 age bins)", flush=True)
+            return processed
+
+        start_time = time.time()
+        last_progress_print = 0.0
+        progress_step = max(1, total // 20)
+
+        def emit_progress(done: int, *, final: bool = False, force: bool = False):
+            nonlocal last_progress_print
+
+            if not show_progress:
+                return
+
+            now = time.time()
+            if not force and not final:
+                if done % progress_step != 0 and (now - last_progress_print) < 5.0:
+                    return
+
+            percent = (done / total) * 100.0
+            elapsed = now - start_time
+            print(
+                f"    ↳ progress {done}/{total} ({percent:5.1f}%) elapsed {elapsed:6.1f}s",
+                flush=True,
+            )
+            last_progress_print = now
+
+            if final and done != total:
+                final_elapsed = now - start_time
+                print(
+                    f"    ↳ progress {total}/{total} (100.0%) elapsed {final_elapsed:6.1f}s",
+                    flush=True,
+                )
+
+        def process_single(item):
+            raw_key, tensor = item
+            age_value = _parse_age_key(raw_key)
+
+            tmpl = _to_tensor(tensor)
+            if not isinstance(tmpl, torch.Tensor):
+                raise TypeError(f"Template for age bin {raw_key!r} is not convertible to torch.Tensor")
+
+            tmpl = tmpl.detach().to(torch.float32, copy=True)
+
+            if target_shape_tuple is not None and tuple(int(v) for v in tmpl.shape[1:]) != target_shape_tuple:
+                tmpl = F.interpolate(
+                    tmpl.unsqueeze(0),
+                    size=target_shape_tuple,
+                    mode='trilinear',
+                    align_corners=False,
+                ).squeeze(0)
+
+            tmpl = tmpl.to(dtype).contiguous()
+            return age_value, tmpl
+
+        resolved_workers = max(1, num_workers)
+
+        if show_progress:
+            shape_desc = (
+                f"{target_shape_tuple[0]}x{target_shape_tuple[1]}x{target_shape_tuple[2]}"
+                if target_shape_tuple is not None
+                else "native"
+            )
+            if workers_is_auto:
+                worker_desc = f"auto≈{resolved_workers}"
+            else:
+                worker_desc = str(resolved_workers)
+            print(
+                f"🧩 Building age-aware shape templates ({total} age bins, dtype={dtype}, target={shape_desc}, "
+                f"CPU workers={worker_desc})",
+                flush=True,
+            )
+
+        emit_progress(0, force=True)
+
+        if resolved_workers > 1:
+            with ThreadPoolExecutor(max_workers=resolved_workers) as executor:
+                futures = {
+                    executor.submit(process_single, item): idx
+                    for idx, item in enumerate(items, 1)
+                }
+                for count, future in enumerate(as_completed(futures), 1):
+                    age_value, tmpl = future.result()
+                    processed[age_value] = tmpl
+                    emit_progress(count)
+        else:
+            for idx, item in enumerate(items, 1):
+                age_value, tmpl = process_single(item)
+                processed[age_value] = tmpl
+                emit_progress(idx)
+
+        emit_progress(total, final=True, force=True)
+
+        return processed
+
+    def _load_and_prepare_shape_templates(
+        self,
+        template_path: str,
+        target_shape: Optional[Tuple[int, int, int]],
+        dtype_spec: Optional[str],
+        num_workers: int = 1,
+        show_progress: bool = False,
+        workers_is_auto: bool = False,
+        cache_override: Optional[str] = None,
+        require_cache: bool = False,
+    ) -> Dict[float, torch.Tensor]:
+        """Load heavy shape templates once, compress, and cache for subsequent ranks."""
+
+        dtype = _resolve_dtype(dtype_spec)
+        derived_cache = _derive_shape_template_cache_path(template_path, target_shape, dtype)
+
+        cache_override = os.path.abspath(cache_override) if cache_override else None
+        derived_cache = os.path.abspath(derived_cache)
+
+        def load_cache(path: str) -> Dict[float, torch.Tensor]:
+            if is_main:
+                print(f"✓ Loaded cached shape templates from {path}")
+            if is_dist:
+                dist.barrier()
+            return torch.load(path, map_location='cpu')
+
+        if cache_override and os.path.exists(cache_override):
+            return load_cache(cache_override)
+
+        if os.path.exists(derived_cache):
+            return load_cache(derived_cache)
+
+        if cache_override and require_cache:
+            raise FileNotFoundError(
+                f"Required shape template cache not found: {cache_override}. "
+                "Please run preprocess_shape_templates.py before launching training."
+            )
+
+        cache_path = cache_override or derived_cache
+
+        is_dist = dist.is_available() and dist.is_initialized()
+        rank = dist.get_rank() if is_dist else 0
+        world_size = dist.get_world_size() if is_dist else 1
+        is_main = (rank == 0)
+
+        if os.path.exists(cache_path):
+            return load_cache(cache_path)
+
+        if is_dist and not is_main:
+            # Wait for rank 0 to finish preprocessing and writing the cache.
+            dist.barrier()
+            if os.path.exists(cache_path):
+                return torch.load(cache_path, map_location='cpu')
+
+        # Rank 0 (or single-process) performs the heavy lifting.
+        payload = torch.load(template_path, map_location='cpu')
+        start_time = time.time()
+        processed = self._process_shape_template_payload(
+            payload,
+            target_shape,
+            dtype,
+            num_workers=num_workers,
+            show_progress=show_progress,
+            workers_is_auto=workers_is_auto,
+        )
+        del payload
+
+        os.makedirs(os.path.dirname(cache_path) or '.', exist_ok=True)
+        torch.save(processed, cache_path)
+
+        if is_main:
+            first_template = next(iter(processed.values())) if processed else None
+            print(f"✓ Loaded shape templates from {template_path}")
+            print(f"  ↳ Cached processed templates at {cache_path}")
+            if first_template is not None:
+                spatial_shape = tuple(int(v) for v in first_template.shape[1:])
+                print(
+                    f"  ↳ Template dtype {first_template.dtype}, spatial shape {spatial_shape}, classes {first_template.shape[0]}"
+                )
+                duration = time.time() - start_time
+                print(f"  ↳ Preprocessing time: {duration:.1f}s using CPU workers")
+
+        if is_dist and world_size > 1:
+            dist.barrier()
+
+        return processed
+
     def set_epoch(self, epoch: int):
         self.current_epoch = epoch
 
@@ -867,7 +1212,11 @@ class AgeConditionedGraphPriorLoss(nn.Module):
         if self._volume_stats_aligned_to == num_classes:
             return
 
-        aligned, background_idx, mask_np = _align_volume_stats(self.volume_stats, num_classes)
+        aligned, background_idx, mask_np = _align_volume_stats(
+            self.volume_stats,
+            num_classes,
+            std_floor=self.volume_std_floor,
+        )
         if aligned:
             self.volume_stats = aligned
         self.volume_background_idx = background_idx
@@ -980,7 +1329,12 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                     )
                 )
                 if self.volume_stats is not None:
-                    exp_mean, _ = get_expected_volumes(float(age[0].item()), self.volume_stats, num_classes)
+                    exp_mean, _ = get_expected_volumes(
+                        float(age[0].item()),
+                        self.volume_stats,
+                        num_classes,
+                        std_floor=self.volume_std_floor,
+                    )
                     exp = torch.tensor(exp_mean, device=vf.device, dtype=vf.dtype)
                     diff = vf - exp
                     top_diff = torch.topk(diff.abs(), k=min(5, diff.numel()))
@@ -995,9 +1349,22 @@ class AgeConditionedGraphPriorLoss(nn.Module):
             mask = None
             if self.volume_valid_mask.numel() == num_classes:
                 mask = self.volume_valid_mask.to(device=probs.device, dtype=probs.dtype)
-            loss_volume = volume_consistency_loss(probs, age, self.volume_stats, num_classes, valid_mask=mask)
+            loss_volume = volume_consistency_loss(
+                probs,
+                age,
+                self.volume_stats,
+                num_classes,
+                valid_mask=mask,
+                std_floor=self.volume_std_floor,
+            )
             loss_dict['volume_loss'] = loss_volume.detach()
             age_loss_sum = age_loss_sum + age_warmup * self.lambda_volume * loss_volume
+            if debug_active:
+                scaled = age_warmup * self.lambda_volume * loss_volume.detach()
+                print(
+                    f"{debug_prefix} volume_loss raw={float(loss_volume.detach().item()):.6f}, "
+                    f"scaled={float(scaled.item()):.6f} (λ={self.lambda_volume:.3f}, warmup={age_warmup:.3f})"
+                )
 
         if self.lambda_shape > 0 and self.shape_templates is not None:
             loss_shape = shape_consistency_loss(
@@ -1009,6 +1376,12 @@ class AgeConditionedGraphPriorLoss(nn.Module):
             )
             loss_dict['shape_loss'] = loss_shape.detach()
             age_loss_sum = age_loss_sum + age_warmup * self.lambda_shape * loss_shape
+            if debug_active:
+                scaled = age_warmup * self.lambda_shape * loss_shape.detach()
+                print(
+                    f"{debug_prefix} shape_loss raw={float(loss_shape.detach().item()):.6f}, "
+                    f"scaled={float(scaled.item()):.6f} (λ={self.lambda_shape:.3f}, warmup={age_warmup:.3f})"
+                )
 
         if self.lambda_weighted_adj > 0:
             age_weight_dict = self.age_weights if self.age_weights is not None else None
@@ -1070,7 +1443,11 @@ class AgeConditionedGraphPriorLoss(nn.Module):
             loss_dict['weighted_adj_loss'] = loss_adj.detach()
             age_loss_sum = age_loss_sum + age_warmup * self.lambda_weighted_adj * loss_adj
             if debug_active:
-                print(f"{debug_prefix} weighted adjacency loss={float(loss_adj.detach().item()):.6f}")
+                scaled = age_warmup * self.lambda_weighted_adj * loss_adj.detach()
+                print(
+                    f"{debug_prefix} weighted_adj raw={float(loss_adj.detach().item()):.6f}, "
+                    f"scaled={float(scaled.item()):.6f} (λ={self.lambda_weighted_adj:.3f}, warmup={age_warmup:.3f})"
+                )
                 if 'weighted_adj_active_classes' in loss_dict:
                     print(
                         f"{debug_prefix} active classes={float(loss_dict['weighted_adj_active_classes'].item()):.2f}"
