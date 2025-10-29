@@ -15,6 +15,9 @@ import os
 import gc
 import nibabel as nib
 import warnings
+from typing import Optional
+
+from age_aware_modules import prepare_class_ratios
 
 warnings.filterwarnings('ignore')
 
@@ -62,54 +65,6 @@ class ExtractAged(MapTransform):
             d['age'] = torch.tensor([40.0], dtype=torch.float32)
 
         return d
-
-
-def extract_age_value(metadata, default=40.0):
-    if isinstance(metadata, dict):
-        if 'scan_age' in metadata:
-            return float(metadata['scan_age'])
-        if 'PMA' in metadata:
-            return float(metadata['PMA'])
-        if 'pma' in metadata:
-            return float(metadata['pma'])
-        if 'ga' in metadata and 'pna' in metadata:
-            return float(metadata['ga']) + float(metadata['pna'])
-        if 'GA' in metadata and 'PNA' in metadata:
-            return float(metadata['GA']) + float(metadata['PNA'])
-    return float(default)
-
-
-def build_age_bins(args):
-    age_min = float(getattr(args, 'age_bin_min', 32.0))
-    age_max = float(getattr(args, 'age_bin_max', 46.0))
-    bin_size = float(getattr(args, 'age_bin_size', 2.0))
-    if bin_size <= 0:
-        bin_size = 2.0
-    if age_max <= age_min:
-        age_max = age_min + bin_size * 3
-    edges = np.arange(age_min, age_max + bin_size, bin_size, dtype=np.float32)
-    if edges.size < 2:
-        edges = np.array([age_min, age_max], dtype=np.float32)
-    return edges
-
-
-def compute_sample_weights(file_list, age_edges):
-    ages = []
-    for item in file_list:
-        metadata = item.get('metadata', {})
-        ages.append(extract_age_value(metadata))
-    ages = np.asarray(ages, dtype=np.float32)
-    counts, _ = np.histogram(ages, bins=age_edges)
-    weights = []
-    for age in ages:
-        bin_idx = np.digitize(age, age_edges, right=False) - 1
-        bin_idx = np.clip(bin_idx, 0, len(counts) - 1)
-        count = counts[bin_idx] if counts[bin_idx] > 0 else 1
-        weights.append(1.0 / count)
-    weights = np.asarray(weights, dtype=np.float32)
-    if weights.size > 0:
-        weights = weights / (weights.mean() + 1e-6)
-    return weights
 
 
 class PercentileNormalizationd(MapTransform):
@@ -187,12 +142,13 @@ class RemapLabelsd(MapTransform):
                 print(f"  Original unique values: {len(unique_before)} values")
                 print(f"  Original range: [{unique_before.min()}, {unique_before.max()}]")
                 if len(unique_before) < 100:
-                    print(f"  Label distribution:")
-                    for val in unique_before[:10]:
+                    print(f"  Label distribution (first {min(5, len(unique_before))} shown):")
+                    top_n = min(5, len(unique_before))
+                    for val in unique_before[:top_n]:
                         count = (label_np == val).sum()
                         print(f"    Label {val}: {count} voxels")
-                    if len(unique_before) > 10:
-                        print(f"    ... and {len(unique_before) - 10} more labels")
+                    if len(unique_before) > top_n:
+                        print(f"    ... and {len(unique_before) - top_n} more labels")
             unique_before = np.unique(label_np)
             if unique_before.max() > 87 or unique_before.min() < 0:
                 if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
@@ -352,13 +308,24 @@ def _load_lr_pairs(args):
 
 
 def get_weighted_ratios_for_small_classes(class_prior_path: str, num_small_classes: int = 20,
-                                          boost_factor: float = 2.0):
+                                          boost_factor: float = 2.0,
+                                          foreground_only: bool = True,
+                                          expected_num_classes: Optional[int] = None):
     if class_prior_path is None or not os.path.exists(class_prior_path):
         return None
     with open(class_prior_path, 'r') as f:
         prior_data = json.load(f)
-    class_ratios = np.array(prior_data['class_ratios'])
-    class_ratios = class_ratios[1:]
+    if expected_num_classes is None:
+        expected_num_classes = prior_data.get('num_classes')
+        if expected_num_classes is None:
+            expected_num_classes = 87 if foreground_only else 88
+    class_ratios = prepare_class_ratios(
+        prior_data,
+        expected_num_classes=expected_num_classes,
+        foreground_only=foreground_only,
+        is_main=(not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0),
+        context="Weighted sampling prior"
+    )
     epsilon = 1e-7
     weights = 1.0 / (class_ratios + epsilon)
     weights = weights / weights.mean()
@@ -432,7 +399,9 @@ def get_cache_transforms(args, is_registered=False):
         ratios = get_weighted_ratios_for_small_classes(
             args.target_prior_json,
             num_small_classes=getattr(args, 'num_small_classes_boost', 20),
-            boost_factor=getattr(args, 'small_class_boost_factor', 2.0)
+            boost_factor=getattr(args, 'small_class_boost_factor', 2.0),
+            foreground_only=args.foreground_only,
+            expected_num_classes=args.out_channels
         )
         if ratios is None:
             ratios = [1] * args.out_channels
@@ -448,7 +417,7 @@ def get_cache_transforms(args, is_registered=False):
                 image_threshold=0,
                 allow_smaller=True
             ),
-            EnsureTyped(keys=["image", "label", "age", "sample_weight"], track_meta=False)
+            EnsureTyped(keys=["image", "label", "age"], track_meta=False)
         ])
     else:
         transforms.extend([
@@ -462,7 +431,7 @@ def get_cache_transforms(args, is_registered=False):
                 keys=["image", "label"],
                 roi_size=(args.roi_x, args.roi_y, args.roi_z),
             ),
-            EnsureTyped(keys=["image", "label", "age", "sample_weight"], track_meta=False)
+            EnsureTyped(keys=["image", "label", "age"], track_meta=False)
         ])
 
     return Compose(transforms)
@@ -582,7 +551,7 @@ def get_transforms(args, mode="train", dataset_type=None, is_registered=False):
                 keys=["image", "label"],
                 roi_size=(args.roi_x, args.roi_y, args.roi_z),
             ),
-            EnsureTyped(keys=["image", "label", "age", "sample_weight"], track_meta=False)
+            EnsureTyped(keys=["image", "label", "age"], track_meta=False)
         ])
 
     return Compose(transforms)
@@ -686,18 +655,6 @@ def get_source_target_dataloaders(args, is_distributed=False, world_size=1, rank
         source_val_files = process_data_files(source_val_files)
         target_train_files = process_data_files(target_train_files)
         target_val_files = process_data_files(target_val_files)
-
-        age_edges_np = build_age_bins(args)
-        source_weights = compute_sample_weights(source_train_files, age_edges_np)
-        target_weights = compute_sample_weights(target_train_files, age_edges_np)
-        for item, weight in zip(source_train_files, source_weights):
-            item['sample_weight'] = float(weight)
-        for item, weight in zip(target_train_files, target_weights):
-            item['sample_weight'] = float(weight)
-        for item in source_val_files:
-            item['sample_weight'] = 1.0
-        for item in target_val_files:
-            item['sample_weight'] = 1.0
 
         if is_main:
             print("\n🎨 Creating transforms...")
