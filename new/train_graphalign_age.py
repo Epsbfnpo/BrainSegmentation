@@ -50,8 +50,16 @@ def is_dist():
     return int(os.environ.get("WORLD_SIZE", "1")) > 1
 
 
+_PARSER_CACHE = None
+
+
 def get_parser():
     """Get argument parser with production settings"""
+    global _PARSER_CACHE
+
+    if _PARSER_CACHE is not None:
+        return _PARSER_CACHE
+
     parser = argparse.ArgumentParser(description='DAUnet Training - Dual-Branch Cross-Domain Graph Alignment')
 
     # Basic training parameters
@@ -143,8 +151,21 @@ def get_parser():
                         help='Embedding dim for age FiLM-style modulation')
     parser.add_argument('--volume_stats_json', type=str, default=None,
                         help='JSON: age -> {"means":[C], "stds":[C]} (volume fractions)')
-    parser.add_argument('--shape_templates_pt', type=str, default=None,
+    parser.add_argument('--shape_templates_pt', type=str,
+                        default='/datasets/work/hb-nhmrc-dhcp/work/liu275/new/priors/shape_templates.pt',
                         help='PT/PTH: dict[class] -> SDT template (optionally age-indexed)')
+    parser.add_argument('--shape_template_dtype', type=str, default='float16',
+                        choices=['float16', 'float32', 'bfloat16'],
+                        help='In-memory dtype for cached shape templates (default: float16)')
+    parser.add_argument('--shape_template_workers', type=int, default=0,
+                        help='CPU workers for preprocessing shape templates (0=auto, uses ~80% of available cores)')
+    parser.add_argument('--shape_template_cache', type=str, default=None,
+                        help='Path to an externally preprocessed shape template cache (.processed.pt)')
+    parser.add_argument('--require_shape_template_cache', action='store_true',
+                        help='Abort instead of preprocessing when the cache is missing')
+    parser.add_argument('--no_shape_template_progress', dest='shape_template_progress', action='store_false',
+                        help='Disable progress output while preprocessing shape templates')
+    parser.set_defaults(shape_template_progress=True)
     parser.add_argument('--weighted_adj_npy', type=str, default=None,
                         help='Weighted adjacency prior (.npy), contact strengths')
     parser.add_argument('--age_weights_json', type=str, default=None,
@@ -338,6 +359,8 @@ def get_parser():
     parser.add_argument('--time_buffer_minutes', default=5, type=int,
                         help='Buffer time in minutes before job ends')
 
+    _PARSER_CACHE = parser
+
     return parser
 
 
@@ -518,6 +541,15 @@ def main():
         parser = get_parser()
         args = parser.parse_args()
 
+        auto_inferred_shape_templates = False
+        if args.shape_templates_pt:
+            args.shape_templates_pt = os.path.abspath(args.shape_templates_pt)
+        else:
+            default_shape_templates = os.path.join(_REPO_ROOT, 'priors', 'shape_templates.pt')
+            if os.path.exists(default_shape_templates):
+                args.shape_templates_pt = default_shape_templates
+                auto_inferred_shape_templates = True
+
         if not args.debug_mode:
             env_debug = os.environ.get("TRAIN_DEBUG", "")
             if env_debug.lower() in {"1", "true", "yes", "y", "on", "debug"}:
@@ -542,6 +574,36 @@ def main():
 
         device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
         is_main = (not is_dist()) or dist.get_rank() == 0
+
+        if args.shape_templates_pt and not os.path.exists(args.shape_templates_pt):
+            if is_main:
+                print(
+                    f"⚠️  Shape templates not found at {args.shape_templates_pt}; disabling shape prior term."
+                )
+            args.shape_templates_pt = None
+        elif args.shape_templates_pt and is_main:
+            print(f"  Shape templates enabled: {args.shape_templates_pt}")
+        elif is_main and not args.shape_templates_pt:
+            print(
+                "  ⚠️  Shape templates not provided. Set --shape_templates_pt or SHAPE_TEMPLATES_PT to enable the shape prior."
+            )
+
+        if args.shape_template_cache:
+            if not os.path.exists(args.shape_template_cache):
+                if args.require_shape_template_cache:
+                    if is_main:
+                        print(
+                            f"❌ Required shape template cache missing: {args.shape_template_cache}."
+                        )
+                        print("   Please run preprocess_shape_templates.py before launching training.")
+                    raise SystemExit(1)
+                if is_main:
+                    print(
+                        f"⚠️  Shape template cache not found at {args.shape_template_cache}; falling back to on-the-fly preprocessing."
+                    )
+                args.shape_template_cache = None
+            elif is_main:
+                print(f"  Shape template cache detected: {args.shape_template_cache}")
 
         if args.debug_mode and is_main:
             print("\n🐞 Debug mode enabled")
@@ -776,6 +838,12 @@ def main():
         base_prior_kwargs = {
             'volume_stats_path': args.volume_stats_json,
             'shape_templates_path': args.shape_templates_pt,
+            'shape_template_target_shape': (args.roi_x, args.roi_y, args.roi_z),
+            'shape_template_dtype': args.shape_template_dtype,
+            'shape_templates_cache_path': args.shape_template_cache,
+            'shape_template_require_cache': args.require_shape_template_cache,
+            'shape_template_workers': args.shape_template_workers,
+            'shape_template_progress': args.shape_template_progress,
             'weighted_adj_path': args.weighted_adj_npy,
             'age_weights_path': args.age_weights_json,
             'lambda_volume': args.lambda_volume,
