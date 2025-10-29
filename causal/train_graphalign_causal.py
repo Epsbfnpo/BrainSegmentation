@@ -176,16 +176,12 @@ def get_parser():
                         help='Embedding dim for age FiLM-style modulation')
     parser.add_argument('--volume_stats_json', type=str, default=None,
                         help='JSON: age -> {"means":[C], "stds":[C]} (volume fractions)')
-    parser.add_argument('--shape_templates_pt', type=str, default=None,
-                        help='PT/PTH: dict[class] -> SDT template (optionally age-indexed)')
     parser.add_argument('--weighted_adj_npy', type=str, default=None,
                         help='Weighted adjacency prior (.npy), contact strengths')
     parser.add_argument('--age_weights_json', type=str, default=None,
                         help='JSON: age -> adjacency weight matrix or interpolation spec')
     parser.add_argument('--lambda_volume', type=float, default=0.2,
                         help='Weight for age-aware volume prior loss')
-    parser.add_argument('--lambda_shape', type=float, default=0.1,
-                        help='Weight for age-aware shape/SDT prior loss')
     parser.add_argument('--lambda_weighted_adj', type=float, default=0.15,
                         help='Weight for age-aware weighted adjacency regression')
     parser.add_argument('--lambda_topo', type=float, default=0.02,
@@ -593,9 +589,6 @@ def main():
         parser = get_parser()
         args = parser.parse_args()
 
-        if args.shape_templates_pt:
-            args.shape_templates_pt = os.path.abspath(args.shape_templates_pt)
-
         if not args.debug_mode:
             env_debug = os.environ.get("TRAIN_DEBUG", "")
             if env_debug.lower() in {"1", "true", "yes", "y", "on", "debug"}:
@@ -620,16 +613,6 @@ def main():
 
         device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
         is_main = (not is_dist()) or dist.get_rank() == 0
-
-        if args.shape_templates_pt and not os.path.exists(args.shape_templates_pt):
-            if is_main:
-                print(
-                    f"⚠️  Requested shape templates not found at {args.shape_templates_pt}; "
-                    "disabling λ_shape."
-                )
-            args.shape_templates_pt = None
-            args.lambda_shape = 0.0
-
 
         if args.debug_mode and is_main:
             print("\n🐞 Debug mode enabled")
@@ -673,7 +656,7 @@ def main():
                 config_dict['version'] = 'DUAL_BRANCH_CROSS_DOMAIN_GRAPH_ALIGNMENT_V2_AGEAWARE'
                 config_dict['graph_prior_enabled'] = bool(args.prior_adj_npy or args.weighted_adj_npy)
                 config_dict['cross_domain_alignment'] = bool(args.src_prior_adj_npy)
-                config_dict['age_aware_priors'] = bool(args.volume_stats_json or args.shape_templates_pt or args.weighted_adj_npy)
+                config_dict['age_aware_priors'] = bool(args.volume_stats_json or args.weighted_adj_npy)
                 json.dump(config_dict, f, indent=2)
 
             print("" + "=" * 80)
@@ -697,7 +680,6 @@ def main():
                 if args.prior_required_json: print(f"  Required edges: {args.prior_required_json}")
                 if args.prior_forbidden_json: print(f"  Forbidden edges: {args.prior_forbidden_json}")
                 if args.volume_stats_json: print(f"  Volume stats (age-aware): {args.volume_stats_json}")
-                if args.shape_templates_pt: print(f"  Shape templates (SDT, age-aware): {args.shape_templates_pt}")
                 if args.age_weights_json: print(f"  Age→adjacency weights: {args.age_weights_json}")
 
             # Graph prior info (source)
@@ -838,7 +820,7 @@ def main():
             use_age_conditioning=args.use_age_conditioning,
             age_embed_dim=args.age_embed_dim,
             volume_statistics_path=args.volume_stats_json,
-            shape_prior_path=args.shape_templates_pt,
+            shape_prior_path=None,
             debug_mode=args.debug_mode,
             debug_step_limit=args.debug_step_limit,
         ).to(device)
@@ -906,11 +888,11 @@ def main():
 
         base_prior_kwargs = {
             'volume_stats_path': args.volume_stats_json,
-            'shape_templates_path': args.shape_templates_pt,
+            'shape_templates_path': None,
             'weighted_adj_path': args.weighted_adj_npy,
             'age_weights_path': args.age_weights_json,
             'lambda_volume': args.lambda_volume,
-            'lambda_shape': args.lambda_shape,
+            'lambda_shape': 0.0,
             'lambda_weighted_adj': args.lambda_weighted_adj,
             'lambda_topo': args.lambda_topo,
             'lambda_sym': args.lambda_sym,
@@ -962,7 +944,7 @@ def main():
             }
 
             if is_main:
-                print(f"  ✔ Graph prior kwargs prepared (age-aware: {bool(args.volume_stats_json or args.shape_templates_pt or args.weighted_adj_npy)})")
+                print(f"  ✔ Graph prior kwargs prepared (age-aware: {bool(args.volume_stats_json or args.weighted_adj_npy)})")
 
         combined_graph_kwargs = {k: v for k, v in {**base_prior_kwargs, **graph_specific_kwargs}.items() if v is not None}
         args.graph_loss_kwargs = combined_graph_kwargs if combined_graph_kwargs else None

@@ -835,7 +835,7 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                  src_required_json: Optional[str] = None,
                  src_forbidden_json: Optional[str] = None,
                  lambda_volume: float = 0.2,
-                 lambda_shape: float = 0.1,
+                 lambda_shape: float = 0.0,
                  lambda_weighted_adj: float = 0.15,
                  lambda_topo: float = 0.02,
                  lambda_sym: float = 0.05,
