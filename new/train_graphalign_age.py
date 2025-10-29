@@ -50,8 +50,16 @@ def is_dist():
     return int(os.environ.get("WORLD_SIZE", "1")) > 1
 
 
+_PARSER_CACHE = None
+
+
 def get_parser():
     """Get argument parser with production settings"""
+    global _PARSER_CACHE
+
+    if _PARSER_CACHE is not None:
+        return _PARSER_CACHE
+
     parser = argparse.ArgumentParser(description='DAUnet Training - Dual-Branch Cross-Domain Graph Alignment')
 
     # Basic training parameters
@@ -143,7 +151,8 @@ def get_parser():
                         help='Embedding dim for age FiLM-style modulation')
     parser.add_argument('--volume_stats_json', type=str, default=None,
                         help='JSON: age -> {"means":[C], "stds":[C]} (volume fractions)')
-    parser.add_argument('--shape_templates_pt', type=str, default=None,
+    parser.add_argument('--shape_templates_pt', type=str,
+                        default='/datasets/work/hb-nhmrc-dhcp/work/liu275/new/priors/shape_templates.pt',
                         help='PT/PTH: dict[class] -> SDT template (optionally age-indexed)')
     parser.add_argument('--weighted_adj_npy', type=str, default=None,
                         help='Weighted adjacency prior (.npy), contact strengths')
@@ -337,6 +346,8 @@ def get_parser():
                         help='Job time limit in minutes (default: 115 for 2-hour jobs with buffer)')
     parser.add_argument('--time_buffer_minutes', default=5, type=int,
                         help='Buffer time in minutes before job ends')
+
+    _PARSER_CACHE = parser
 
     return parser
 
