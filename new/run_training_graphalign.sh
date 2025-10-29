@@ -488,13 +488,6 @@ except:
             echo "Latest checkpoint: ${RESULTS_DIR}/latest.pth"
             echo "Modification time: $(stat -c %y ${RESULTS_DIR}/latest.pth)"
         fi
-
-        # Auto-resubmit if running under Slurm
-        if [ -n "$SLURM_JOB_ID" ] && [ ! -f "${RESULTS_DIR}/final_model.pth" ]; then
-            echo ""
-            echo "🔄 Auto-resubmitting next chunk..."
-            sbatch "${SLURM_SUBMIT_DIR}/run_graph_align_flex.sbatch"
-        fi
     fi
 else
     echo "❌ TRAINING FAILED (exit code: $EXIT_STATUS)"
@@ -506,11 +499,6 @@ else
     echo "3. Elastic error: ${RESULTS_DIR}/elastic_error.json"
 
     # Still try to resubmit if there's a valid checkpoint
-    if [ -n "$SLURM_JOB_ID" ] && [ -f "${RESULTS_DIR}/latest.pth" ] && [ ! -f "${RESULTS_DIR}/final_model.pth" ]; then
-        echo ""
-        echo "🔄 Found checkpoint, attempting to resubmit for recovery..."
-        sbatch "${SLURM_SUBMIT_DIR}/run_graph_align_flex.sbatch"
-    fi
 fi
 
 echo ""
@@ -526,3 +514,5 @@ echo "3. Check structural consistency:"
 echo "   grep 'Structural\\|symmetry\\|adjacency' ${RESULTS_DIR}/training.log | tail -10"
 echo ""
 echo "=============================================================="
+
+exit $EXIT_STATUS
