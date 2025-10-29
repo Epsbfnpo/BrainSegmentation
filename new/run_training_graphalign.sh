@@ -12,6 +12,10 @@ RESULTS_DIR="/datasets/work/hb-nhmrc-dhcp/work/liu275/causal/results"
 BATCH_SIZE=2
 NUM_GPUS=4
 EPOCHS=1000
+ROI_X=128
+ROI_Y=128
+ROI_Z=128
+SHAPE_TEMPLATE_DTYPE="float16"
 
 # Time management configuration
 JOB_TIME_LIMIT=115  # 115 minutes for 2-hour jobs (leaving 5 min buffer)
@@ -23,6 +27,20 @@ LATERALITY_PAIRS_JSON="${SCRIPT_DIR}/dhcp_lr_swap.json"
 SOURCE_CLASS_PRIOR="${REPO_ROOT}/dHCP_class_prior_foreground.json"
 TARGET_CLASS_PRIOR="${REPO_ROOT}/PPREMOPREBO_class_prior_foreground.json"
 
+# Shape template configuration (auto-generated if missing)
+DATA_ROOT="${BRAINSEG_DATA_ROOT:-/datasets/work/hb-nhmrc-dhcp/work/liu275}"
+SHAPE_TEMPLATES_PT="${REPO_ROOT}/priors/shape_templates.pt"
+DHCPSPLIT_JSON="/scratch3/liu275/Data/dHCP/dHCP_split.json"
+if [ ! -f "$DHCPSPLIT_JSON" ]; then
+    DHCPSPLIT_JSON="${DATA_ROOT}/dHCP_split.json"
+fi
+DHCPSPLIT_TEST_JSON="/scratch3/liu275/Data/dHCP/dHCP_split_test.json"
+if [ ! -f "$DHCPSPLIT_TEST_JSON" ]; then
+    DHCPSPLIT_TEST_JSON="${DATA_ROOT}/dHCP_split_test.json"
+fi
+PPREMOPREBO_SPLIT_JSON="${DATA_ROOT}/PPREMOPREBO_split.json"
+PPREMOPREBO_SPLIT_TEST_JSON="${DATA_ROOT}/PPREMOPREBO_split_test.json"
+
 # ========== TARGET DOMAIN GRAPH PRIORS ==========
 TARGET_PRIORS_DIR="/datasets/work/hb-nhmrc-dhcp/work/liu275/causal/priors/PPREMOPREBO"
 TARGET_PRIOR_ADJ_NPY="${TARGET_PRIORS_DIR}/prior_adj.npy"
@@ -31,6 +49,105 @@ TARGET_PRIOR_FORBIDDEN_JSON="${TARGET_PRIORS_DIR}/prior_forbidden.json"
 TARGET_WEIGHTED_ADJ_NPY="${TARGET_PRIORS_DIR}/weighted_adj.npy"
 TARGET_VOLUME_STATS_JSON="${TARGET_PRIORS_DIR}/volume_stats.json"
 TARGET_AGE_WEIGHTS_JSON="${TARGET_PRIORS_DIR}/age_weights.json"
+SHAPE_TEMPLATES_PATH="/datasets/work/hb-nhmrc-dhcp/work/liu275/new/priors/shape_templates.pt"
+SHAPE_TEMPLATE_ARGS="--shape_templates_pt ${SHAPE_TEMPLATES_PATH}"
+
+SHAPE_TEMPLATES_PATH="/datasets/work/hb-nhmrc-dhcp/work/liu275/new/priors/shape_templates.pt"
+SHAPE_TEMPLATE_ARGS="--shape_templates_pt ${SHAPE_TEMPLATES_PATH}"
+
+SHAPE_TEMPLATES_PATH="/datasets/work/hb-nhmrc-dhcp/work/liu275/new/priors/shape_templates.pt"
+SHAPE_TEMPLATE_ARGS="--shape_templates_pt ${SHAPE_TEMPLATES_PATH}"
+
+SHAPE_TEMPLATES_PATH="/datasets/work/hb-nhmrc-dhcp/work/liu275/new/priors/shape_templates.pt"
+SHAPE_TEMPLATE_ARGS="--shape_templates_pt ${SHAPE_TEMPLATES_PATH}"
+
+SHAPE_TEMPLATES_PATH="/datasets/work/hb-nhmrc-dhcp/work/liu275/new/priors/shape_templates.pt"
+SHAPE_TEMPLATE_ARGS="--shape_templates_pt ${SHAPE_TEMPLATES_PATH}"
+
+SHAPE_TEMPLATES_PATH="/datasets/work/hb-nhmrc-dhcp/work/liu275/new/priors/shape_templates.pt"
+SHAPE_TEMPLATE_CACHE="${SHAPE_TEMPLATES_PATH}.processed.roi${ROI_X}x${ROI_Y}x${ROI_Z}.fp16.pt"
+
+if [ ! -f "$SHAPE_TEMPLATE_CACHE" ]; then
+    echo "❌ Required shape template cache not found: $SHAPE_TEMPLATE_CACHE"
+    echo "   Please run the preprocessing step before submitting the job:"
+    echo "     python new/preprocess_shape_templates.py \\"
+    echo "         --input $SHAPE_TEMPLATES_PATH \\"
+    echo "         --target-shape ${ROI_X}x${ROI_Y}x${ROI_Z} --dtype ${SHAPE_TEMPLATE_DTYPE}"
+    exit 1
+fi
+
+SHAPE_TEMPLATE_ARGS="--shape_templates_pt ${SHAPE_TEMPLATES_PATH} \
+    --shape_template_dtype ${SHAPE_TEMPLATE_DTYPE} \
+    --shape_template_cache ${SHAPE_TEMPLATE_CACHE} \
+    --require_shape_template_cache"
+
+SHAPE_TEMPLATES_PATH="/datasets/work/hb-nhmrc-dhcp/work/liu275/new/priors/shape_templates.pt"
+SHAPE_TEMPLATE_CACHE="${SHAPE_TEMPLATES_PATH}.processed.roi${ROI_X}x${ROI_Y}x${ROI_Z}.fp16.pt"
+
+if [ ! -f "$SHAPE_TEMPLATE_CACHE" ]; then
+    echo "❌ Required shape template cache not found: $SHAPE_TEMPLATE_CACHE"
+    echo "   Please run the preprocessing step before submitting the job:"
+    echo "     python new/preprocess_shape_templates.py \\"
+    echo "         --input $SHAPE_TEMPLATES_PATH \\"
+    echo "         --target-shape ${ROI_X}x${ROI_Y}x${ROI_Z} --dtype ${SHAPE_TEMPLATE_DTYPE}"
+    exit 1
+fi
+
+SHAPE_TEMPLATE_ARGS="--shape_templates_pt ${SHAPE_TEMPLATES_PATH} \
+    --shape_template_dtype ${SHAPE_TEMPLATE_DTYPE} \
+    --shape_template_cache ${SHAPE_TEMPLATE_CACHE} \
+    --require_shape_template_cache"
+
+SHAPE_TEMPLATES_PATH="/datasets/work/hb-nhmrc-dhcp/work/liu275/new/priors/shape_templates.pt"
+SHAPE_TEMPLATE_CACHE="${SHAPE_TEMPLATES_PATH}.processed.roi${ROI_X}x${ROI_Y}x${ROI_Z}.fp16.pt"
+
+if [ ! -f "$SHAPE_TEMPLATE_CACHE" ]; then
+    echo "❌ Required shape template cache not found: $SHAPE_TEMPLATE_CACHE"
+    echo "   Please run the preprocessing step before submitting the job:"
+    echo "     python new/preprocess_shape_templates.py \\"
+    echo "         --input $SHAPE_TEMPLATES_PATH \\"
+    echo "         --target-shape ${ROI_X}x${ROI_Y}x${ROI_Z} --dtype ${SHAPE_TEMPLATE_DTYPE}"
+    exit 1
+fi
+
+SHAPE_TEMPLATE_ARGS="--shape_templates_pt ${SHAPE_TEMPLATES_PATH} \
+    --shape_template_dtype ${SHAPE_TEMPLATE_DTYPE} \
+    --shape_template_cache ${SHAPE_TEMPLATE_CACHE} \
+    --require_shape_template_cache"
+
+SHAPE_TEMPLATES_PATH="/datasets/work/hb-nhmrc-dhcp/work/liu275/new/priors/shape_templates.pt"
+SHAPE_TEMPLATE_CACHE="${SHAPE_TEMPLATES_PATH}.processed.roi${ROI_X}x${ROI_Y}x${ROI_Z}.fp16.pt"
+
+if [ ! -f "$SHAPE_TEMPLATE_CACHE" ]; then
+    echo "❌ Required shape template cache not found: $SHAPE_TEMPLATE_CACHE"
+    echo "   Please run the preprocessing step before submitting the job:"
+    echo "     python new/preprocess_shape_templates.py \\"
+    echo "         --input $SHAPE_TEMPLATES_PATH \\"
+    echo "         --target-shape ${ROI_X}x${ROI_Y}x${ROI_Z} --dtype ${SHAPE_TEMPLATE_DTYPE}"
+    exit 1
+fi
+
+SHAPE_TEMPLATE_ARGS="--shape_templates_pt ${SHAPE_TEMPLATES_PATH} \
+    --shape_template_dtype ${SHAPE_TEMPLATE_DTYPE} \
+    --shape_template_cache ${SHAPE_TEMPLATE_CACHE} \
+    --require_shape_template_cache"
+
+SHAPE_TEMPLATES_PATH="/datasets/work/hb-nhmrc-dhcp/work/liu275/new/priors/shape_templates.pt"
+SHAPE_TEMPLATE_CACHE="${SHAPE_TEMPLATES_PATH}.processed.roi${ROI_X}x${ROI_Y}x${ROI_Z}.fp16.pt"
+
+if [ ! -f "$SHAPE_TEMPLATE_CACHE" ]; then
+    echo "❌ Required shape template cache not found: $SHAPE_TEMPLATE_CACHE"
+    echo "   Please run the preprocessing step before submitting the job:"
+    echo "     python new/preprocess_shape_templates.py \\"
+    echo "         --input $SHAPE_TEMPLATES_PATH \\"
+    echo "         --target-shape ${ROI_X}x${ROI_Y}x${ROI_Z} --dtype ${SHAPE_TEMPLATE_DTYPE}"
+    exit 1
+fi
+
+SHAPE_TEMPLATE_ARGS="--shape_templates_pt ${SHAPE_TEMPLATES_PATH} \
+    --shape_template_dtype ${SHAPE_TEMPLATE_DTYPE} \
+    --shape_template_cache ${SHAPE_TEMPLATE_CACHE} \
+    --require_shape_template_cache"
 
 
 # ========== SOURCE DOMAIN GRAPH PRIORS (CAUSAL) ==========
@@ -57,6 +174,41 @@ GRAPH_TEMP=1.0              # Temperature for adjacency computation
 # Create results directory
 mkdir -p $RESULTS_DIR
 mkdir -p "${RESULTS_DIR}/graph_analysis"
+mkdir -p "$(dirname "$SHAPE_TEMPLATES_PT")"
+
+# Build shape templates if missing
+if [ ! -f "$SHAPE_TEMPLATES_PT" ]; then
+    echo "🧩 Building age-aware shape templates..."
+    missing_split=0
+    for split_path in "$DHCPSPLIT_JSON" "$DHCPSPLIT_TEST_JSON" "$PPREMOPREBO_SPLIT_JSON" "$PPREMOPREBO_SPLIT_TEST_JSON"; do
+        if [ ! -f "$split_path" ]; then
+            echo "❌ Required split file not found: $split_path"
+            missing_split=1
+        fi
+    done
+    if [ $missing_split -ne 0 ]; then
+        echo "Aborting shape template generation due to missing splits."
+        exit 1
+    fi
+    python build_shape_templates.py \
+        --split "$DHCPSPLIT_JSON" \
+        --split "$DHCPSPLIT_TEST_JSON" \
+        --split "$PPREMOPREBO_SPLIT_JSON" \
+        --split "$PPREMOPREBO_SPLIT_TEST_JSON" \
+        --data-root "$DATA_ROOT" \
+        --num-classes 87 \
+        --age-bin-width 2.0 \
+        --workers 32 \
+        --device cpu \
+        --target-shape 239x290x290 \
+        --output "$SHAPE_TEMPLATES_PT"
+
+    if [ $? -ne 0 ]; then
+        echo "❌ Failed to build shape templates"
+        exit 1
+    fi
+    echo "✅ Shape templates saved to $SHAPE_TEMPLATES_PT"
+fi
 
 # Build SOURCE domain graph priors if they don't exist
 if [ ! -f "$SOURCE_PRIOR_ADJ_NPY" ]; then
@@ -64,7 +216,7 @@ if [ ! -f "$SOURCE_PRIOR_ADJ_NPY" ]; then
     mkdir -p "${SOURCE_PRIORS_DIR}"
 
     python build_graph_priors.py \
-        --split_json /scratch3/liu275/Data/dHCP/dHCP_split.json \
+        --split_json /datasets/work/hb-nhmrc-dhcp/work/liu275/dHCP_split.json \
         --out_dir "${SOURCE_PRIORS_DIR}" \
         --num_classes 87 \
         --foreground_only \
@@ -90,7 +242,7 @@ if [ ! -f "$TARGET_PRIOR_ADJ_NPY" ]; then
     mkdir -p "${TARGET_PRIORS_DIR}"
 
     python build_graph_priors.py \
-        --split_json /scratch3/liu275/Data/PPREMOPREBO/PPREMOPREBO_split.json \
+        --split_json /datasets/work/hb-nhmrc-dhcp/work/liu275/PPREMOPREBO_split.json \
         --out_dir "${TARGET_PRIORS_DIR}" \
         --num_classes 87 \
         --foreground_only \
@@ -191,6 +343,7 @@ echo "    - Top-K eigenvalues: $GRAPH_TOPR"
 echo "    - Warmup epochs: $GRAPH_WARMUP"
 echo "    - Temperature: $GRAPH_TEMP"
 echo "    - Laterality Pairs: $LATERALITY_PAIRS_JSON"
+echo "    - Shape templates: $SHAPE_TEMPLATES_PT"
 echo ""
 
 # Check if training is already complete
@@ -327,17 +480,18 @@ torchrun --standalone --nproc_per_node=$NUM_GPUS train_graphalign_age.py \
     --out_channels=87 \
     --weighted_adj_npy=$TARGET_WEIGHTED_ADJ_NPY \
     --volume_stats_json=$TARGET_VOLUME_STATS_JSON \
+    --shape_templates_pt=$SHAPE_TEMPLATES_PT \
     --age_weights_json=$TARGET_AGE_WEIGHTS_JSON \
     --feature_size=48 \
-    --roi_x=128 --roi_y=128 --roi_z=128 \
+    --roi_x=${ROI_X} --roi_y=${ROI_Y} --roi_z=${ROI_Z} \
     --use_label_crop \
     --eval_num=2 \
     --save_interval=10 \
     --cache_rate=0 \
     --cache_num_workers=2 \
     --num_workers=16 \
-    --pretrained_model=/datasets/work/hb-nhmrc-dhcp/work/liu275/Tuning/results_fixed/dHCP_registered_fixed/best_model.pth \
-    --source_split_json=/scratch3/liu275/Data/dHCP/dHCP_split.json \
+    --pretrained_model=/datasets/work/hb-nhmrc-dhcp/work/liu275/model_final.pt \
+    --source_split_json=/datasets/work/hb-nhmrc-dhcp/work/liu275/dHCP_split.json \
     --split_json=/datasets/work/hb-nhmrc-dhcp/work/liu275/PPREMOPREBO_split.json \
     --target_prior_json="$TARGET_CLASS_PRIOR" \
     --source_prior_json="$SOURCE_CLASS_PRIOR" \
@@ -368,6 +522,7 @@ torchrun --standalone --nproc_per_node=$NUM_GPUS train_graphalign_age.py \
     --clip 2.0 \
     --job_time_limit=$JOB_TIME_LIMIT \
     --time_buffer_minutes=$TIME_BUFFER \
+    $SHAPE_TEMPLATE_ARGS \
     $TARGET_GRAPH_ARGS \
     $SOURCE_GRAPH_ARGS \
     --graph_align_mode=$GRAPH_ALIGN_MODE \
@@ -488,13 +643,6 @@ except:
             echo "Latest checkpoint: ${RESULTS_DIR}/latest.pth"
             echo "Modification time: $(stat -c %y ${RESULTS_DIR}/latest.pth)"
         fi
-
-        # Auto-resubmit if running under Slurm
-        if [ -n "$SLURM_JOB_ID" ] && [ ! -f "${RESULTS_DIR}/final_model.pth" ]; then
-            echo ""
-            echo "🔄 Auto-resubmitting next chunk..."
-            sbatch "${SLURM_SUBMIT_DIR}/run_graph_align_flex.sbatch"
-        fi
     fi
 else
     echo "❌ TRAINING FAILED (exit code: $EXIT_STATUS)"
@@ -506,11 +654,6 @@ else
     echo "3. Elastic error: ${RESULTS_DIR}/elastic_error.json"
 
     # Still try to resubmit if there's a valid checkpoint
-    if [ -n "$SLURM_JOB_ID" ] && [ -f "${RESULTS_DIR}/latest.pth" ] && [ ! -f "${RESULTS_DIR}/final_model.pth" ]; then
-        echo ""
-        echo "🔄 Found checkpoint, attempting to resubmit for recovery..."
-        sbatch "${SLURM_SUBMIT_DIR}/run_graph_align_flex.sbatch"
-    fi
 fi
 
 echo ""
@@ -526,3 +669,5 @@ echo "3. Check structural consistency:"
 echo "   grep 'Structural\\|symmetry\\|adjacency' ${RESULTS_DIR}/training.log | tail -10"
 echo ""
 echo "=============================================================="
+
+exit $EXIT_STATUS
