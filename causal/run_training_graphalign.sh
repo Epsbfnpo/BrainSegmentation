@@ -313,8 +313,8 @@ if [ -f "$SOURCE_PRIOR_FORBIDDEN_JSON" ]; then
     SOURCE_GRAPH_ARGS="$SOURCE_GRAPH_ARGS --src_prior_forbidden_json $SOURCE_PRIOR_FORBIDDEN_JSON"
 fi
 
-# Run training with cross-domain alignment
-torchrun --standalone --nproc_per_node=$NUM_GPUS train_graphalign_age.py \
+# Run training with cross-domain alignment (causal edition)
+torchrun --standalone --nproc_per_node=$NUM_GPUS train_graphalign_causal.py \
     --debug_mode \
     --epochs=$EPOCHS \
     --batch_size=$BATCH_SIZE \
@@ -358,6 +358,20 @@ torchrun --standalone --nproc_per_node=$NUM_GPUS train_graphalign_age.py \
     --use_target_labels \
     --target_label_weight 0.8 \
     --enhanced_class_weights \
+    --causal_age_bin_width 2.0 \
+    --causal_vrex_lambda 0.2 \
+    --causal_vrex_start 10 \
+    --causal_lapinv_lambda 0.08 \
+    --causal_lapinv_start 10 \
+    --causal_cf_lambda 0.05 \
+    --causal_cf_start 10 \
+    --causal_cf_sample_rate 0.2 \
+    --causal_cf_confidence 0.6 \
+    --causal_cf_intensity_scale 0.25 \
+    --causal_cf_intensity_shift 0.15 \
+    --causal_cf_noise_std 0.03 \
+    --causal_cf_bias_strength 0.1 \
+    --causal_age_balance_start 10 \
     --num_small_classes_boost 20 \
     --small_class_boost_factor 2.0 \
     --dice_drop_threshold 0.3 \
@@ -493,7 +507,8 @@ except:
         if [ -n "$SLURM_JOB_ID" ] && [ ! -f "${RESULTS_DIR}/final_model.pth" ]; then
             echo ""
             echo "🔄 Auto-resubmitting next chunk..."
-            sbatch "${SLURM_SUBMIT_DIR}/run_graph_align_flex.sbatch"
+            RESUBMIT_JOB_NAME=${SLURM_JOB_NAME:-graph_align_flex_causal}
+            sbatch --dependency=singleton --job-name="${RESUBMIT_JOB_NAME}" "${SLURM_SUBMIT_DIR}/run_graph_align_flex.sbatch"
         fi
     fi
 else
@@ -509,7 +524,8 @@ else
     if [ -n "$SLURM_JOB_ID" ] && [ -f "${RESULTS_DIR}/latest.pth" ] && [ ! -f "${RESULTS_DIR}/final_model.pth" ]; then
         echo ""
         echo "🔄 Found checkpoint, attempting to resubmit for recovery..."
-        sbatch "${SLURM_SUBMIT_DIR}/run_graph_align_flex.sbatch"
+        RESUBMIT_JOB_NAME=${SLURM_JOB_NAME:-graph_align_flex_causal}
+        sbatch --dependency=singleton --job-name="${RESUBMIT_JOB_NAME}" "${SLURM_SUBMIT_DIR}/run_graph_align_flex.sbatch"
     fi
 fi
 
