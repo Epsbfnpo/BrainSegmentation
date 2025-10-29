@@ -154,6 +154,9 @@ def get_parser():
     parser.add_argument('--shape_templates_pt', type=str,
                         default='/datasets/work/hb-nhmrc-dhcp/work/liu275/new/priors/shape_templates.pt',
                         help='PT/PTH: dict[class] -> SDT template (optionally age-indexed)')
+    parser.add_argument('--shape_template_dtype', type=str, default='float16',
+                        choices=['float16', 'float32', 'bfloat16'],
+                        help='In-memory dtype for cached shape templates (default: float16)')
     parser.add_argument('--weighted_adj_npy', type=str, default=None,
                         help='Weighted adjacency prior (.npy), contact strengths')
     parser.add_argument('--age_weights_json', type=str, default=None,
@@ -566,14 +569,15 @@ def main():
         if args.shape_templates_pt and not os.path.exists(args.shape_templates_pt):
             if is_main:
                 print(
-                    f"⚠️  Requested shape templates not found at {args.shape_templates_pt}; "
-                    "disabling λ_shape."
+                    f"⚠️  Shape templates not found at {args.shape_templates_pt}; disabling shape prior term."
                 )
             args.shape_templates_pt = None
-            args.lambda_shape = 0.0
-
-        if auto_inferred_shape_templates and args.shape_templates_pt and is_main:
-            print(f"ℹ️  Auto-enabled shape templates from {args.shape_templates_pt}")
+        elif args.shape_templates_pt and is_main:
+            print(f"  Shape templates enabled: {args.shape_templates_pt}")
+        elif is_main and not args.shape_templates_pt:
+            print(
+                "  ⚠️  Shape templates not provided. Set --shape_templates_pt or SHAPE_TEMPLATES_PT to enable the shape prior."
+            )
 
         if args.debug_mode and is_main:
             print("\n🐞 Debug mode enabled")
@@ -808,6 +812,8 @@ def main():
         base_prior_kwargs = {
             'volume_stats_path': args.volume_stats_json,
             'shape_templates_path': args.shape_templates_pt,
+            'shape_template_target_shape': (args.roi_x, args.roi_y, args.roi_z),
+            'shape_template_dtype': args.shape_template_dtype,
             'weighted_adj_path': args.weighted_adj_npy,
             'age_weights_path': args.age_weights_json,
             'lambda_volume': args.lambda_volume,
