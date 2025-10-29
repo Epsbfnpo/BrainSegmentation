@@ -327,48 +327,45 @@ def train_epoch_age_aware(model, source_loader, target_loader, optimizer, epoch,
 
         if debug_active:
             debug_print(
-                f"Step {i}: source images {tuple(source_images.shape)}, labels {tuple(source_labels.shape)}, "
-                f"target images {tuple(target_images.shape)}, labels {tuple(target_labels.shape)}"
+                f"Step {i}: src{tuple(source_images.shape)}->lbl{tuple(source_labels.shape)}, "
+                f"tgt{tuple(target_images.shape)}->lbl{tuple(target_labels.shape)}"
             )
-            with torch.no_grad():
-                src_stats = (
-                    float(source_images.min().item()),
-                    float(source_images.max().item()),
-                    float(source_images.mean().item()),
-                    float(source_images.std().item())
-                )
-                tgt_stats = (
-                    float(target_images.min().item()),
-                    float(target_images.max().item()),
-                    float(target_images.mean().item()),
-                    float(target_images.std().item())
-                )
-                debug_print(
-                    f"         Source image stats min={src_stats[0]:.3f}, max={src_stats[1]:.3f}, "
-                    f"mean={src_stats[2]:.3f}, std={src_stats[3]:.3f}"
-                )
-                debug_print(
-                    f"         Target image stats min={tgt_stats[0]:.3f}, max={tgt_stats[1]:.3f}, "
-                    f"mean={tgt_stats[2]:.3f}, std={tgt_stats[3]:.3f}"
-                )
-                src_unique = torch.unique(source_labels.detach())
-                tgt_unique = torch.unique(target_labels.detach())
-                debug_print(
-                    f"         Source labels unique={src_unique.numel()} (min={int(src_unique.min().item())}, max={int(src_unique.max().item())})"
-                )
-                debug_print(
-                    f"         Target labels unique={tgt_unique.numel()} (min={int(tgt_unique.min().item())}, max={int(tgt_unique.max().item())})"
-                )
-                if source_ages is not None:
-                    ages = source_ages.detach().cpu().numpy()
-                    debug_print(
-                        f"         Source ages range {ages.min():.2f}-{ages.max():.2f} (mean {ages.mean():.2f})"
+            if i == 0:
+                with torch.no_grad():
+                    src_stats = (
+                        float(source_images.min().item()),
+                        float(source_images.max().item()),
+                        float(source_images.mean().item()),
+                        float(source_images.std().item()),
                     )
-                if target_ages is not None:
-                    ages_t = target_ages.detach().cpu().numpy()
-                    debug_print(
-                        f"         Target ages range {ages_t.min():.2f}-{ages_t.max():.2f} (mean {ages_t.mean():.2f})"
+                    tgt_stats = (
+                        float(target_images.min().item()),
+                        float(target_images.max().item()),
+                        float(target_images.mean().item()),
+                        float(target_images.std().item()),
                     )
+                    src_unique = torch.unique(source_labels.detach())
+                    tgt_unique = torch.unique(target_labels.detach())
+                    debug_print(
+                        "         src[min={:.3f}, max={:.3f}, mean={:.3f}, std={:.3f}], "
+                        "tgt[min={:.3f}, max={:.3f}, mean={:.3f}, std={:.3f}]".format(
+                            *src_stats, *tgt_stats
+                        )
+                    )
+                    debug_print(
+                        f"         src labels unique={src_unique.numel()} (range {int(src_unique.min().item())}-{int(src_unique.max().item())}), "
+                        f"tgt labels unique={tgt_unique.numel()} (range {int(tgt_unique.min().item())}-{int(tgt_unique.max().item())})"
+                    )
+                    if source_ages is not None:
+                        ages = source_ages.detach().cpu().numpy()
+                        debug_print(
+                            f"         src ages {ages.min():.2f}-{ages.max():.2f} (mean {ages.mean():.2f})"
+                        )
+                    if target_ages is not None:
+                        ages_t = target_ages.detach().cpu().numpy()
+                        debug_print(
+                            f"         tgt ages {ages_t.min():.2f}-{ages_t.max():.2f} (mean {ages_t.mean():.2f})"
+                        )
 
         graph_debug_info = None
         target_seg_components_saved = None
@@ -574,82 +571,72 @@ def train_epoch_age_aware(model, source_loader, target_loader, optimizer, epoch,
                     dyn_spec_loss_total += L_dyn.item()
 
         if debug_active:
-            debug_print(
-                f"Step {i}: total loss={losses['total'].item():.6f}, seg={losses['seg_loss'].item():.6f}"
-            )
+            summary_parts = [
+                f"total={losses['total'].item():.4f}",
+                f"seg={losses['seg_loss'].item():.4f}",
+            ]
+            if 'target_seg_loss' in losses:
+                summary_parts.append(f"tgt={losses['target_seg_loss'].item():.4f}")
+            if 'age_loss' in losses:
+                summary_parts.append(f"age={losses['age_loss'].item():.4f}")
+            if 'volume_loss' in losses:
+                summary_parts.append(f"vol={losses['volume_loss'].item():.2f}")
+            if 'graph_total' in losses:
+                summary_parts.append(f"graph={losses['graph_total'].item():.4f}")
+            if 'dyn_spec' in losses:
+                summary_parts.append(f"dyn={losses['dyn_spec'].item():.4f}")
+            debug_print("Step {} summary: {}".format(i, ", ".join(summary_parts)))
+
             if torch.isnan(losses['total']).any():
                 debug_print("         ⚠️ NaN detected in total loss")
+
             seg_comps = losses.get('seg_loss_components')
             if seg_comps:
                 debug_print(
-                    "         Seg components "
-                    + ", ".join(f"{k}={float(v):.6f}" for k, v in seg_comps.items())
+                    "         seg_parts: "
+                    + ", ".join(f"{k}={float(v):.5f}" for k, v in seg_comps.items())
                 )
             if target_seg_components_saved:
                 debug_print(
-                    "         Target seg components "
+                    "         tgt_parts: "
                     + ", ".join(
-                        f"{k}={float(v):.6f}" for k, v in target_seg_components_saved.items()
+                        f"{k}={float(v):.5f}" for k, v in target_seg_components_saved.items()
                     )
                 )
-            with torch.no_grad():
-                src_logits_det = source_logits.detach()
-                debug_print(
-                    f"         Source logits stats mean={src_logits_det.mean():.4f}, std={src_logits_det.std():.4f}, "
-                    f"min={src_logits_det.min():.4f}, max={src_logits_det.max():.4f}"
-                )
-                if torch.isnan(src_logits_det).any():
-                    debug_print(
-                        f"         ⚠️ NaN detected in source logits (count={int(torch.isnan(src_logits_det).sum().item())})"
-                    )
-                src_probs = torch.softmax(src_logits_det, dim=1)
-                mass = src_probs.sum(dim=(2, 3, 4))[0]
-                top_mass = torch.topk(mass, k=min(5, mass.numel()))
-                debug_print(
-                    "         Source prob mass (sample0) "
-                    + ", ".join(
-                        f"c{idx}={mass[idx].item():.4f}" for idx in top_mass.indices.cpu().tolist()
-                    )
-                )
-                if target_logits is not None:
-                    tgt_logits_det = target_logits.detach()
-                    debug_print(
-                        f"         Target logits stats mean={tgt_logits_det.mean():.4f}, std={tgt_logits_det.std():.4f}, "
-                        f"min={tgt_logits_det.min():.4f}, max={tgt_logits_det.max():.4f}"
-                    )
-                    if torch.isnan(tgt_logits_det).any():
-                        debug_print(
-                            f"         ⚠️ NaN detected in target logits (count={int(torch.isnan(tgt_logits_det).sum().item())})"
-                        )
+
             if graph_debug_info:
                 warmup = graph_debug_info.get('warmup_factor')
                 age_warm = graph_debug_info.get('age_warmup_factor')
+                graph_parts = []
                 if warmup is not None:
-                    debug_print(f"         Graph warmup factor={float(_to_scalar(warmup)):.3f}")
+                    graph_parts.append(f"warmup={float(_to_scalar(warmup)):.3f}")
                 if age_warm is not None:
-                    debug_print(f"         Graph age warmup={float(_to_scalar(age_warm)):.3f}")
-                for key in ['volume_loss', 'shape_loss', 'weighted_adj_loss', 'graph_spec_src',
-                            'graph_edge_src', 'graph_spec_tgt', 'graph_edge_tgt', 'graph_sym', 'graph_struct']:
+                    graph_parts.append(f"age_warm={float(_to_scalar(age_warm)):.3f}")
+                for key, label in [
+                    ('volume_loss', 'vol'),
+                    ('shape_loss', 'shape'),
+                    ('weighted_adj_loss', 'w_adj'),
+                    ('graph_spec_src', 'spec_src'),
+                    ('graph_edge_src', 'edge_src'),
+                    ('graph_spec_tgt', 'spec_tgt'),
+                    ('graph_edge_tgt', 'edge_tgt'),
+                    ('graph_sym', 'sym'),
+                ]:
                     if key in graph_debug_info and graph_debug_info[key] is not None:
-                        debug_print(f"         {key}={float(_to_scalar(graph_debug_info[key])):.6f}")
+                        graph_parts.append(f"{label}={float(_to_scalar(graph_debug_info[key])):.4f}")
+                if graph_parts:
+                    debug_print("         graph_parts: " + ", ".join(graph_parts))
                 structural = graph_debug_info.get('structural_violations', {})
                 if isinstance(structural, dict):
                     debug_print(
-                        f"         Structural violations: required_missing={structural.get('required_missing', 0)}, "
-                        f"forbidden_present={structural.get('forbidden_present', 0)}"
+                        "         structural: req_missing={}, forb_present={}".format(
+                            structural.get('required_missing', 0),
+                            structural.get('forbidden_present', 0),
+                        )
                     )
                 if 'weighted_adj_active_classes' in graph_debug_info:
                     val = graph_debug_info['weighted_adj_active_classes']
-                    debug_print(f"         Weighted adj active classes={float(_to_scalar(val)):.2f}")
-                A_pred = graph_debug_info.get('A_pred')
-                if isinstance(A_pred, torch.Tensor) and A_pred.numel() > 0:
-                    with torch.no_grad():
-                        debug_print(
-                            f"         A_pred stats mean={A_pred.mean():.5f}, std={A_pred.std():.5f}, "
-                            f"min={A_pred.min():.5f}, max={A_pred.max():.5f}"
-                        )
-            if 'dyn_spec' in losses:
-                debug_print(f"         Dynamic spectral loss={losses['dyn_spec'].item():.6f}")
+                    debug_print(f"         active_classes={float(_to_scalar(val)):.2f}")
 
         # Get loss components
         if 'seg_loss_components' in losses:
