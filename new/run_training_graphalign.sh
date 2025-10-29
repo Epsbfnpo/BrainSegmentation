@@ -32,6 +32,9 @@ TARGET_WEIGHTED_ADJ_NPY="${TARGET_PRIORS_DIR}/weighted_adj.npy"
 TARGET_VOLUME_STATS_JSON="${TARGET_PRIORS_DIR}/volume_stats.json"
 TARGET_AGE_WEIGHTS_JSON="${TARGET_PRIORS_DIR}/age_weights.json"
 
+SHAPE_TEMPLATES_PATH="/datasets/work/hb-nhmrc-dhcp/work/liu275/new/priors/shape_templates.pt"
+SHAPE_TEMPLATE_ARGS="--shape_templates_pt ${SHAPE_TEMPLATES_PATH}"
+
 
 # ========== SOURCE DOMAIN GRAPH PRIORS (NEW) ==========
 SOURCE_PRIORS_DIR="/datasets/work/hb-nhmrc-dhcp/work/liu275/new/priors/dHCP"
@@ -368,6 +371,7 @@ torchrun --standalone --nproc_per_node=$NUM_GPUS train_graphalign_age.py \
     --clip 2.0 \
     --job_time_limit=$JOB_TIME_LIMIT \
     --time_buffer_minutes=$TIME_BUFFER \
+    $SHAPE_TEMPLATE_ARGS \
     $TARGET_GRAPH_ARGS \
     $SOURCE_GRAPH_ARGS \
     --graph_align_mode=$GRAPH_ALIGN_MODE \
@@ -488,13 +492,6 @@ except:
             echo "Latest checkpoint: ${RESULTS_DIR}/latest.pth"
             echo "Modification time: $(stat -c %y ${RESULTS_DIR}/latest.pth)"
         fi
-
-        # Auto-resubmit if running under Slurm
-        if [ -n "$SLURM_JOB_ID" ] && [ ! -f "${RESULTS_DIR}/final_model.pth" ]; then
-            echo ""
-            echo "🔄 Auto-resubmitting next chunk..."
-            sbatch "${SLURM_SUBMIT_DIR}/run_graph_align_flex.sbatch"
-        fi
     fi
 else
     echo "❌ TRAINING FAILED (exit code: $EXIT_STATUS)"
@@ -506,11 +503,6 @@ else
     echo "3. Elastic error: ${RESULTS_DIR}/elastic_error.json"
 
     # Still try to resubmit if there's a valid checkpoint
-    if [ -n "$SLURM_JOB_ID" ] && [ -f "${RESULTS_DIR}/latest.pth" ] && [ ! -f "${RESULTS_DIR}/final_model.pth" ]; then
-        echo ""
-        echo "🔄 Found checkpoint, attempting to resubmit for recovery..."
-        sbatch "${SLURM_SUBMIT_DIR}/run_graph_align_flex.sbatch"
-    fi
 fi
 
 echo ""
@@ -526,3 +518,5 @@ echo "3. Check structural consistency:"
 echo "   grep 'Structural\\|symmetry\\|adjacency' ${RESULTS_DIR}/training.log | tail -10"
 echo ""
 echo "=============================================================="
+
+exit $EXIT_STATUS
