@@ -2,8 +2,8 @@
 #SBATCH --job-name=graph_align_flex_new
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=32
-#SBATCH --mem=128G
+#SBATCH --cpus-per-task=64
+#SBATCH --mem=256G
 #SBATCH --account=OD-210257
 #SBATCH --partition=gpu
 #SBATCH --gpus-per-node=4

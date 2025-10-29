@@ -157,6 +157,11 @@ def get_parser():
     parser.add_argument('--shape_template_dtype', type=str, default='float16',
                         choices=['float16', 'float32', 'bfloat16'],
                         help='In-memory dtype for cached shape templates (default: float16)')
+    parser.add_argument('--shape_template_workers', type=int, default=0,
+                        help='CPU workers for preprocessing shape templates (0=auto, uses ~80% of available cores)')
+    parser.add_argument('--no_shape_template_progress', dest='shape_template_progress', action='store_false',
+                        help='Disable progress output while preprocessing shape templates')
+    parser.set_defaults(shape_template_progress=True)
     parser.add_argument('--weighted_adj_npy', type=str, default=None,
                         help='Weighted adjacency prior (.npy), contact strengths')
     parser.add_argument('--age_weights_json', type=str, default=None,
@@ -814,6 +819,8 @@ def main():
             'shape_templates_path': args.shape_templates_pt,
             'shape_template_target_shape': (args.roi_x, args.roi_y, args.roi_z),
             'shape_template_dtype': args.shape_template_dtype,
+            'shape_template_workers': args.shape_template_workers,
+            'shape_template_progress': args.shape_template_progress,
             'weighted_adj_path': args.weighted_adj_npy,
             'age_weights_path': args.age_weights_json,
             'lambda_volume': args.lambda_volume,
