@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # Configuration
-RESULTS_DIR="/datasets/work/hb-nhmrc-dhcp/work/liu275/new/results"
+RESULTS_DIR="/datasets/work/hb-nhmrc-dhcp/work/liu275/causal/results"
 BATCH_SIZE=2
 NUM_GPUS=4
 EPOCHS=1000
@@ -42,7 +42,7 @@ PPREMOPREBO_SPLIT_JSON="${DATA_ROOT}/PPREMOPREBO_split.json"
 PPREMOPREBO_SPLIT_TEST_JSON="${DATA_ROOT}/PPREMOPREBO_split_test.json"
 
 # ========== TARGET DOMAIN GRAPH PRIORS ==========
-TARGET_PRIORS_DIR="/datasets/work/hb-nhmrc-dhcp/work/liu275/new/priors/PPREMOPREBO"
+TARGET_PRIORS_DIR="/datasets/work/hb-nhmrc-dhcp/work/liu275/causal/priors/PPREMOPREBO"
 TARGET_PRIOR_ADJ_NPY="${TARGET_PRIORS_DIR}/prior_adj.npy"
 TARGET_PRIOR_REQUIRED_JSON="${TARGET_PRIORS_DIR}/prior_required.json"
 TARGET_PRIOR_FORBIDDEN_JSON="${TARGET_PRIORS_DIR}/prior_forbidden.json"
@@ -150,8 +150,8 @@ SHAPE_TEMPLATE_ARGS="--shape_templates_pt ${SHAPE_TEMPLATES_PATH} \
     --require_shape_template_cache"
 
 
-# ========== SOURCE DOMAIN GRAPH PRIORS (NEW) ==========
-SOURCE_PRIORS_DIR="/datasets/work/hb-nhmrc-dhcp/work/liu275/new/priors/dHCP"
+# ========== SOURCE DOMAIN GRAPH PRIORS (CAUSAL) ==========
+SOURCE_PRIORS_DIR="/datasets/work/hb-nhmrc-dhcp/work/liu275/causal/priors/dHCP"
 SOURCE_PRIOR_ADJ_NPY="${SOURCE_PRIORS_DIR}/prior_adj.npy"
 SOURCE_PRIOR_REQUIRED_JSON="${SOURCE_PRIORS_DIR}/prior_required.json"
 SOURCE_PRIOR_FORBIDDEN_JSON="${SOURCE_PRIORS_DIR}/prior_forbidden.json"
@@ -454,7 +454,7 @@ if [ -f "$TARGET_PRIOR_FORBIDDEN_JSON" ]; then
     TARGET_GRAPH_ARGS="$TARGET_GRAPH_ARGS --prior_forbidden_json $TARGET_PRIOR_FORBIDDEN_JSON"
 fi
 
-# Prepare source domain graph prior arguments (NEW)
+# Prepare source domain graph prior arguments (CAUSAL)
 SOURCE_GRAPH_ARGS=""
 if [ -f "$SOURCE_PRIOR_ADJ_NPY" ]; then
     SOURCE_GRAPH_ARGS="$SOURCE_GRAPH_ARGS --src_prior_adj_npy $SOURCE_PRIOR_ADJ_NPY"

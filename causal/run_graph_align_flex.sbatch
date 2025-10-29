@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH --job-name=graph_align_flex_new
+#SBATCH --job-name=causal
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=32
@@ -27,7 +27,7 @@ export TORCH_ALLOW_TF32=1
 export CUBLAS_ALLOW_TF32=1
 
 # Fixed path
-cd /datasets/work/hb-nhmrc-dhcp/work/liu275/new
+cd /datasets/work/hb-nhmrc-dhcp/work/liu275/causal
 
 # Activate environment
 source /datasets/work/hb-nhmrc-dhcp/work/liu275/miniconda3/bin/activate
@@ -45,3 +45,4 @@ echo "=============================================================="
 
 # Auto-resubmission is handled inside run_training_graphalign.sh to avoid
 # double-submitting follow-up jobs that would otherwise clutter the queue.
+

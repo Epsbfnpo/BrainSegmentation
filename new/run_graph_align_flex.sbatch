@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH --job-name=graph_align_flex_new
+#SBATCH --job-name=causal
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
@@ -27,7 +27,7 @@ export TORCH_ALLOW_TF32=1
 export CUBLAS_ALLOW_TF32=1
 
 # Fixed path
-cd /datasets/work/hb-nhmrc-dhcp/work/liu275/new
+cd /datasets/work/hb-nhmrc-dhcp/work/liu275/causal
 
 # Activate environment
 source /datasets/work/hb-nhmrc-dhcp/work/liu275/miniconda3/bin/activate
@@ -43,13 +43,6 @@ echo "=============================================================="
 echo "Job $SLURM_JOB_ID ended at $(date) with exit status $EXIT_STATUS"
 echo "=============================================================="
 
-# Check if training is incomplete and needs to continue
-RESULTS_DIR="/datasets/work/hb-nhmrc-dhcp/work/liu275/new/results"
-if [ ! -f "${RESULTS_DIR}/final_model.pth" ] && [ -f "${RESULTS_DIR}/latest.pth" ]; then
-    echo "Training not complete, resubmitting job..."
-    SUBMIT_DIR=${SLURM_SUBMIT_DIR:-$(dirname "$0")}
-    SCRIPT_PATH="${SUBMIT_DIR}/$(basename "$0")"
-    JOB_NAME=${SLURM_JOB_NAME:-graph_align_flex_new}
-    sbatch --dependency=singleton --job-name="$JOB_NAME" "$SCRIPT_PATH"
-fi
+# Auto-resubmission is handled inside run_training_graphalign.sh to avoid
+# double-submitting follow-up jobs that would otherwise clutter the queue.
 
