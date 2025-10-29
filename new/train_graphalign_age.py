@@ -159,6 +159,10 @@ def get_parser():
                         help='In-memory dtype for cached shape templates (default: float16)')
     parser.add_argument('--shape_template_workers', type=int, default=0,
                         help='CPU workers for preprocessing shape templates (0=auto, uses ~80% of available cores)')
+    parser.add_argument('--shape_template_cache', type=str, default=None,
+                        help='Path to an externally preprocessed shape template cache (.processed.pt)')
+    parser.add_argument('--require_shape_template_cache', action='store_true',
+                        help='Abort instead of preprocessing when the cache is missing')
     parser.add_argument('--no_shape_template_progress', dest='shape_template_progress', action='store_false',
                         help='Disable progress output while preprocessing shape templates')
     parser.set_defaults(shape_template_progress=True)
@@ -584,6 +588,23 @@ def main():
                 "  ⚠️  Shape templates not provided. Set --shape_templates_pt or SHAPE_TEMPLATES_PT to enable the shape prior."
             )
 
+        if args.shape_template_cache:
+            if not os.path.exists(args.shape_template_cache):
+                if args.require_shape_template_cache:
+                    if is_main:
+                        print(
+                            f"❌ Required shape template cache missing: {args.shape_template_cache}."
+                        )
+                        print("   Please run preprocess_shape_templates.py before launching training.")
+                    raise SystemExit(1)
+                if is_main:
+                    print(
+                        f"⚠️  Shape template cache not found at {args.shape_template_cache}; falling back to on-the-fly preprocessing."
+                    )
+                args.shape_template_cache = None
+            elif is_main:
+                print(f"  Shape template cache detected: {args.shape_template_cache}")
+
         if args.debug_mode and is_main:
             print("\n🐞 Debug mode enabled")
             print(f"  Train/val step limit: {args.debug_step_limit}")
@@ -819,6 +840,8 @@ def main():
             'shape_templates_path': args.shape_templates_pt,
             'shape_template_target_shape': (args.roi_x, args.roi_y, args.roi_z),
             'shape_template_dtype': args.shape_template_dtype,
+            'shape_templates_cache_path': args.shape_template_cache,
+            'shape_template_require_cache': args.require_shape_template_cache,
             'shape_template_workers': args.shape_template_workers,
             'shape_template_progress': args.shape_template_progress,
             'weighted_adj_path': args.weighted_adj_npy,
