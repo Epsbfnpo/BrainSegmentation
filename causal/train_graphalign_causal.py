@@ -593,14 +593,8 @@ def main():
         parser = get_parser()
         args = parser.parse_args()
 
-        auto_inferred_shape_templates = False
         if args.shape_templates_pt:
             args.shape_templates_pt = os.path.abspath(args.shape_templates_pt)
-        else:
-            default_shape_templates = os.path.join(_REPO_ROOT, 'priors', 'shape_templates.pt')
-            if os.path.exists(default_shape_templates):
-                args.shape_templates_pt = default_shape_templates
-                auto_inferred_shape_templates = True
 
         if not args.debug_mode:
             env_debug = os.environ.get("TRAIN_DEBUG", "")
@@ -636,8 +630,6 @@ def main():
             args.shape_templates_pt = None
             args.lambda_shape = 0.0
 
-        if auto_inferred_shape_templates and args.shape_templates_pt and is_main:
-            print(f"ℹ️  Auto-enabled shape templates from {args.shape_templates_pt}")
 
         if args.debug_mode and is_main:
             print("\n🐞 Debug mode enabled")
