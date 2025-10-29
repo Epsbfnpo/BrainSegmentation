@@ -115,6 +115,23 @@ SHAPE_TEMPLATE_ARGS="--shape_templates_pt ${SHAPE_TEMPLATES_PATH} \
     --shape_template_cache ${SHAPE_TEMPLATE_CACHE} \
     --require_shape_template_cache"
 
+SHAPE_TEMPLATES_PATH="/datasets/work/hb-nhmrc-dhcp/work/liu275/new/priors/shape_templates.pt"
+SHAPE_TEMPLATE_CACHE="${SHAPE_TEMPLATES_PATH}.processed.roi${ROI_X}x${ROI_Y}x${ROI_Z}.fp16.pt"
+
+if [ ! -f "$SHAPE_TEMPLATE_CACHE" ]; then
+    echo "❌ Required shape template cache not found: $SHAPE_TEMPLATE_CACHE"
+    echo "   Please run the preprocessing step before submitting the job:"
+    echo "     python new/preprocess_shape_templates.py \\"
+    echo "         --input $SHAPE_TEMPLATES_PATH \\"
+    echo "         --target-shape ${ROI_X}x${ROI_Y}x${ROI_Z} --dtype ${SHAPE_TEMPLATE_DTYPE}"
+    exit 1
+fi
+
+SHAPE_TEMPLATE_ARGS="--shape_templates_pt ${SHAPE_TEMPLATES_PATH} \
+    --shape_template_dtype ${SHAPE_TEMPLATE_DTYPE} \
+    --shape_template_cache ${SHAPE_TEMPLATE_CACHE} \
+    --require_shape_template_cache"
+
 
 # ========== SOURCE DOMAIN GRAPH PRIORS (NEW) ==========
 SOURCE_PRIORS_DIR="/datasets/work/hb-nhmrc-dhcp/work/liu275/new/priors/dHCP"
