@@ -11,7 +11,8 @@ import torch.nn.functional as F
 import json
 import numpy as np
 import os
-from typing import Optional, Dict, List, Tuple
+import re
+from typing import Optional, Dict, List, Tuple, Any, Union
 from monai.data import MetaTensor
 
 
@@ -74,6 +75,83 @@ def soft_adjacency_from_probs(probs: torch.Tensor,
     A_batch = A_batch / row_sums
 
     return A_batch.mean(dim=0)
+
+
+def _parse_age_key(raw_key: Union[str, int, float]) -> Optional[float]:
+    """Parse various age bucket keys into a float value."""
+
+    if isinstance(raw_key, (int, float)):
+        return float(raw_key)
+
+    if not isinstance(raw_key, str):
+        return None
+
+    token = raw_key.strip().lower()
+    if not token:
+        return None
+
+    if token in {"unknown", "unknown_age", "nan"}:
+        return -1.0
+
+    match = re.search(r"-?\d+(?:\.\d+)?", token)
+    if match is None:
+        return None
+
+    try:
+        return float(match.group(0))
+    except ValueError:
+        return None
+
+
+def _coerce_shape_template_payload(payload: Any) -> Tuple[Dict[float, torch.Tensor], Dict[str, Any]]:
+    """Convert torch.load payloads into an age→template dictionary."""
+
+    metadata: Dict[str, Any] = {}
+    if payload is None:
+        return {}, metadata
+
+    mapping: Optional[Dict] = None
+    if isinstance(payload, dict):
+        if 'mean' in payload and isinstance(payload['mean'], dict):
+            mapping = payload['mean']
+            metadata['has_std'] = bool(payload.get('std'))
+            if 'num_classes' in payload:
+                metadata['num_classes'] = int(payload['num_classes'])
+        else:
+            mapping = payload
+
+    if mapping is None:
+        return {}, metadata
+
+    templates: Dict[float, torch.Tensor] = {}
+    ignored_keys: List[str] = []
+
+    for raw_key, value in mapping.items():
+        age_key = _parse_age_key(raw_key)
+        if age_key is None:
+            ignored_keys.append(str(raw_key))
+            continue
+
+        if isinstance(value, torch.Tensor):
+            tensor = value.detach().cpu().float()
+        else:
+            tensor = torch.as_tensor(value, dtype=torch.float32)
+
+        templates[age_key] = tensor
+
+    if not templates:
+        metadata['ignored_keys'] = ignored_keys
+        return {}, metadata
+
+    ages_sorted = sorted(templates.keys())
+    metadata['ages'] = ages_sorted
+    first_template = templates[ages_sorted[0]]
+    metadata['spatial_shape'] = tuple(first_template.shape[1:])
+    metadata['num_classes_in_template'] = first_template.shape[0]
+    if ignored_keys:
+        metadata['ignored_keys'] = ignored_keys
+
+    return templates, metadata
 
 def compute_laplacian(A: torch.Tensor, normalized: bool = True) -> torch.Tensor:
     """Compute (optionally normalized) graph Laplacian from adjacency matrix."""
@@ -771,9 +849,49 @@ class AgeConditionedGraphPriorLoss(nn.Module):
         self.register_buffer('volume_valid_mask', torch.empty(0), persistent=False)
 
         self.shape_templates = None
+        self.shape_template_metadata: Dict[str, Any] = {}
+        self.shape_template_path = shape_templates_path
         if shape_templates_path and os.path.exists(shape_templates_path):
-            self.shape_templates = torch.load(shape_templates_path)
-            print(f"✓ Loaded shape templates from {shape_templates_path}")
+            raw_templates = torch.load(shape_templates_path, map_location='cpu')
+            templates, metadata = _coerce_shape_template_payload(raw_templates)
+            if templates:
+                self.shape_templates = templates
+                self.shape_template_metadata = metadata
+                ages = metadata.get('ages', [])
+                is_main = (not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0
+                if is_main:
+                    if ages:
+                        known_ages = [a for a in ages if a >= 0]
+                        if known_ages:
+                            age_range = f"{min(known_ages):.1f}-{max(known_ages):.1f}w"
+                        else:
+                            age_range = "unknown"
+                        print(
+                            f"✓ Loaded shape templates from {shape_templates_path} "
+                            f"({len(ages)} bins, age range: {age_range})"
+                        )
+                    else:
+                        print(f"✓ Loaded shape templates from {shape_templates_path}")
+                    if metadata.get('ignored_keys'):
+                        print(
+                            "  ⚠️ Ignored non-age template keys: "
+                            + ", ".join(metadata['ignored_keys'])
+                        )
+            else:
+                is_main = (not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0
+                if is_main:
+                    print(
+                        f"⚠️  Failed to parse shape templates payload at {shape_templates_path}; "
+                        "disabling λ_shape."
+                    )
+                self.lambda_shape = 0.0
+        elif shape_templates_path and self.lambda_shape > 0:
+            is_main = (not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0
+            if is_main:
+                print(
+                    f"⚠️  Shape templates file not found at {shape_templates_path}; disabling λ_shape."
+                )
+            self.lambda_shape = 0.0
 
         self.age_weights = None
         if age_weights_path and os.path.exists(age_weights_path):

@@ -593,6 +593,15 @@ def main():
         parser = get_parser()
         args = parser.parse_args()
 
+        auto_inferred_shape_templates = False
+        if args.shape_templates_pt:
+            args.shape_templates_pt = os.path.abspath(args.shape_templates_pt)
+        else:
+            default_shape_templates = os.path.join(_REPO_ROOT, 'priors', 'shape_templates.pt')
+            if os.path.exists(default_shape_templates):
+                args.shape_templates_pt = default_shape_templates
+                auto_inferred_shape_templates = True
+
         if not args.debug_mode:
             env_debug = os.environ.get("TRAIN_DEBUG", "")
             if env_debug.lower() in {"1", "true", "yes", "y", "on", "debug"}:
@@ -617,6 +626,18 @@ def main():
 
         device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
         is_main = (not is_dist()) or dist.get_rank() == 0
+
+        if args.shape_templates_pt and not os.path.exists(args.shape_templates_pt):
+            if is_main:
+                print(
+                    f"⚠️  Requested shape templates not found at {args.shape_templates_pt}; "
+                    "disabling λ_shape."
+                )
+            args.shape_templates_pt = None
+            args.lambda_shape = 0.0
+
+        if auto_inferred_shape_templates and args.shape_templates_pt and is_main:
+            print(f"ℹ️  Auto-enabled shape templates from {args.shape_templates_pt}")
 
         if args.debug_mode and is_main:
             print("\n🐞 Debug mode enabled")

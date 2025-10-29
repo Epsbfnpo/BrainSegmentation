@@ -23,6 +23,20 @@ LATERALITY_PAIRS_JSON="${SCRIPT_DIR}/dhcp_lr_swap.json"
 SOURCE_CLASS_PRIOR="${REPO_ROOT}/dHCP_class_prior_foreground.json"
 TARGET_CLASS_PRIOR="${REPO_ROOT}/PPREMOPREBO_class_prior_foreground.json"
 
+# Shape template configuration (auto-generated if missing)
+DATA_ROOT="${BRAINSEG_DATA_ROOT:-/datasets/work/hb-nhmrc-dhcp/work/liu275}"
+SHAPE_TEMPLATES_PT="${REPO_ROOT}/priors/shape_templates.pt"
+DHCPSPLIT_JSON="/scratch3/liu275/Data/dHCP/dHCP_split.json"
+if [ ! -f "$DHCPSPLIT_JSON" ]; then
+    DHCPSPLIT_JSON="${DATA_ROOT}/dHCP_split.json"
+fi
+DHCPSPLIT_TEST_JSON="/scratch3/liu275/Data/dHCP/dHCP_split_test.json"
+if [ ! -f "$DHCPSPLIT_TEST_JSON" ]; then
+    DHCPSPLIT_TEST_JSON="${DATA_ROOT}/dHCP_split_test.json"
+fi
+PPREMOPREBO_SPLIT_JSON="${DATA_ROOT}/PPREMOPREBO_split.json"
+PPREMOPREBO_SPLIT_TEST_JSON="${DATA_ROOT}/PPREMOPREBO_split_test.json"
+
 # ========== TARGET DOMAIN GRAPH PRIORS ==========
 TARGET_PRIORS_DIR="/datasets/work/hb-nhmrc-dhcp/work/liu275/new/priors/PPREMOPREBO"
 TARGET_PRIOR_ADJ_NPY="${TARGET_PRIORS_DIR}/prior_adj.npy"
@@ -57,6 +71,41 @@ GRAPH_TEMP=1.0              # Temperature for adjacency computation
 # Create results directory
 mkdir -p $RESULTS_DIR
 mkdir -p "${RESULTS_DIR}/graph_analysis"
+mkdir -p "$(dirname "$SHAPE_TEMPLATES_PT")"
+
+# Build shape templates if missing
+if [ ! -f "$SHAPE_TEMPLATES_PT" ]; then
+    echo "🧩 Building age-aware shape templates..."
+    missing_split=0
+    for split_path in "$DHCPSPLIT_JSON" "$DHCPSPLIT_TEST_JSON" "$PPREMOPREBO_SPLIT_JSON" "$PPREMOPREBO_SPLIT_TEST_JSON"; do
+        if [ ! -f "$split_path" ]; then
+            echo "❌ Required split file not found: $split_path"
+            missing_split=1
+        fi
+    done
+    if [ $missing_split -ne 0 ]; then
+        echo "Aborting shape template generation due to missing splits."
+        exit 1
+    fi
+    python build_shape_templates.py \
+        --split "$DHCPSPLIT_JSON" \
+        --split "$DHCPSPLIT_TEST_JSON" \
+        --split "$PPREMOPREBO_SPLIT_JSON" \
+        --split "$PPREMOPREBO_SPLIT_TEST_JSON" \
+        --data-root "$DATA_ROOT" \
+        --num-classes 87 \
+        --age-bin-width 2.0 \
+        --workers 32 \
+        --device cpu \
+        --target-shape 239x290x290 \
+        --output "$SHAPE_TEMPLATES_PT"
+
+    if [ $? -ne 0 ]; then
+        echo "❌ Failed to build shape templates"
+        exit 1
+    fi
+    echo "✅ Shape templates saved to $SHAPE_TEMPLATES_PT"
+fi
 
 # Build SOURCE domain graph priors if they don't exist
 if [ ! -f "$SOURCE_PRIOR_ADJ_NPY" ]; then
@@ -191,6 +240,7 @@ echo "    - Top-K eigenvalues: $GRAPH_TOPR"
 echo "    - Warmup epochs: $GRAPH_WARMUP"
 echo "    - Temperature: $GRAPH_TEMP"
 echo "    - Laterality Pairs: $LATERALITY_PAIRS_JSON"
+echo "    - Shape templates: $SHAPE_TEMPLATES_PT"
 echo ""
 
 # Check if training is already complete
@@ -327,6 +377,7 @@ torchrun --standalone --nproc_per_node=$NUM_GPUS train_graphalign_causal.py \
     --out_channels=87 \
     --weighted_adj_npy=$TARGET_WEIGHTED_ADJ_NPY \
     --volume_stats_json=$TARGET_VOLUME_STATS_JSON \
+    --shape_templates_pt=$SHAPE_TEMPLATES_PT \
     --age_weights_json=$TARGET_AGE_WEIGHTS_JSON \
     --feature_size=48 \
     --roi_x=128 --roi_y=128 --roi_z=128 \

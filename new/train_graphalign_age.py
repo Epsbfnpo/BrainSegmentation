@@ -529,6 +529,15 @@ def main():
         parser = get_parser()
         args = parser.parse_args()
 
+        auto_inferred_shape_templates = False
+        if args.shape_templates_pt:
+            args.shape_templates_pt = os.path.abspath(args.shape_templates_pt)
+        else:
+            default_shape_templates = os.path.join(_REPO_ROOT, 'priors', 'shape_templates.pt')
+            if os.path.exists(default_shape_templates):
+                args.shape_templates_pt = default_shape_templates
+                auto_inferred_shape_templates = True
+
         if not args.debug_mode:
             env_debug = os.environ.get("TRAIN_DEBUG", "")
             if env_debug.lower() in {"1", "true", "yes", "y", "on", "debug"}:
@@ -557,15 +566,14 @@ def main():
         if args.shape_templates_pt and not os.path.exists(args.shape_templates_pt):
             if is_main:
                 print(
-                    f"⚠️  Shape templates not found at {args.shape_templates_pt}; disabling shape prior term."
+                    f"⚠️  Requested shape templates not found at {args.shape_templates_pt}; "
+                    "disabling λ_shape."
                 )
             args.shape_templates_pt = None
-        elif args.shape_templates_pt and is_main:
-            print(f"  Shape templates enabled: {args.shape_templates_pt}")
-        elif is_main and not args.shape_templates_pt:
-            print(
-                "  ⚠️  Shape templates not provided. Set --shape_templates_pt or SHAPE_TEMPLATES_PT to enable the shape prior."
-            )
+            args.lambda_shape = 0.0
+
+        if auto_inferred_shape_templates and args.shape_templates_pt and is_main:
+            print(f"ℹ️  Auto-enabled shape templates from {args.shape_templates_pt}")
 
         if args.debug_mode and is_main:
             print("\n🐞 Debug mode enabled")
