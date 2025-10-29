@@ -12,6 +12,10 @@ RESULTS_DIR="/datasets/work/hb-nhmrc-dhcp/work/liu275/new/results"
 BATCH_SIZE=2
 NUM_GPUS=4
 EPOCHS=1000
+ROI_X=128
+ROI_Y=128
+ROI_Z=128
+SHAPE_TEMPLATE_DTYPE="float16"
 
 # Time management configuration
 JOB_TIME_LIMIT=115  # 115 minutes for 2-hour jobs (leaving 5 min buffer)
@@ -31,6 +35,23 @@ TARGET_PRIOR_FORBIDDEN_JSON="${TARGET_PRIORS_DIR}/prior_forbidden.json"
 TARGET_WEIGHTED_ADJ_NPY="${TARGET_PRIORS_DIR}/weighted_adj.npy"
 TARGET_VOLUME_STATS_JSON="${TARGET_PRIORS_DIR}/volume_stats.json"
 TARGET_AGE_WEIGHTS_JSON="${TARGET_PRIORS_DIR}/age_weights.json"
+
+SHAPE_TEMPLATES_PATH="/datasets/work/hb-nhmrc-dhcp/work/liu275/new/priors/shape_templates.pt"
+SHAPE_TEMPLATE_CACHE="${SHAPE_TEMPLATES_PATH}.processed.roi${ROI_X}x${ROI_Y}x${ROI_Z}.fp16.pt"
+
+if [ ! -f "$SHAPE_TEMPLATE_CACHE" ]; then
+    echo "❌ Required shape template cache not found: $SHAPE_TEMPLATE_CACHE"
+    echo "   Please run the preprocessing step before submitting the job:"
+    echo "     python new/preprocess_shape_templates.py \\"
+    echo "         --input $SHAPE_TEMPLATES_PATH \\"
+    echo "         --target-shape ${ROI_X}x${ROI_Y}x${ROI_Z} --dtype ${SHAPE_TEMPLATE_DTYPE}"
+    exit 1
+fi
+
+SHAPE_TEMPLATE_ARGS="--shape_templates_pt ${SHAPE_TEMPLATES_PATH} \
+    --shape_template_dtype ${SHAPE_TEMPLATE_DTYPE} \
+    --shape_template_cache ${SHAPE_TEMPLATE_CACHE} \
+    --require_shape_template_cache"
 
 
 # ========== SOURCE DOMAIN GRAPH PRIORS (NEW) ==========
@@ -329,7 +350,7 @@ torchrun --standalone --nproc_per_node=$NUM_GPUS train_graphalign_age.py \
     --volume_stats_json=$TARGET_VOLUME_STATS_JSON \
     --age_weights_json=$TARGET_AGE_WEIGHTS_JSON \
     --feature_size=48 \
-    --roi_x=128 --roi_y=128 --roi_z=128 \
+    --roi_x=${ROI_X} --roi_y=${ROI_Y} --roi_z=${ROI_Z} \
     --use_label_crop \
     --eval_num=2 \
     --save_interval=10 \
@@ -368,6 +389,7 @@ torchrun --standalone --nproc_per_node=$NUM_GPUS train_graphalign_age.py \
     --clip 2.0 \
     --job_time_limit=$JOB_TIME_LIMIT \
     --time_buffer_minutes=$TIME_BUFFER \
+    $SHAPE_TEMPLATE_ARGS \
     $TARGET_GRAPH_ARGS \
     $SOURCE_GRAPH_ARGS \
     --graph_align_mode=$GRAPH_ALIGN_MODE \
@@ -488,13 +510,6 @@ except:
             echo "Latest checkpoint: ${RESULTS_DIR}/latest.pth"
             echo "Modification time: $(stat -c %y ${RESULTS_DIR}/latest.pth)"
         fi
-
-        # Auto-resubmit if running under Slurm
-        if [ -n "$SLURM_JOB_ID" ] && [ ! -f "${RESULTS_DIR}/final_model.pth" ]; then
-            echo ""
-            echo "🔄 Auto-resubmitting next chunk..."
-            sbatch "${SLURM_SUBMIT_DIR}/run_graph_align_flex.sbatch"
-        fi
     fi
 else
     echo "❌ TRAINING FAILED (exit code: $EXIT_STATUS)"
@@ -506,11 +521,6 @@ else
     echo "3. Elastic error: ${RESULTS_DIR}/elastic_error.json"
 
     # Still try to resubmit if there's a valid checkpoint
-    if [ -n "$SLURM_JOB_ID" ] && [ -f "${RESULTS_DIR}/latest.pth" ] && [ ! -f "${RESULTS_DIR}/final_model.pth" ]; then
-        echo ""
-        echo "🔄 Found checkpoint, attempting to resubmit for recovery..."
-        sbatch "${SLURM_SUBMIT_DIR}/run_graph_align_flex.sbatch"
-    fi
 fi
 
 echo ""
@@ -526,3 +536,5 @@ echo "3. Check structural consistency:"
 echo "   grep 'Structural\\|symmetry\\|adjacency' ${RESULTS_DIR}/training.log | tail -10"
 echo ""
 echo "=============================================================="
+
+exit $EXIT_STATUS
