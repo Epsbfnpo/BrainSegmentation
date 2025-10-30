@@ -185,13 +185,22 @@ def compute_laplacian_invariance_loss(
     restricted_mask: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Compute Laplacian residual invariance across domains conditioned on age."""
-    devices = [probs.device for probs in domain_probs.values()]
+    normalized_probs = {
+        name: _as_plain_tensor(probs)
+        for name, probs in domain_probs.items()
+    }
+
+    devices = [probs.device for probs in normalized_probs.values()]
     device = devices[0] if devices else torch.device('cpu')
 
     normalized_bins = {
         name: _as_plain_tensor(bins) if bins is not None else None
         for name, bins in domain_bins.items()
     }
+
+    if restricted_mask is not None:
+        restricted_mask = _as_plain_tensor(restricted_mask)
+
     all_bins = torch.cat([bins for bins in normalized_bins.values() if bins is not None and bins.numel() > 0])
     if all_bins.numel() == 0:
         return torch.zeros((), device=device)
@@ -207,7 +216,7 @@ def compute_laplacian_invariance_loss(
     for b in unique_bins:
         domain_adjs = {}
         aggregated_adj = []
-        for domain, probs in domain_probs.items():
+        for domain, probs in normalized_probs.items():
             bins = normalized_bins.get(domain)
             if bins is None:
                 continue
