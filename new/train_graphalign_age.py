@@ -308,6 +308,11 @@ def get_parser():
     parser.add_argument('--no_swin_checkpoint', dest='use_swin_checkpoint', action='store_false',
                         help='禁用SwinUNETR内部的activation checkpointing')
 
+    parser.add_argument('--use_swin_checkpoint', dest='use_swin_checkpoint', action='store_true', default=True,
+                        help='Enable activation checkpointing inside SwinUNETR（降低显存占用）')
+    parser.add_argument('--no_swin_checkpoint', dest='use_swin_checkpoint', action='store_false',
+                        help='禁用SwinUNETR内部的activation checkpointing')
+
     # Target label utilization
     parser.add_argument('--use_target_labels', action='store_true', default=True,
                         help='Use target domain labels during training')

@@ -2,6 +2,18 @@ import torch
 import torch.nn.functional as F
 from typing import Dict, Tuple, Optional
 
+try:
+    from monai.data import MetaTensor
+except ImportError:  # pragma: no cover - optional dependency
+    MetaTensor = tuple()  # type: ignore[assignment]
+
+
+def _as_plain_tensor(t: torch.Tensor) -> torch.Tensor:
+    """Convert MetaTensor inputs to plain tensors to avoid indexing issues."""
+    if isinstance(t, MetaTensor):
+        return t.as_tensor()
+    return t
+
 
 def _ensure_labels_dim(labels: torch.Tensor) -> torch.Tensor:
     if labels.dim() == 5 and labels.shape[1] == 1:
@@ -134,15 +146,21 @@ def compute_conditional_vrex_loss(
     eps: float = 1e-8,
 ) -> torch.Tensor:
     """Compute conditional variance risk across domains (V-REx)."""
-    device = next(iter(domain_losses.values()))[0].device
-    all_bins = torch.cat([info[1] for info in domain_losses.values() if info[1].numel() > 0])
+    normalized = {
+        name: (_as_plain_tensor(losses), _as_plain_tensor(bins))
+        for name, (losses, bins) in domain_losses.items()
+    }
+    if not normalized:
+        return torch.tensor(0.0)
+    device = next(iter(normalized.values()))[0].device
+    all_bins = torch.cat([info[1] for info in normalized.values() if info[1].numel() > 0])
     if all_bins.numel() == 0:
         return torch.zeros((), device=device)
     unique_bins = all_bins.unique(sorted=True)
     var_terms = []
     for b in unique_bins:
         env_means = []
-        for losses, bins in domain_losses.values():
+        for losses, bins in normalized.values():
             mask = bins == b
             if mask.sum() >= min_count:
                 env_means.append(losses[mask].mean())
@@ -170,7 +188,11 @@ def compute_laplacian_invariance_loss(
     devices = [probs.device for probs in domain_probs.values()]
     device = devices[0] if devices else torch.device('cpu')
 
-    all_bins = torch.cat([bins for bins in domain_bins.values() if bins.numel() > 0])
+    normalized_bins = {
+        name: _as_plain_tensor(bins) if bins is not None else None
+        for name, bins in domain_bins.items()
+    }
+    all_bins = torch.cat([bins for bins in normalized_bins.values() if bins is not None and bins.numel() > 0])
     if all_bins.numel() == 0:
         return torch.zeros((), device=device)
     unique_bins = all_bins.unique(sorted=True)
@@ -186,7 +208,7 @@ def compute_laplacian_invariance_loss(
         domain_adjs = {}
         aggregated_adj = []
         for domain, probs in domain_probs.items():
-            bins = domain_bins.get(domain)
+            bins = normalized_bins.get(domain)
             if bins is None:
                 continue
             mask = bins == b
