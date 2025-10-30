@@ -755,9 +755,14 @@ def train_epoch_causal(model, source_loader, target_loader, optimizer, epoch, to
                 else:
                     source_ages_tensor = source_ages
 
+                if isinstance(source_logits, MetaTensor):
+                    source_logits_tensor = source_logits.as_tensor()
+                else:
+                    source_logits_tensor = source_logits
+
                 cf_logits = actual_model.forward(cf_images, source_ages_tensor[cf_indices])
                 cf_raw = compute_counterfactual_consistency_loss(
-                    source_logits[cf_indices],
+                    source_logits_tensor[cf_indices],
                     cf_logits,
                     confidence_threshold=float(causal_cfg.get('cf_confidence_threshold', 0.6)),
                 )
