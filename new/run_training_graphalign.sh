@@ -323,6 +323,7 @@ echo "  - Number of GPUs: $NUM_GPUS"
 echo "  - Results Directory: $RESULTS_DIR"
 echo "  - Job Time Limit: $JOB_TIME_LIMIT minutes"
 echo "  - Time Buffer: $TIME_BUFFER minutes"
+echo "  - Swin activation checkpointing: ENABLED (如需禁用请在命令中加入 --no_swin_checkpoint)"
 echo ""
 echo "🎯 CROSS-DOMAIN ALIGNMENT CONFIGURATION:"
 echo "  - Alignment Mode: $GRAPH_ALIGN_MODE"
@@ -507,6 +508,7 @@ torchrun --standalone --nproc_per_node=$NUM_GPUS train_graphalign_age.py \
     --topk_warmup_epochs 30 \
     --use_tta \
     --infer_overlap 0.7 \
+    --use_swin_checkpoint \
     --use_amp \
     --amp_dtype bfloat16 \
     --use_target_labels \
