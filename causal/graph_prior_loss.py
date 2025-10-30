@@ -152,11 +152,17 @@ def compute_laplacian(A: torch.Tensor, normalized: bool = True) -> torch.Tensor:
 
     A = _to_tensor(A)
     A_sym = 0.5 * (A + A.T)
-    D = torch.diag(A_sym.sum(dim=1))
+
+    degree = torch.relu(A_sym).sum(dim=1)
+    D = torch.diag(degree)
     L = D - A_sym
 
     if normalized:
-        d_sqrt_inv = torch.diag(1.0 / torch.sqrt(torch.diag(D).clamp(min=1e-8)))
+        safe_degree = degree.clamp(min=1e-8)
+        inv_sqrt_vals = torch.zeros_like(safe_degree)
+        mask = degree > 1e-6
+        inv_sqrt_vals[mask] = 1.0 / torch.sqrt(safe_degree[mask])
+        d_sqrt_inv = torch.diag(inv_sqrt_vals)
         L = d_sqrt_inv @ L @ d_sqrt_inv
 
     return L

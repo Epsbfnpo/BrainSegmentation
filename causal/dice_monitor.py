@@ -804,7 +804,20 @@ class DiceMonitor:
                 forbidden_ema = np.array(self.dice_history['forbidden_ema'])
                 f.write(f"\nForbidden edges EMA:\n")
                 f.write(f"  Current: {forbidden_ema[-1]:.2f}\n")
-                f.write(f"  Trend: {'↑' if forbidden_ema[-1] > forbidden_ema[-10] else '↓'}\n")
+
+                if len(forbidden_ema) >= 10:
+                    reference_idx = -10
+                elif len(forbidden_ema) >= 2:
+                    reference_idx = 0
+                else:
+                    reference_idx = None
+
+                if reference_idx is None:
+                    trend_symbol = '→'
+                else:
+                    trend_symbol = '↑' if forbidden_ema[-1] > forbidden_ema[reference_idx] else '↓'
+
+                f.write(f"  Trend: {trend_symbol}\n")
 
             # Small structure focus
             if self.dice_history['bottom_30_dice']:
