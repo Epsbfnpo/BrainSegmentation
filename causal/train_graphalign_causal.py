@@ -237,6 +237,8 @@ def get_parser():
     # ========== NEW: DYNAMIC SPECTRAL ALIGNMENT PARAMETERS ==========
     parser.add_argument('--lambda_dyn', type=float, default=0.2,
                         help='Weight for dynamic spectral alignment (relative to lambda_spec_src)')
+    parser.add_argument('--disable_dynamic_branch', action='store_true',
+                        help='Completely disable the dynamic spectral alignment branch')
     parser.add_argument('--dyn_top_k', type=int, default=12,
                         help='Number of low-frequency eigenvalues for dynamic alignment')
     parser.add_argument('--dyn_start_epoch', type=int, default=50,
@@ -594,6 +596,11 @@ def main():
         parser = get_parser()
         args = parser.parse_args()
 
+        dynamic_branch_requested = args.lambda_dyn > 0
+        args.dynamic_branch_enabled = dynamic_branch_requested and not args.disable_dynamic_branch
+        if not args.dynamic_branch_enabled:
+            args.lambda_dyn = 0.0
+
         if not args.debug_mode:
             env_debug = os.environ.get("TRAIN_DEBUG", "")
             if env_debug.lower() in {"1", "true", "yes", "y", "on", "debug"}:
@@ -618,6 +625,10 @@ def main():
 
         device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
         is_main = (not is_dist()) or dist.get_rank() == 0
+
+        if is_main and not args.dynamic_branch_enabled and dynamic_branch_requested:
+            print("⚠️ Dynamic spectral alignment was requested but has been disabled via flag;"
+                  " proceeding without the dynamic branch.")
 
         if args.debug_mode and is_main:
             print("\n🐞 Debug mode enabled")
@@ -648,7 +659,7 @@ def main():
             # Pass graph prior info for enhanced monitoring
             graph_prior_enabled=(args.prior_adj_npy is not None or args.weighted_adj_npy is not None),
             cross_domain_enabled=(args.src_prior_adj_npy is not None),
-            dual_branch_enabled=True  # track dual-branch metrics
+            dual_branch_enabled=args.dynamic_branch_enabled  # track dual-branch metrics when enabled
         ) if is_main else None
 
         # Save configuration (only on main process)
@@ -662,6 +673,8 @@ def main():
                 config_dict['graph_prior_enabled'] = bool(args.prior_adj_npy or args.weighted_adj_npy)
                 config_dict['cross_domain_alignment'] = bool(args.src_prior_adj_npy)
                 config_dict['age_aware_priors'] = bool(args.volume_stats_json or args.weighted_adj_npy)
+                config_dict['dynamic_branch_enabled'] = bool(args.dynamic_branch_enabled)
+                config_dict['disable_dynamic_branch_flag'] = bool(args.disable_dynamic_branch)
                 json.dump(config_dict, f, indent=2)
 
             print("" + "=" * 80)
@@ -702,7 +715,7 @@ def main():
                 print(f"  Top-K eigenvalues: {args.graph_topr}")
                 print(f"  Warmup epochs: {args.graph_warmup_epochs}")
 
-                # Dynamic alignment parameters
+            if args.dynamic_branch_enabled:
                 print(f"🔄 DYNAMIC SPECTRAL ALIGNMENT")
                 print(f"  Lambda dynamic: {args.lambda_dyn}")
                 print(f"  Dynamic top-K: {args.dyn_top_k}")
@@ -711,6 +724,8 @@ def main():
                 print(f"  Weighted U-subspace: {args.align_U_weighted}")
                 print(f"  QAP mismatch g: {args.qap_mismatch_g}")
                 print(f"  Use restricted mask: {args.use_restricted_mask}")
+            else:
+                print("🔄 Dynamic spectral alignment: disabled")
 
             if args.laterality_pairs_json:
                 print(f"Laterality Pairs JSON: {args.laterality_pairs_json}")
@@ -1120,10 +1135,13 @@ def main():
             print(f"⏱️ Job time limit: {args.job_time_limit} minutes")
             print(f"⏱️ Time buffer: {args.time_buffer_minutes} minutes")
             print(f"📋 Training Schedule:")
-            print(f"  Stage A (Prior Warmup): Epoch 1-{args.dyn_start_epoch}")
-            print(
-                f"  Stage B (Dynamic Ramp): Epoch {args.dyn_start_epoch}-{args.dyn_start_epoch + args.dyn_ramp_epochs}")
-            print(f"  Stage C (Adaptive): Epoch {args.dyn_start_epoch + args.dyn_ramp_epochs}-{args.epochs}")
+            if args.dynamic_branch_enabled:
+                print(f"  Stage A (Prior Warmup): Epoch 1-{args.dyn_start_epoch}")
+                print(
+                    f"  Stage B (Dynamic Ramp): Epoch {args.dyn_start_epoch}-{args.dyn_start_epoch + args.dyn_ramp_epochs}")
+                print(f"  Stage C (Adaptive): Epoch {args.dyn_start_epoch + args.dyn_ramp_epochs}-{args.epochs}")
+            else:
+                print("  Static graph alignment only (dynamic branch disabled)")
             time_manager.print_status(is_main)
 
         causal_config = {
@@ -1188,13 +1206,16 @@ def main():
                 print(f"{'=' * 60}")
                 print(f"EPOCH {epoch}/{args.epochs}")
                 # Indicate training stage
-                if epoch < args.dyn_start_epoch:
-                    print(f"Stage A: Prior Warmup")
-                elif epoch < args.dyn_start_epoch + args.dyn_ramp_epochs:
-                    print(
-                        f"Stage B: Dynamic Ramp (progress: {epoch - args.dyn_start_epoch + 1}/{args.dyn_ramp_epochs})")
+                if args.dynamic_branch_enabled:
+                    if epoch < args.dyn_start_epoch:
+                        print(f"Stage A: Prior Warmup")
+                    elif epoch < args.dyn_start_epoch + args.dyn_ramp_epochs:
+                        print(
+                            f"Stage B: Dynamic Ramp (progress: {epoch - args.dyn_start_epoch + 1}/{args.dyn_ramp_epochs})")
+                    else:
+                        print(f"Stage C: Adaptive Convergence")
                 else:
-                    print(f"Stage C: Adaptive Convergence")
+                    print("Stage: Static Graph Alignment (dynamic branch disabled)")
                 print(f"{'=' * 60}")
                 time_manager.print_status(is_main)
 

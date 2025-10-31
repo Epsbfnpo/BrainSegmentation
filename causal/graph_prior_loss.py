@@ -819,6 +819,7 @@ class AgeConditionedGraphPriorLoss(nn.Module):
         self.dyn_top_k = dyn_top_k
         self.dyn_start_epoch = dyn_start_epoch
         self.dyn_ramp_epochs = dyn_ramp_epochs
+        self.dynamic_branch_enabled = self.lambda_dyn > 0
 
         # Separate temperature for weighted adjacency if provided
         self.prior_temperature = prior_temperature if prior_temperature is not None else temperature
