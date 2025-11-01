@@ -976,6 +976,12 @@ def main():
         elif any(base_prior_kwargs.values()):
             age_graph_loss = AgeConditionedGraphPriorLoss(**base_prior_kwargs).to(device)
 
+        if (age_graph_loss is not None and not args.dynamic_branch_enabled
+                and hasattr(age_graph_loss, 'disable_dynamic_branch')):
+            age_graph_loss.disable_dynamic_branch()
+            if is_main and dynamic_branch_requested:
+                print("🔕 Dynamic spectral alignment disabled after graph prior initialization.")
+
         # === CHECKPOINT RESUME SUPPORT ===
         start_epoch = 1
         best_val_dice = 0.0

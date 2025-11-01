@@ -298,9 +298,19 @@ def train_epoch_causal(model, source_loader, target_loader, optimizer, epoch, to
         dyn_ramp_epochs = getattr(age_graph_loss, 'dyn_ramp_epochs', 1)
         dyn_top_k_max = getattr(age_graph_loss, 'dyn_top_k', 12)
         lambda_dyn_base = getattr(age_graph_loss, 'lambda_dyn', 0.0)
+
+        dynamic_branch_allowed = getattr(args, 'dynamic_branch_enabled', True)
+        if hasattr(age_graph_loss, 'is_dynamic_branch_enabled'):
+            dynamic_branch_allowed = dynamic_branch_allowed and age_graph_loss.is_dynamic_branch_enabled()
+        if not dynamic_branch_allowed:
+            lambda_dyn_base = 0.0
+
         use_restricted_mask_dyn = getattr(age_graph_loss, 'use_restricted_mask', False)
-        R_mask = age_graph_loss.R_mask if (use_restricted_mask_dyn and hasattr(age_graph_loss,
-                                                                               'R_mask') and age_graph_loss.R_mask.numel() > 0) else None
+        if use_restricted_mask_dyn and hasattr(age_graph_loss, 'R_mask'):
+            R_mask_tensor = age_graph_loss.R_mask
+            R_mask = R_mask_tensor if R_mask_tensor.numel() > 0 else None
+        else:
+            R_mask = None
         dyn_temperature = getattr(age_graph_loss, 'temperature', 1.0)
         pool_kernel = getattr(age_graph_loss, 'pool_kernel', 3)
         pool_stride = getattr(age_graph_loss, 'pool_stride', 2)

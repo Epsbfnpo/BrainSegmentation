@@ -821,6 +821,10 @@ class AgeConditionedGraphPriorLoss(nn.Module):
         self.dyn_ramp_epochs = dyn_ramp_epochs
         self.dynamic_branch_enabled = self.lambda_dyn > 0
 
+        if not self.dynamic_branch_enabled:
+            self.lambda_dyn = 0.0
+            self.dyn_top_k = max(0, int(self.dyn_top_k))
+
         # Separate temperature for weighted adjacency if provided
         self.prior_temperature = prior_temperature if prior_temperature is not None else temperature
 
@@ -1065,6 +1069,16 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                 f"and matched statistics to {num_classes} model classes"
             )
             self._volume_alignment_logged = True
+
+    def disable_dynamic_branch(self):
+        """Force-disable the dynamic spectral branch at runtime."""
+        self.lambda_dyn = 0.0
+        self.dyn_top_k = 0
+        self.dynamic_branch_enabled = False
+
+    def is_dynamic_branch_enabled(self) -> bool:
+        """Return whether the dynamic spectral branch should run."""
+        return bool(self.dynamic_branch_enabled and self.lambda_dyn > 0)
 
 
     def forward(self,
