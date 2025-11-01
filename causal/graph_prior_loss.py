@@ -152,11 +152,17 @@ def compute_laplacian(A: torch.Tensor, normalized: bool = True) -> torch.Tensor:
 
     A = _to_tensor(A)
     A_sym = 0.5 * (A + A.T)
-    D = torch.diag(A_sym.sum(dim=1))
+
+    degree = torch.relu(A_sym).sum(dim=1)
+    D = torch.diag(degree)
     L = D - A_sym
 
     if normalized:
-        d_sqrt_inv = torch.diag(1.0 / torch.sqrt(torch.diag(D).clamp(min=1e-8)))
+        safe_degree = degree.clamp(min=1e-8)
+        inv_sqrt_vals = torch.zeros_like(safe_degree)
+        mask = degree > 1e-6
+        inv_sqrt_vals[mask] = 1.0 / torch.sqrt(safe_degree[mask])
+        d_sqrt_inv = torch.diag(inv_sqrt_vals)
         L = d_sqrt_inv @ L @ d_sqrt_inv
 
     return L
@@ -813,6 +819,11 @@ class AgeConditionedGraphPriorLoss(nn.Module):
         self.dyn_top_k = dyn_top_k
         self.dyn_start_epoch = dyn_start_epoch
         self.dyn_ramp_epochs = dyn_ramp_epochs
+        self.dynamic_branch_enabled = self.lambda_dyn > 0
+
+        if not self.dynamic_branch_enabled:
+            self.lambda_dyn = 0.0
+            self.dyn_top_k = max(0, int(self.dyn_top_k))
 
         # Separate temperature for weighted adjacency if provided
         self.prior_temperature = prior_temperature if prior_temperature is not None else temperature
@@ -1058,6 +1069,16 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                 f"and matched statistics to {num_classes} model classes"
             )
             self._volume_alignment_logged = True
+
+    def disable_dynamic_branch(self):
+        """Force-disable the dynamic spectral branch at runtime."""
+        self.lambda_dyn = 0.0
+        self.dyn_top_k = 0
+        self.dynamic_branch_enabled = False
+
+    def is_dynamic_branch_enabled(self) -> bool:
+        """Return whether the dynamic spectral branch should run."""
+        return bool(self.dynamic_branch_enabled and self.lambda_dyn > 0)
 
 
     def forward(self,

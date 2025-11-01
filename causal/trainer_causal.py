@@ -5,7 +5,7 @@ import torch.distributed as dist
 import numpy as np
 from monai.losses import DiceLoss, FocalLoss
 from monai.metrics import DiceMetric
-from monai.data import decollate_batch
+from monai.data import decollate_batch, MetaTensor
 from monai.transforms import AsDiscrete
 from monai.inferers import sliding_window_inference
 import time
@@ -298,9 +298,19 @@ def train_epoch_causal(model, source_loader, target_loader, optimizer, epoch, to
         dyn_ramp_epochs = getattr(age_graph_loss, 'dyn_ramp_epochs', 1)
         dyn_top_k_max = getattr(age_graph_loss, 'dyn_top_k', 12)
         lambda_dyn_base = getattr(age_graph_loss, 'lambda_dyn', 0.0)
+
+        dynamic_branch_allowed = getattr(args, 'dynamic_branch_enabled', True)
+        if hasattr(age_graph_loss, 'is_dynamic_branch_enabled'):
+            dynamic_branch_allowed = dynamic_branch_allowed and age_graph_loss.is_dynamic_branch_enabled()
+        if not dynamic_branch_allowed:
+            lambda_dyn_base = 0.0
+
         use_restricted_mask_dyn = getattr(age_graph_loss, 'use_restricted_mask', False)
-        R_mask = age_graph_loss.R_mask if (use_restricted_mask_dyn and hasattr(age_graph_loss,
-                                                                               'R_mask') and age_graph_loss.R_mask.numel() > 0) else None
+        if use_restricted_mask_dyn and hasattr(age_graph_loss, 'R_mask'):
+            R_mask_tensor = age_graph_loss.R_mask
+            R_mask = R_mask_tensor if R_mask_tensor.numel() > 0 else None
+        else:
+            R_mask = None
         dyn_temperature = getattr(age_graph_loss, 'temperature', 1.0)
         pool_kernel = getattr(age_graph_loss, 'pool_kernel', 3)
         pool_stride = getattr(age_graph_loss, 'pool_stride', 2)
@@ -734,8 +744,15 @@ def train_epoch_causal(model, source_loader, target_loader, optimizer, epoch, to
             sample_rate = float(causal_cfg.get('cf_sample_rate', 0.0))
             cf_mask = torch.rand(source_images.size(0), device=device) < sample_rate
             if cf_mask.any():
+                cf_indices = torch.nonzero(cf_mask, as_tuple=True)[0]
+
+                if isinstance(source_images, MetaTensor):
+                    source_images_tensor = source_images.as_tensor()
+                else:
+                    source_images_tensor = source_images
+
                 cf_images = generate_counterfactuals(
-                    source_images[cf_mask],
+                    source_images_tensor[cf_indices],
                     intensity_scale=float(causal_cfg.get('cf_intensity_scale', 0.25)),
                     intensity_shift=float(causal_cfg.get('cf_intensity_shift', 0.15)),
                     noise_std=float(causal_cfg.get('cf_noise_std', 0.03)),
@@ -743,9 +760,19 @@ def train_epoch_causal(model, source_loader, target_loader, optimizer, epoch, to
                     clip_min=float(causal_cfg.get('cf_clip_min', -3.0)),
                     clip_max=float(causal_cfg.get('cf_clip_max', 3.0)),
                 )
-                cf_logits = actual_model.forward(cf_images, source_ages[cf_mask])
+                if isinstance(source_ages, MetaTensor):
+                    source_ages_tensor = source_ages.as_tensor()
+                else:
+                    source_ages_tensor = source_ages
+
+                if isinstance(source_logits, MetaTensor):
+                    source_logits_tensor = source_logits.as_tensor()
+                else:
+                    source_logits_tensor = source_logits
+
+                cf_logits = actual_model.forward(cf_images, source_ages_tensor[cf_indices])
                 cf_raw = compute_counterfactual_consistency_loss(
-                    source_logits[cf_mask],
+                    source_logits_tensor[cf_indices],
                     cf_logits,
                     confidence_threshold=float(causal_cfg.get('cf_confidence_threshold', 0.6)),
                 )
