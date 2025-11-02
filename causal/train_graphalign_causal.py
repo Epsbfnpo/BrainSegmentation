@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Main training script for DAUnet - WITH DUAL-BRANCH CROSS-DOMAIN GRAPH ALIGNMENT
-Enhanced with dynamic spectral alignment and mismatch-aware penalties
+Main training script for DAUnet with static cross-domain graph alignment
+Enhanced with causal regularizers and mismatch-aware penalties
 WITH CHECKPOINT RESUME AND SIGNAL HANDLING FOR 2-HOUR CHUNKS
 """
 
@@ -85,7 +85,7 @@ def compute_hist_from_ages(ages: List[float], bin_edges: np.ndarray) -> np.ndarr
 
 def get_parser():
     """Get argument parser with production settings"""
-    parser = argparse.ArgumentParser(description='DAUnet Training - Dual-Branch Cross-Domain Graph Alignment')
+    parser = argparse.ArgumentParser(description='DAUnet Training - Static Cross-Domain Graph Alignment')
 
     # Basic training parameters
     parser.add_argument('--epochs', default=400, type=int,
@@ -234,25 +234,6 @@ def get_parser():
                         choices=['src_only', 'tgt_only', 'joint'],
                         help='Graph alignment mode: align to source only, target only, or both')
 
-    # ========== NEW: DYNAMIC SPECTRAL ALIGNMENT PARAMETERS ==========
-    parser.add_argument('--lambda_dyn', type=float, default=0.2,
-                        help='Weight for dynamic spectral alignment (relative to lambda_spec_src)')
-    parser.add_argument('--disable_dynamic_branch', action='store_true',
-                        help='Completely disable the dynamic spectral alignment branch')
-    parser.add_argument('--dyn_top_k', type=int, default=12,
-                        help='Number of low-frequency eigenvalues for dynamic alignment')
-    parser.add_argument('--dyn_start_epoch', type=int, default=50,
-                        help='Epoch to start dynamic spectral alignment')
-    parser.add_argument('--dyn_ramp_epochs', type=int, default=50,
-                        help='Number of epochs to ramp up dynamic weight')
-    parser.add_argument('--dyn_pool_kernel', type=int, default=None,
-                        help='Pooling kernel for dynamic branch adjacency (default: graph_pool_kernel)')
-    parser.add_argument('--dyn_pool_stride', type=int, default=None,
-                        help='Pooling stride for dynamic branch adjacency (default: graph_pool_stride)')
-    parser.add_argument('--dyn_pre_pool_kernel', type=int, default=2,
-                        help='Kernel size for pre-pooling logits before dynamic branch softmax')
-    parser.add_argument('--dyn_pre_pool_stride', type=int, default=2,
-                        help='Stride for pre-pooling logits before dynamic branch softmax')
     parser.add_argument('--align_U_weighted', action='store_true', default=True,
                         help='Use eigenvalue-weighted U subspace alignment')
     parser.add_argument('--qap_mismatch_g', type=float, default=1.5,
@@ -604,11 +585,6 @@ def main():
         parser = get_parser()
         args = parser.parse_args()
 
-        dynamic_branch_requested = args.lambda_dyn > 0
-        args.dynamic_branch_enabled = dynamic_branch_requested and not args.disable_dynamic_branch
-        if not args.dynamic_branch_enabled:
-            args.lambda_dyn = 0.0
-
         if not args.debug_mode:
             env_debug = os.environ.get("TRAIN_DEBUG", "")
             if env_debug.lower() in {"1", "true", "yes", "y", "on", "debug"}:
@@ -633,10 +609,6 @@ def main():
 
         device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
         is_main = (not is_dist()) or dist.get_rank() == 0
-
-        if is_main and not args.dynamic_branch_enabled and dynamic_branch_requested:
-            print("⚠️ Dynamic spectral alignment was requested but has been disabled via flag;"
-                  " proceeding without the dynamic branch.")
 
         if args.debug_mode and is_main:
             print("\n🐞 Debug mode enabled")
@@ -664,10 +636,8 @@ def main():
             results_dir=args.results_dir,
             drop_threshold=args.dice_drop_threshold,
             window_size=args.dice_window_size,
-            # Pass graph prior info for enhanced monitoring
             graph_prior_enabled=(args.prior_adj_npy is not None or args.weighted_adj_npy is not None),
             cross_domain_enabled=(args.src_prior_adj_npy is not None),
-            dual_branch_enabled=args.dynamic_branch_enabled  # track dual-branch metrics when enabled
         ) if is_main else None
 
         # Save configuration (only on main process)
@@ -677,16 +647,14 @@ def main():
                 config_dict = vars(args)
                 config_dict['world_size'] = world_size
                 config_dict['dist_timeout_minutes'] = args.dist_timeout
-                config_dict['version'] = 'DUAL_BRANCH_CROSS_DOMAIN_GRAPH_ALIGNMENT_V2_AGEAWARE'
+                config_dict['version'] = 'STATIC_CROSS_DOMAIN_GRAPH_ALIGNMENT_V2_AGEAWARE'
                 config_dict['graph_prior_enabled'] = bool(args.prior_adj_npy or args.weighted_adj_npy)
                 config_dict['cross_domain_alignment'] = bool(args.src_prior_adj_npy)
                 config_dict['age_aware_priors'] = bool(args.volume_stats_json or args.weighted_adj_npy)
-                config_dict['dynamic_branch_enabled'] = bool(args.dynamic_branch_enabled)
-                config_dict['disable_dynamic_branch_flag'] = bool(args.disable_dynamic_branch)
                 json.dump(config_dict, f, indent=2)
 
             print("" + "=" * 80)
-            print("DAUnet TRAINING - WITH DUAL-BRANCH CROSS-DOMAIN GRAPH ALIGNMENT (Age-aware Priors)")
+            print("DAUnet TRAINING - STATIC CROSS-DOMAIN GRAPH ALIGNMENT (Age-aware Priors)")
             print("=" * 80)
             print(f"World Size: {world_size} GPUs")
             print(f"Total Epochs: {args.epochs}")
@@ -722,18 +690,6 @@ def main():
                 print(f"  Lambda symmetry: {args.lambda_sym}")
                 print(f"  Top-K eigenvalues: {args.graph_topr}")
                 print(f"  Warmup epochs: {args.graph_warmup_epochs}")
-
-            if args.dynamic_branch_enabled:
-                print(f"🔄 DYNAMIC SPECTRAL ALIGNMENT")
-                print(f"  Lambda dynamic: {args.lambda_dyn}")
-                print(f"  Dynamic top-K: {args.dyn_top_k}")
-                print(f"  Start epoch: {args.dyn_start_epoch}")
-                print(f"  Ramp epochs: {args.dyn_ramp_epochs}")
-                print(f"  Weighted U-subspace: {args.align_U_weighted}")
-                print(f"  QAP mismatch g: {args.qap_mismatch_g}")
-                print(f"  Use restricted mask: {args.use_restricted_mask}")
-            else:
-                print("🔄 Dynamic spectral alignment: disabled")
 
             if args.laterality_pairs_json:
                 print(f"Laterality Pairs JSON: {args.laterality_pairs_json}")
@@ -967,14 +923,6 @@ def main():
                 'qap_mismatch_g': args.qap_mismatch_g,
                 'use_restricted_mask': args.use_restricted_mask,
                 'restricted_mask_path': args.restricted_mask_path,
-                'lambda_dyn': args.lambda_dyn,
-                'dyn_top_k': args.dyn_top_k,
-                'dyn_start_epoch': args.dyn_start_epoch,
-                'dyn_ramp_epochs': args.dyn_ramp_epochs,
-                'dyn_pool_kernel': args.dyn_pool_kernel,
-                'dyn_pool_stride': args.dyn_pool_stride,
-                'dyn_pre_pool_kernel': args.dyn_pre_pool_kernel,
-                'dyn_pre_pool_stride': args.dyn_pre_pool_stride,
             }
 
             if is_main:
@@ -987,12 +935,6 @@ def main():
             age_graph_loss = AgeConditionedGraphPriorLoss(**combined_graph_kwargs).to(device)
         elif any(base_prior_kwargs.values()):
             age_graph_loss = AgeConditionedGraphPriorLoss(**base_prior_kwargs).to(device)
-
-        if (age_graph_loss is not None and not args.dynamic_branch_enabled
-                and hasattr(age_graph_loss, 'disable_dynamic_branch')):
-            age_graph_loss.disable_dynamic_branch()
-            if is_main and dynamic_branch_requested:
-                print("🔕 Dynamic spectral alignment disabled after graph prior initialization.")
 
         # === CHECKPOINT RESUME SUPPORT ===
         start_epoch = 1
@@ -1153,13 +1095,7 @@ def main():
             print(f"⏱️ Job time limit: {args.job_time_limit} minutes")
             print(f"⏱️ Time buffer: {args.time_buffer_minutes} minutes")
             print(f"📋 Training Schedule:")
-            if args.dynamic_branch_enabled:
-                print(f"  Stage A (Prior Warmup): Epoch 1-{args.dyn_start_epoch}")
-                print(
-                    f"  Stage B (Dynamic Ramp): Epoch {args.dyn_start_epoch}-{args.dyn_start_epoch + args.dyn_ramp_epochs}")
-                print(f"  Stage C (Adaptive): Epoch {args.dyn_start_epoch + args.dyn_ramp_epochs}-{args.epochs}")
-            else:
-                print("  Static graph alignment only (dynamic branch disabled)")
+            print("  Static graph alignment with causal regularizers")
             time_manager.print_status(is_main)
 
         causal_config = {
@@ -1224,16 +1160,7 @@ def main():
                 print(f"{'=' * 60}")
                 print(f"EPOCH {epoch}/{args.epochs}")
                 # Indicate training stage
-                if args.dynamic_branch_enabled:
-                    if epoch < args.dyn_start_epoch:
-                        print(f"Stage A: Prior Warmup")
-                    elif epoch < args.dyn_start_epoch + args.dyn_ramp_epochs:
-                        print(
-                            f"Stage B: Dynamic Ramp (progress: {epoch - args.dyn_start_epoch + 1}/{args.dyn_ramp_epochs})")
-                    else:
-                        print(f"Stage C: Adaptive Convergence")
-                else:
-                    print("Stage: Static Graph Alignment (dynamic branch disabled)")
+                print("Stage: Static Graph Alignment")
                 print(f"{'=' * 60}")
                 time_manager.print_status(is_main)
 
@@ -1397,8 +1324,6 @@ def main():
                     dice_monitor.plot_dice_evolution()
                     if hasattr(dice_monitor, 'generate_cross_domain_report'):
                         dice_monitor.generate_cross_domain_report()
-                    if hasattr(dice_monitor, 'generate_dual_branch_report'):
-                        dice_monitor.generate_dual_branch_report()
 
                 print("" + "=" * 80)
                 print("✅ TRAINING COMPLETED SUCCESSFULLY!")
@@ -1436,8 +1361,6 @@ def main():
                     dice_monitor.plot_dice_evolution()
                     if hasattr(dice_monitor, 'generate_cross_domain_report'):
                         dice_monitor.generate_cross_domain_report()
-                    if hasattr(dice_monitor, 'generate_dual_branch_report'):
-                        dice_monitor.generate_dual_branch_report()
 
                 print("=" * 80)
 
