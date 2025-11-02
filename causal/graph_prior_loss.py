@@ -767,6 +767,10 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                  dyn_top_k: int = 12,
                  dyn_start_epoch: int = 50,
                  dyn_ramp_epochs: int = 50,
+                 dyn_pool_kernel: Optional[int] = None,
+                 dyn_pool_stride: Optional[int] = None,
+                 dyn_pre_pool_kernel: int = 2,
+                 dyn_pre_pool_stride: int = 2,
                  prior_warmup_epochs: Optional[int] = None,
                  prior_temperature: Optional[float] = None,
                  volume_std_floor: float = _DEFAULT_VOLUME_STD_FLOOR,
@@ -819,6 +823,10 @@ class AgeConditionedGraphPriorLoss(nn.Module):
         self.dyn_top_k = dyn_top_k
         self.dyn_start_epoch = dyn_start_epoch
         self.dyn_ramp_epochs = dyn_ramp_epochs
+        self.dyn_pool_kernel = dyn_pool_kernel if dyn_pool_kernel is not None else pool_kernel
+        self.dyn_pool_stride = dyn_pool_stride if dyn_pool_stride is not None else pool_stride
+        self.dyn_pre_pool_kernel = max(1, int(dyn_pre_pool_kernel))
+        self.dyn_pre_pool_stride = max(1, int(dyn_pre_pool_stride))
         self.dynamic_branch_enabled = self.lambda_dyn > 0
 
         if not self.dynamic_branch_enabled:

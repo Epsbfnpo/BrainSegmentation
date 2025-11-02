@@ -245,6 +245,14 @@ def get_parser():
                         help='Epoch to start dynamic spectral alignment')
     parser.add_argument('--dyn_ramp_epochs', type=int, default=50,
                         help='Number of epochs to ramp up dynamic weight')
+    parser.add_argument('--dyn_pool_kernel', type=int, default=None,
+                        help='Pooling kernel for dynamic branch adjacency (default: graph_pool_kernel)')
+    parser.add_argument('--dyn_pool_stride', type=int, default=None,
+                        help='Pooling stride for dynamic branch adjacency (default: graph_pool_stride)')
+    parser.add_argument('--dyn_pre_pool_kernel', type=int, default=2,
+                        help='Kernel size for pre-pooling logits before dynamic branch softmax')
+    parser.add_argument('--dyn_pre_pool_stride', type=int, default=2,
+                        help='Stride for pre-pooling logits before dynamic branch softmax')
     parser.add_argument('--align_U_weighted', action='store_true', default=True,
                         help='Use eigenvalue-weighted U subspace alignment')
     parser.add_argument('--qap_mismatch_g', type=float, default=1.5,
@@ -963,6 +971,10 @@ def main():
                 'dyn_top_k': args.dyn_top_k,
                 'dyn_start_epoch': args.dyn_start_epoch,
                 'dyn_ramp_epochs': args.dyn_ramp_epochs,
+                'dyn_pool_kernel': args.dyn_pool_kernel,
+                'dyn_pool_stride': args.dyn_pool_stride,
+                'dyn_pre_pool_kernel': args.dyn_pre_pool_kernel,
+                'dyn_pre_pool_stride': args.dyn_pre_pool_stride,
             }
 
             if is_main:
