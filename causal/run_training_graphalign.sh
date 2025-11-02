@@ -358,6 +358,10 @@ torchrun --standalone --nproc_per_node=$NUM_GPUS train_graphalign_causal.py \
     --use_amp \
     --amp_dtype bfloat16 \
     --use_target_labels \
+    --dyn_pre_pool_kernel 2 \
+    --dyn_pre_pool_stride 2 \
+    --dyn_pool_kernel 3 \
+    --dyn_pool_stride 2 \
     --target_label_weight 0.8 \
     --enhanced_class_weights \
     --causal_age_bin_width 2.0 \
