@@ -727,7 +727,7 @@ def get_shape_template(age: float, shape_templates: Dict,
 
 
 class AgeConditionedGraphPriorLoss(nn.Module):
-    """Unified age-conditioned prior with dual-branch graph alignment support."""
+    """Unified age-conditioned prior with static cross-domain graph alignment support."""
 
     def __init__(self,
                  volume_stats_path: Optional[str] = None,
@@ -763,14 +763,6 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                  qap_mismatch_g: float = 1.5,
                  use_restricted_mask: bool = False,
                  restricted_mask_path: Optional[str] = None,
-                 lambda_dyn: float = 0.0,
-                 dyn_top_k: int = 12,
-                 dyn_start_epoch: int = 50,
-                 dyn_ramp_epochs: int = 50,
-                 dyn_pool_kernel: Optional[int] = None,
-                 dyn_pool_stride: Optional[int] = None,
-                 dyn_pre_pool_kernel: int = 2,
-                 dyn_pre_pool_stride: int = 2,
                  prior_warmup_epochs: Optional[int] = None,
                  prior_temperature: Optional[float] = None,
                  volume_std_floor: float = _DEFAULT_VOLUME_STD_FLOOR,
@@ -817,21 +809,6 @@ class AgeConditionedGraphPriorLoss(nn.Module):
             prior_warmup_epochs if prior_warmup_epochs is not None else self.graph_warmup_epochs
         )
         self.current_epoch = 0
-
-        # Dynamic spectral branch configuration
-        self.lambda_dyn = lambda_dyn
-        self.dyn_top_k = dyn_top_k
-        self.dyn_start_epoch = dyn_start_epoch
-        self.dyn_ramp_epochs = dyn_ramp_epochs
-        self.dyn_pool_kernel = dyn_pool_kernel if dyn_pool_kernel is not None else pool_kernel
-        self.dyn_pool_stride = dyn_pool_stride if dyn_pool_stride is not None else pool_stride
-        self.dyn_pre_pool_kernel = max(1, int(dyn_pre_pool_kernel))
-        self.dyn_pre_pool_stride = max(1, int(dyn_pre_pool_stride))
-        self.dynamic_branch_enabled = self.lambda_dyn > 0
-
-        if not self.dynamic_branch_enabled:
-            self.lambda_dyn = 0.0
-            self.dyn_top_k = max(0, int(self.dyn_top_k))
 
         # Separate temperature for weighted adjacency if provided
         self.prior_temperature = prior_temperature if prior_temperature is not None else temperature
@@ -1077,17 +1054,6 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                 f"and matched statistics to {num_classes} model classes"
             )
             self._volume_alignment_logged = True
-
-    def disable_dynamic_branch(self):
-        """Force-disable the dynamic spectral branch at runtime."""
-        self.lambda_dyn = 0.0
-        self.dyn_top_k = 0
-        self.dynamic_branch_enabled = False
-
-    def is_dynamic_branch_enabled(self) -> bool:
-        """Return whether the dynamic spectral branch should run."""
-        return bool(self.dynamic_branch_enabled and self.lambda_dyn > 0)
-
 
     def forward(self,
                 logits: torch.Tensor,
