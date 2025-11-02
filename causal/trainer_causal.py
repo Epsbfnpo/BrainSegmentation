@@ -336,8 +336,93 @@ def train_epoch_causal(model, source_loader, target_loader, optimizer, epoch, to
         lambda_dyn_effective = 0.0
         dyn_k_effective = 0
 
-    pool_cfg = {'kernel_size': pool_kernel, 'stride': pool_stride}
     lambda_dyn_state = {'value': lambda_dyn_effective}
+
+    def apply_dynamic_alignment(losses_dict, src_logits, tgt_logits, step_index: int):
+        """Run the dynamic spectral alignment branch with optional pooling."""
+        nonlocal dyn_spec_loss_total, dyn_conflict_suppressions
+
+        if not (age_graph_loss is not None and in_dynamic_stage
+                and src_logits is not None and tgt_logits is not None):
+            return
+
+        restricted_mask_dyn = None
+        if use_restricted_mask_dyn and R_mask is not None:
+            restricted_mask_dyn = R_mask.to(device=device, dtype=src_logits.dtype)
+
+        dyn_pool_kernel = getattr(age_graph_loss, 'dyn_pool_kernel', pool_kernel)
+        dyn_pool_stride = getattr(age_graph_loss, 'dyn_pool_stride', pool_stride)
+        dyn_pre_pool_kernel = getattr(age_graph_loss, 'dyn_pre_pool_kernel', 1)
+        dyn_pre_pool_stride = getattr(age_graph_loss, 'dyn_pre_pool_stride', 1)
+
+        source_logits_dyn = src_logits
+        target_logits_dyn = tgt_logits
+        if dyn_pre_pool_stride > 1:
+            pad = dyn_pre_pool_kernel // 2
+            source_logits_dyn = F.avg_pool3d(
+                src_logits,
+                kernel_size=dyn_pre_pool_kernel,
+                stride=dyn_pre_pool_stride,
+                padding=pad,
+                count_include_pad=False,
+            )
+            target_logits_dyn = F.avg_pool3d(
+                tgt_logits,
+                kernel_size=dyn_pre_pool_kernel,
+                stride=dyn_pre_pool_stride,
+                padding=pad,
+                count_include_pad=False,
+            )
+
+        P_s = torch.softmax(source_logits_dyn, dim=1)
+        P_t = torch.softmax(target_logits_dyn, dim=1)
+
+        dyn_pool_cfg = {'kernel_size': dyn_pool_kernel, 'stride': dyn_pool_stride}
+
+        A_s = soft_adjacency_from_probs(P_s, temperature=dyn_temperature,
+                                        restricted_mask=restricted_mask_dyn, **dyn_pool_cfg)
+        A_t = soft_adjacency_from_probs(P_t, temperature=dyn_temperature,
+                                        restricted_mask=restricted_mask_dyn, **dyn_pool_cfg)
+
+        L_s = compute_laplacian(A_s, normalized=True)
+        L_t = compute_laplacian(A_t, normalized=True)
+
+        del P_s, P_t
+        if source_logits_dyn is not src_logits:
+            del source_logits_dyn
+        if target_logits_dyn is not tgt_logits:
+            del target_logits_dyn
+
+        L_s_sym = 0.5 * (L_s + L_s.T)
+        L_t_sym = 0.5 * (L_t + L_t.T)
+
+        eig_s, _ = torch.linalg.eigh(L_s_sym.float())
+        eig_t, _ = torch.linalg.eigh(L_t_sym.float())
+        eig_s = eig_s.to(src_logits.dtype)
+        eig_t = eig_t.to(tgt_logits.dtype)
+
+        k = min(dyn_k_effective, eig_s.shape[-1] - 1)
+        if k <= 0:
+            return
+
+        L_dyn = F.smooth_l1_loss(eig_s[1:k + 1], eig_t[1:k + 1])
+
+        effective_lambda = lambda_dyn_state['value']
+        conflict_triggered = False
+        if len(structural_violations_tracker) >= 3:
+            recent = list(structural_violations_tracker)[-3:]
+            conflict_triggered = recent[-1] > recent[0] * 1.2
+            if conflict_triggered:
+                lambda_dyn_state['value'] *= 0.5
+                effective_lambda = lambda_dyn_state['value']
+                dyn_conflict_suppressions += 1
+
+        if conflict_triggered and is_main and step_index == 0:
+            print(f"  ⚠️ Dynamic conflicts detected, reducing λ_dyn to {effective_lambda:.4f}")
+
+        losses_dict['dyn_spec'] = L_dyn
+        losses_dict['total'] = losses_dict['total'] + effective_lambda * L_dyn
+        dyn_spec_loss_total += L_dyn.item()
 
     # Create segmentation loss
     loss_config = getattr(args, 'loss_config', 'dice_focal')
@@ -506,48 +591,7 @@ def train_epoch_causal(model, source_loader, target_loader, optimizer, epoch, to
                         forbidden_violations_total += forbidden_count
                         required_violations_total += required_count
 
-                if (age_graph_loss is not None and in_dynamic_stage and
-                        source_logits is not None and target_logits is not None):
-                    restricted_mask_dyn = None
-                    if use_restricted_mask_dyn and R_mask is not None:
-                        restricted_mask_dyn = R_mask.to(device=device, dtype=source_logits.dtype)
-
-                    P_s = torch.softmax(source_logits, dim=1)
-                    P_t = torch.softmax(target_logits, dim=1)
-
-                    A_s = soft_adjacency_from_probs(P_s, temperature=dyn_temperature,
-                                                    restricted_mask=restricted_mask_dyn, **pool_cfg)
-                    A_t = soft_adjacency_from_probs(P_t, temperature=dyn_temperature,
-                                                    restricted_mask=restricted_mask_dyn, **pool_cfg)
-
-                    L_s = compute_laplacian(A_s, normalized=True)
-                    L_t = compute_laplacian(A_t, normalized=True)
-
-                    L_s_sym = 0.5 * (L_s + L_s.T)
-                    L_t_sym = 0.5 * (L_t + L_t.T)
-
-                    eig_s, _ = torch.linalg.eigh(L_s_sym.float())
-                    eig_t, _ = torch.linalg.eigh(L_t_sym.float())
-                    eig_s = eig_s.to(source_logits.dtype)
-                    eig_t = eig_t.to(target_logits.dtype)
-
-                    k = min(dyn_k_effective, eig_s.shape[-1] - 1)
-                    if k > 0:
-                        L_dyn = F.smooth_l1_loss(eig_s[1:k + 1], eig_t[1:k + 1])
-
-                        effective_lambda = lambda_dyn_state['value']
-                        if len(structural_violations_tracker) >= 3:
-                            recent = list(structural_violations_tracker)[-3:]
-                            if recent[-1] > recent[0] * 1.2:
-                                lambda_dyn_state['value'] *= 0.5
-                                effective_lambda = lambda_dyn_state['value']
-                                dyn_conflict_suppressions += 1
-                                if is_main and i == 0:
-                                    print(f"  ⚠️ Dynamic conflicts detected, reducing λ_dyn to {effective_lambda:.4f}")
-
-                        losses['dyn_spec'] = L_dyn
-                        losses['total'] = losses['total'] + effective_lambda * L_dyn
-                        dyn_spec_loss_total += L_dyn.item()
+                apply_dynamic_alignment(losses, source_logits, target_logits, i)
         else:
             # Non-AMP version
             losses = actual_model.compute_losses(
@@ -602,48 +646,7 @@ def train_epoch_causal(model, source_loader, target_loader, optimizer, epoch, to
                     forbidden_violations_total += forbidden_count
                     required_violations_total += required_count
 
-            if (age_graph_loss is not None and in_dynamic_stage and
-                    source_logits is not None and target_logits is not None):
-                restricted_mask_dyn = None
-                if use_restricted_mask_dyn and R_mask is not None:
-                    restricted_mask_dyn = R_mask.to(device=device, dtype=source_logits.dtype)
-
-                P_s = torch.softmax(source_logits, dim=1)
-                P_t = torch.softmax(target_logits, dim=1)
-
-                A_s = soft_adjacency_from_probs(P_s, temperature=dyn_temperature,
-                                                restricted_mask=restricted_mask_dyn, **pool_cfg)
-                A_t = soft_adjacency_from_probs(P_t, temperature=dyn_temperature,
-                                                restricted_mask=restricted_mask_dyn, **pool_cfg)
-
-                L_s = compute_laplacian(A_s, normalized=True)
-                L_t = compute_laplacian(A_t, normalized=True)
-
-                L_s_sym = 0.5 * (L_s + L_s.T)
-                L_t_sym = 0.5 * (L_t + L_t.T)
-
-                eig_s, _ = torch.linalg.eigh(L_s_sym.float())
-                eig_t, _ = torch.linalg.eigh(L_t_sym.float())
-                eig_s = eig_s.to(source_logits.dtype)
-                eig_t = eig_t.to(target_logits.dtype)
-
-                k = min(dyn_k_effective, eig_s.shape[-1] - 1)
-                if k > 0:
-                    L_dyn = F.smooth_l1_loss(eig_s[1:k + 1], eig_t[1:k + 1])
-
-                    effective_lambda = lambda_dyn_state['value']
-                    if len(structural_violations_tracker) >= 3:
-                        recent = list(structural_violations_tracker)[-3:]
-                        if recent[-1] > recent[0] * 1.2:
-                            lambda_dyn_state['value'] *= 0.5
-                            effective_lambda = lambda_dyn_state['value']
-                            dyn_conflict_suppressions += 1
-                            if is_main and i == 0:
-                                print(f"  ⚠️ Dynamic conflicts detected, reducing λ_dyn to {effective_lambda:.4f}")
-
-                    losses['dyn_spec'] = L_dyn
-                    losses['total'] = losses['total'] + effective_lambda * L_dyn
-                    dyn_spec_loss_total += L_dyn.item()
+            apply_dynamic_alignment(losses, source_logits, target_logits, i)
 
         # === Causal regularizers ===
         loss_config = seg_criterion.get_loss_config() if hasattr(seg_criterion, 'get_loss_config') else {
