@@ -608,16 +608,48 @@ def train_epoch_causal(model, source_loader, target_loader, optimizer, epoch, to
                 if use_restricted_mask_dyn and R_mask is not None:
                     restricted_mask_dyn = R_mask.to(device=device, dtype=source_logits.dtype)
 
-                P_s = torch.softmax(source_logits, dim=1)
-                P_t = torch.softmax(target_logits, dim=1)
+                dyn_pool_kernel = getattr(age_graph_loss, 'dyn_pool_kernel', pool_kernel)
+                dyn_pool_stride = getattr(age_graph_loss, 'dyn_pool_stride', pool_stride)
+                dyn_pre_pool_kernel = getattr(age_graph_loss, 'dyn_pre_pool_kernel', 1)
+                dyn_pre_pool_stride = getattr(age_graph_loss, 'dyn_pre_pool_stride', 1)
+
+                source_logits_dyn = source_logits
+                target_logits_dyn = target_logits
+                if dyn_pre_pool_stride > 1:
+                    pad = dyn_pre_pool_kernel // 2
+                    source_logits_dyn = F.avg_pool3d(
+                        source_logits,
+                        kernel_size=dyn_pre_pool_kernel,
+                        stride=dyn_pre_pool_stride,
+                        padding=pad,
+                        count_include_pad=False,
+                    )
+                    target_logits_dyn = F.avg_pool3d(
+                        target_logits,
+                        kernel_size=dyn_pre_pool_kernel,
+                        stride=dyn_pre_pool_stride,
+                        padding=pad,
+                        count_include_pad=False,
+                    )
+
+                P_s = torch.softmax(source_logits_dyn, dim=1)
+                P_t = torch.softmax(target_logits_dyn, dim=1)
+
+                dyn_pool_cfg = {'kernel_size': dyn_pool_kernel, 'stride': dyn_pool_stride}
 
                 A_s = soft_adjacency_from_probs(P_s, temperature=dyn_temperature,
-                                                restricted_mask=restricted_mask_dyn, **pool_cfg)
+                                                restricted_mask=restricted_mask_dyn, **dyn_pool_cfg)
                 A_t = soft_adjacency_from_probs(P_t, temperature=dyn_temperature,
-                                                restricted_mask=restricted_mask_dyn, **pool_cfg)
+                                                restricted_mask=restricted_mask_dyn, **dyn_pool_cfg)
 
                 L_s = compute_laplacian(A_s, normalized=True)
                 L_t = compute_laplacian(A_t, normalized=True)
+
+                del P_s, P_t
+                if source_logits_dyn is not source_logits:
+                    del source_logits_dyn
+                if target_logits_dyn is not target_logits:
+                    del target_logits_dyn
 
                 L_s_sym = 0.5 * (L_s + L_s.T)
                 L_t_sym = 0.5 * (L_t + L_t.T)
