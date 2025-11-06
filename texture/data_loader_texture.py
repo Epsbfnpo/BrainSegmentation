@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
-from typing import Iterable, List, Sequence, Tuple
+from typing import Iterable, List, Optional, Sequence, Tuple
 
 import torch
 from monai.data import CacheDataset, DataLoader, Dataset
+from torch.utils.data.distributed import DistributedSampler
 from monai.transforms import (
     CenterSpatialCropd,
     Compose,
@@ -125,7 +126,12 @@ def create_texture_dataloaders(
     apply_orientation: bool,
     source_domain_index: int = 0,
     target_domain_index: int = 1,
-) -> Tuple[DataLoader, DataLoader]:
+    distributed: bool = False,
+    distribute_val: bool = False,
+    world_size: int = 1,
+    rank: int = 0,
+    seed: int = 42,
+) -> Tuple[DataLoader, DataLoader, Optional[DistributedSampler], Optional[DistributedSampler]]:
     source_train, _ = _load_split(source_split_json)
     target_train, target_val = _load_split(target_split_json)
 
@@ -161,10 +167,32 @@ def create_texture_dataloaders(
 
     val_ds = Dataset(data=val_samples, transform=val_transforms)
 
+    train_sampler: Optional[DistributedSampler] = None
+    val_sampler: Optional[DistributedSampler] = None
+
+    if distributed and world_size > 1:
+        train_sampler = DistributedSampler(
+            train_ds,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=True,
+            seed=seed,
+            drop_last=False,
+        )
+        if distribute_val:
+            val_sampler = DistributedSampler(
+                val_ds,
+                num_replicas=world_size,
+                rank=rank,
+                shuffle=False,
+                drop_last=False,
+            )
+
     train_loader = DataLoader(
         train_ds,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=train_sampler is None,
+        sampler=train_sampler,
         num_workers=num_workers,
         pin_memory=True,
         persistent_workers=num_workers > 0,
@@ -173,9 +201,10 @@ def create_texture_dataloaders(
         val_ds,
         batch_size=val_batch_size,
         shuffle=False,
+        sampler=val_sampler,
         num_workers=max(1, num_workers // 2),
         pin_memory=True,
         persistent_workers=num_workers > 0,
     )
 
-    return train_loader, val_loader
+    return train_loader, val_loader, train_sampler, val_sampler
