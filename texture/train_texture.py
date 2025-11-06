@@ -548,10 +548,6 @@ def main() -> None:
                     metrics_list = [val_loss, val_dice]
                     dist.broadcast_object_list(metrics_list, src=0)
                     val_loss, val_dice = metrics_list
-                    # ensure all workers exit the broadcast phase before
-                    # progressing to logging or stopping decisions
-                    dist.barrier()
-                    debug("post-validation barrier complete")
 
             scheduler.step()
             debug("scheduler stepped")
