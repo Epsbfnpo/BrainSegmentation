@@ -8,6 +8,7 @@ from typing import Dict, Optional, Tuple
 import torch
 import torch.nn.functional as F
 import torch.distributed as dist
+import torch.nn as nn
 from monai.data import decollate_batch
 from monai.losses import DiceCELoss
 from monai.metrics import DiceMetric
@@ -23,7 +24,38 @@ __all__ = [
 ]
 
 
-def build_loss(num_classes: int, include_background: bool) -> DiceCELoss:
+class ForegroundDiceCELoss(nn.Module):
+    def __init__(self, num_classes: int, dice_weight: float = 0.6, ce_weight: float = 0.4, eps: float = 1e-5) -> None:
+        super().__init__()
+        self.num_classes = num_classes
+        self.dice_weight = dice_weight
+        self.ce_weight = ce_weight
+        self.eps = eps
+
+    def forward(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        mask = labels >= 0
+        if not mask.any():
+            return logits.new_zeros(())
+
+        valid_labels = torch.clamp(labels, min=0)
+        target_one_hot = F.one_hot(valid_labels, num_classes=self.num_classes).permute(0, 4, 1, 2, 3)
+        mask = mask.unsqueeze(1).to(logits.dtype)
+        target_one_hot = target_one_hot.to(logits.dtype) * mask
+        probs = torch.softmax(logits, dim=1) * mask
+
+        dims = tuple(range(2, probs.ndim))
+        intersection = (probs * target_one_hot).sum(dim=dims)
+        denominator = (probs + target_one_hot).sum(dim=dims)
+        dice = (2 * intersection + self.eps) / (denominator + self.eps)
+        dice_loss = 1 - dice.mean()
+
+        ce_loss = F.cross_entropy(logits, labels, ignore_index=-1, reduction="mean")
+        return self.dice_weight * dice_loss + self.ce_weight * ce_loss
+
+
+def build_loss(num_classes: int, include_background: bool, foreground_only: bool) -> torch.nn.Module:
+    if foreground_only:
+        return ForegroundDiceCELoss(num_classes=num_classes)
     return DiceCELoss(
         include_background=include_background,
         to_onehot_y=True,
@@ -36,7 +68,9 @@ def build_loss(num_classes: int, include_background: bool) -> DiceCELoss:
     )
 
 
-def build_dice_metric(num_classes: int, include_background: bool) -> DiceMetric:
+def build_dice_metric(num_classes: int, include_background: bool, foreground_only: bool) -> Optional[DiceMetric]:
+    if foreground_only:
+        return None
     return DiceMetric(include_background=include_background, reduction="mean", get_not_nans=False)
 
 
@@ -88,7 +122,7 @@ def train_epoch(
     model: torch.nn.Module,
     loader,
     optimizer: torch.optim.Optimizer,
-    loss_fn: DiceCELoss,
+    loss_fn,
     device: torch.device,
     *,
     amp: bool,
@@ -193,12 +227,32 @@ def train_epoch(
     }
 
 
+def _compute_foreground_dice(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    num_classes: int,
+    eps: float = 1e-5,
+) -> torch.Tensor:
+    mask = labels >= 0
+    if not mask.any():
+        return logits.new_zeros(())
+    preds = logits.argmax(dim=1)
+    preds_fg = preds[mask]
+    labels_fg = labels[mask].clamp(min=0)
+    preds_one_hot = F.one_hot(preds_fg, num_classes=num_classes).to(logits.dtype)
+    labels_one_hot = F.one_hot(labels_fg, num_classes=num_classes).to(logits.dtype)
+    intersection = (preds_one_hot * labels_one_hot).sum(dim=0) * 2.0
+    denominator = preds_one_hot.sum(dim=0) + labels_one_hot.sum(dim=0)
+    dice = (intersection + eps) / (denominator + eps)
+    return dice.mean()
+
+
 @torch.no_grad()
 def validate(
     model: torch.nn.Module,
     loader,
-    loss_fn: DiceCELoss,
-    dice_metric: DiceMetric,
+    loss_fn,
+    dice_metric,
     device: torch.device,
     *,
     roi_size,
@@ -207,13 +261,20 @@ def validate(
     num_classes: int,
     is_distributed: bool,
     world_size: int,
+    foreground_only: bool,
 ) -> Tuple[float, float]:
     model.eval()
     num_batches = 0
     val_loss = 0.0
 
-    post_pred = AsDiscrete(argmax=True, to_onehot=True, n_classes=num_classes)
-    post_label = AsDiscrete(to_onehot=True, n_classes=num_classes)
+    if not foreground_only:
+        post_pred = AsDiscrete(argmax=True, to_onehot=True, n_classes=num_classes)
+        post_label = AsDiscrete(to_onehot=True, n_classes=num_classes)
+    else:
+        post_pred = post_label = None
+
+    dice_sum = 0.0
+    dice_count = 0.0
 
     for batch in loader:
         images, labels, texture_stats, domain = _prepare_batch(batch, device)
@@ -225,18 +286,27 @@ def validate(
         val_loss += float(loss.detach().item())
         num_batches += 1
 
-        preds = decollate_batch(logits)
-        labs = decollate_batch(labels)
-        preds = [post_pred(pred) for pred in preds]
-        labs = [post_label(label) for label in labs]
-        dice_metric(y_pred=preds, y=labs)
+        if foreground_only:
+            batch_dice = _compute_foreground_dice(logits, labels, num_classes)
+            dice_sum += float(batch_dice.item())
+            dice_count += 1.0
+        else:
+            preds = decollate_batch(logits)
+            labs = decollate_batch(labels)
+            preds = [post_pred(pred) for pred in preds]
+            labs = [post_label(label) for label in labs]
+            dice_metric(y_pred=preds, y=labs)
 
-    metric_tensor = dice_metric.aggregate()
-    metric = float(metric_tensor.mean().item()) if metric_tensor.numel() > 0 else 0.0
-    dice_metric.reset()
+    if foreground_only:
+        metric = dice_sum / max(1.0, dice_count)
+        metric_tensor = torch.tensor([metric, dice_count], device=device, dtype=torch.float32)
+    else:
+        metric_raw = dice_metric.aggregate()
+        metric = float(metric_raw.mean().item()) if metric_raw.numel() > 0 else 0.0
+        dice_metric.reset()
+        metric_tensor = torch.tensor([metric, 1.0 if metric_raw.numel() > 0 else 0.0], device=device, dtype=torch.float32)
 
     loss_tensor = torch.tensor([val_loss, float(num_batches)], device=device, dtype=torch.float32)
-    metric_tensor = torch.tensor([metric, 1.0 if num_batches > 0 else 0.0], device=device, dtype=torch.float32)
 
     if is_distributed and world_size > 1:
         loss_tensor = _aggregate_tensor(loss_tensor)

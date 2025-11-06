@@ -67,13 +67,26 @@ def get_parser() -> argparse.ArgumentParser:
 
     # Model configuration
     parser.add_argument("--in_channels", type=int, default=1)
-    parser.add_argument("--out_channels", type=int, default=88)
+    parser.add_argument("--out_channels", type=int, default=87)
     parser.add_argument("--feature_size", type=int, default=48)
     parser.add_argument("--dropout", type=float, default=0.0)
     parser.add_argument("--texture_embed_dim", type=int, default=128)
     parser.add_argument("--texture_stats_proj_dim", type=int, default=128)
     parser.add_argument("--texture_domain_hidden", type=int, default=128)
     parser.add_argument("--grl_lambda", type=float, default=1.0)
+    parser.add_argument(
+        "--foreground_only",
+        dest="foreground_only",
+        action="store_true",
+        help="Use foreground-only labels (background mapped to -1, outputs cover 87 brain regions)",
+    )
+    parser.add_argument(
+        "--include_background",
+        dest="foreground_only",
+        action="store_false",
+        help="Retain background as an explicit prediction channel",
+    )
+    parser.set_defaults(foreground_only=True)
 
     # Loss weights
     parser.add_argument("--domain_loss_weight", type=float, default=0.5)
@@ -261,6 +274,8 @@ def main() -> None:
             apply_spacing=args.apply_spacing,
             target_spacing=args.target_spacing,
             apply_orientation=args.apply_orientation,
+            foreground_only=args.foreground_only,
+            num_classes=args.out_channels,
             distributed=distributed,
             distribute_val=False,
             world_size=world_size,
@@ -299,8 +314,27 @@ def main() -> None:
         if distributed:
             model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
 
-        loss_fn = build_loss(num_classes=args.out_channels, include_background=True)
-        dice_metric = build_dice_metric(num_classes=args.out_channels, include_background=False)
+        include_background = not args.foreground_only
+        if args.foreground_only and args.out_channels != 87 and is_main:
+            _log_message(
+                log_path,
+                (
+                    "foreground_only mode expects 87 foreground classes; "
+                    f"received out_channels={args.out_channels}"
+                ),
+                is_main=is_main,
+            )
+
+        loss_fn = build_loss(
+            num_classes=args.out_channels,
+            include_background=include_background,
+            foreground_only=args.foreground_only,
+        )
+        dice_metric = build_dice_metric(
+            num_classes=args.out_channels,
+            include_background=include_background,
+            foreground_only=args.foreground_only,
+        )
 
         start_epoch = 1
         best_metric: Optional[float] = None
@@ -462,6 +496,7 @@ def main() -> None:
                         num_classes=args.out_channels,
                         is_distributed=False,
                         world_size=1,
+                        foreground_only=args.foreground_only,
                     )
                 val_duration = time.time() - val_start
                 time_manager.record_val(val_duration)

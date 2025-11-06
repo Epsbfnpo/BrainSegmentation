@@ -27,7 +27,7 @@ from monai.transforms import (
     ToTensord,
 )
 
-from texture_transforms import RandomHistogramShiftd, TextureStatsd
+from texture_transforms import RandomHistogramShiftd, RemapLabelsd, TextureStatsd
 
 __all__ = ["create_texture_dataloaders"]
 
@@ -61,6 +61,8 @@ def _compose_transforms(
     apply_spacing: bool,
     target_spacing: Sequence[float],
     apply_orientation: bool,
+    foreground_only: bool,
+    num_classes: int,
     texture_prefix: str = "texture_stats",
 ) -> Compose:
     transforms: List = [
@@ -75,10 +77,14 @@ def _compose_transforms(
             Spacingd(keys=["image", "label"], pixdim=tuple(target_spacing), mode=("bilinear", "nearest"))
         )
 
+    if foreground_only:
+        transforms.append(RemapLabelsd(keys=["label"], num_classes=num_classes))
+
     if is_training:
         transforms.extend(
             [
-                SpatialPadd(keys=["image", "label"], spatial_size=tuple(roi_size)),
+                SpatialPadd(keys=["image"], spatial_size=tuple(roi_size)),
+                SpatialPadd(keys=["label"], spatial_size=tuple(roi_size), constant_values=-1),
                 RandSpatialCropd(
                     keys=["image", "label"],
                     roi_size=tuple(roi_size),
@@ -98,7 +104,8 @@ def _compose_transforms(
     else:
         transforms.extend(
             [
-                SpatialPadd(keys=["image", "label"], spatial_size=tuple(roi_size)),
+                SpatialPadd(keys=["image"], spatial_size=tuple(roi_size)),
+                SpatialPadd(keys=["label"], spatial_size=tuple(roi_size), constant_values=-1),
                 CenterSpatialCropd(keys=["image", "label"], roi_size=tuple(roi_size)),
             ]
         )
@@ -130,6 +137,8 @@ def create_texture_dataloaders(
     apply_orientation: bool,
     source_domain_index: int = 0,
     target_domain_index: int = 1,
+    foreground_only: bool = True,
+    num_classes: int = 87,
     distributed: bool = False,
     distribute_val: bool = False,
     world_size: int = 1,
@@ -150,6 +159,8 @@ def create_texture_dataloaders(
         apply_spacing=apply_spacing,
         target_spacing=target_spacing,
         apply_orientation=apply_orientation,
+        foreground_only=foreground_only,
+        num_classes=num_classes,
     )
     val_transforms = _compose_transforms(
         roi_size,
@@ -157,6 +168,8 @@ def create_texture_dataloaders(
         apply_spacing=apply_spacing,
         target_spacing=target_spacing,
         apply_orientation=apply_orientation,
+        foreground_only=foreground_only,
+        num_classes=num_classes,
     )
 
     if cache_rate > 0:

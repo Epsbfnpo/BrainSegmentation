@@ -13,6 +13,7 @@ from monai.transforms import MapTransform, Transform
 
 __all__ = [
     "TextureStatsd",
+    "RemapLabelsd",
     "AddDomainLabeld",
     "stack_texture_features",
     "RandomHistogramShiftd",
@@ -148,7 +149,10 @@ class TextureStatsd(MapTransform):
             mask_array = self._prepare_array(d[self.mask_key])
             if mask_array.ndim == 4:
                 mask_array = mask_array[0]
-            mask = mask_array > 0
+            if mask_array.min() < 0:
+                mask = mask_array >= 0
+            else:
+                mask = mask_array > 0
 
         feature_vectors: List[float] = []
         for key in self.key_iterator(d):
@@ -157,6 +161,55 @@ class TextureStatsd(MapTransform):
 
         d[self.prefix] = torch.tensor(feature_vectors, dtype=torch.float32)
         d[f"{self.prefix}_dim"] = torch.tensor([len(feature_vectors)], dtype=torch.int64)
+        return d
+
+
+class RemapLabelsd(MapTransform):
+    """Remap labels to foreground-only indices with background = -1."""
+
+    def __init__(
+        self,
+        keys,
+        num_classes: int,
+        allow_missing_keys: bool = False,
+    ) -> None:
+        super().__init__(keys, allow_missing_keys)
+        if num_classes <= 0:
+            raise ValueError("num_classes must be positive")
+        self.num_classes = int(num_classes)
+        self._has_warned = False
+
+    def _remap(self, label: np.ndarray) -> np.ndarray:
+        data = label.astype(np.int32, copy=False)
+        foreground_mask = data > 0
+        remapped = data - 1
+        remapped[~foreground_mask] = -1
+        remapped = np.clip(remapped, -1, self.num_classes - 1)
+        return remapped.astype(np.int32, copy=False)
+
+    def __call__(self, data):
+        d = dict(data)
+        for key in self.key_iterator(d):
+            label = d[key]
+            meta = None
+            if isinstance(label, MetaTensor):
+                meta = label.meta
+                array = label.array
+            else:
+                array = np.asarray(label)
+            remapped = self._remap(array)
+            if not self._has_warned:
+                unique_vals = np.unique(remapped)
+                print(
+                    "[RemapLabelsd] foreground-only remapping active: "
+                    f"min={unique_vals.min()}, max={unique_vals.max()}, "
+                    f"classes={len(unique_vals)}"
+                )
+                self._has_warned = True
+            if meta is not None:
+                d[key] = MetaTensor(remapped, meta=meta)
+            else:
+                d[key] = remapped
         return d
 
 

@@ -43,6 +43,7 @@ CMD=(
     --embed_align_weight 0.2
     --stats_align_weight 0.2
     --grl_lambda 1.0
+    --foreground_only
     --auto_resume
     --job_time_limit "${JOB_TIME_LIMIT_MINUTES}"
     --time_buffer_minutes "${TIME_BUFFER_MINUTES}"
