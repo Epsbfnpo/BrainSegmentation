@@ -11,6 +11,12 @@
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err
 
+echo "=============================================================="
+echo "TEXTURE ADAPTATION JOB"
+echo "Job ${SLURM_JOB_NAME:-texture} (${SLURM_JOB_ID:-N/A}) started at $(date)"
+echo "Running on node: $(hostname)"
+echo "=============================================================="
+
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
@@ -33,3 +39,12 @@ JOB_TIME_LIMIT_MINUTES=115 \
 TIME_BUFFER_MINUTES=5 \
 DIST_TIMEOUT_MINUTES=180 \
 bash ./run_texture_training.sh
+
+EXIT_STATUS=$?
+
+echo "=============================================================="
+echo "Job ${SLURM_JOB_NAME:-texture} (${SLURM_JOB_ID:-N/A}) ended at $(date)"
+echo "Exit status: ${EXIT_STATUS}"
+echo "=============================================================="
+
+exit ${EXIT_STATUS}
