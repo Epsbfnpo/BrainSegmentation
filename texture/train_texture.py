@@ -525,6 +525,9 @@ def main() -> None:
                     metrics_list = [val_loss, val_dice]
                     dist.broadcast_object_list(metrics_list, src=0)
                     val_loss, val_dice = metrics_list
+                    # ensure all workers exit the broadcast phase before
+                    # progressing to logging or stopping decisions
+                    dist.barrier()
 
             scheduler.step()
 
@@ -572,9 +575,14 @@ def main() -> None:
                     _prune_old_checkpoints(args.results_dir, args.max_keep_checkpoints, is_main=is_main)
 
             if stop_reason:
+                if distributed and world_size > 1:
+                    dist.barrier()
                 shared_reason = sync_stop(stop_reason)
                 exit_reason = shared_reason or stop_reason
                 break
+
+            if distributed and world_size > 1:
+                dist.barrier()
 
             shared_reason = sync_stop(stop_reason)
             if shared_reason:
