@@ -110,7 +110,7 @@ def main() -> None:
         out_channels=args.out_channels,
         feature_size=args.feature_size,
         use_checkpoint=True,
-        dropout_rate=args.dropout,
+        drop_rate=args.dropout,
     )
     model = model.to(device)
 
