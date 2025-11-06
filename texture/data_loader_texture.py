@@ -27,7 +27,7 @@ from monai.transforms import (
     ToTensord,
 )
 
-from .texture_transforms import TextureStatsd
+from texture_transforms import TextureStatsd
 
 __all__ = ["create_texture_dataloaders"]
 
