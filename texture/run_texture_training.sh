@@ -8,7 +8,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 RESULTS_DIR="/datasets/work/hb-nhmrc-dhcp/work/liu275/texture/results"
 SOURCE_SPLIT_JSON="${REPO_ROOT}/dHCP_split.json"
 TARGET_SPLIT_JSON="${REPO_ROOT}/PPREMOPREBO_split.json"
-PRETRAINED_CHECKPOINT="${REPO_ROOT}/old/checkpoints/source_best.pth"
+PRETRAINED_CHECKPOINT="${PRETRAINED_CHECKPOINT:-/datasets/work/hb-nhmrc-dhcp/work/liu275/model_final.pt}"
 
 NUM_GPUS=${NUM_GPUS:-4}
 BATCH_SIZE=${BATCH_SIZE:-2}
