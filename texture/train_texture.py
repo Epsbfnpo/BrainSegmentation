@@ -398,6 +398,18 @@ def main() -> None:
             save_checkpoint(model, optimizer, max(1, current_epoch), latest_path, best_metric=best_metric)
             _log_message(log_path, f"💾 Saved latest checkpoint due to {reason}", is_main=is_main)
 
+        def global_decision(value: Optional[bool]) -> bool:
+            """Broadcast a boolean decision from rank 0 to all workers."""
+
+            if distributed and world_size > 1:
+                tensor = torch.zeros(1, device=device, dtype=torch.int32)
+                if is_main:
+                    tensor[0] = 1 if value else 0
+                dist.broadcast(tensor, src=0)
+                return bool(tensor.item())
+            assert value is not None
+            return bool(value)
+
         def sync_stop(reason: Optional[str]) -> Optional[str]:
             nonlocal stop_reason
             if reason and not stop_reason:
@@ -435,7 +447,8 @@ def main() -> None:
                 train_sampler.set_epoch(epoch)
 
             will_validate = True
-            if not time_manager.can_start_epoch(will_validate):
+            can_start = global_decision(time_manager.can_start_epoch(will_validate) if is_main else None)
+            if not can_start:
                 exit_reason = "time_limit"
                 stop_reason = stop_reason or "time_limit"
                 save_latest("time limit before epoch")
@@ -463,9 +476,11 @@ def main() -> None:
                 progress_desc=f"Train {epoch}/{args.epochs}",
             )
             train_duration = time.time() - train_start
-            time_manager.record_train(train_duration)
+            if is_main:
+                time_manager.record_train(train_duration)
 
-            if time_manager.should_stop():
+            should_stop = global_decision(time_manager.should_stop() if is_main else None)
+            if should_stop:
                 exit_reason = "time_limit"
                 stop_reason = stop_reason or "time_limit"
                 save_latest("time limit after train")
@@ -477,7 +492,8 @@ def main() -> None:
             val_dice = 0.0
             val_duration = 0.0
             if will_validate:
-                if not time_manager.can_run_validation():
+                can_validate = global_decision(time_manager.can_run_validation() if is_main else None)
+                if not can_validate:
                     exit_reason = "time_limit"
                     stop_reason = stop_reason or "time_limit"
                     save_latest("time limit before val")
@@ -503,7 +519,8 @@ def main() -> None:
                         progress_desc=f"Val {epoch}/{args.epochs}",
                     )
                 val_duration = time.time() - val_start
-                time_manager.record_val(val_duration)
+                if is_main:
+                    time_manager.record_val(val_duration)
                 if distributed and world_size > 1:
                     metrics_list = [val_loss, val_dice]
                     dist.broadcast_object_list(metrics_list, src=0)
@@ -512,7 +529,8 @@ def main() -> None:
             scheduler.step()
 
             epoch_duration = time.time() - epoch_start
-            time_manager.record_epoch(epoch_duration)
+            if is_main:
+                time_manager.record_epoch(epoch_duration)
 
             if is_main:
                 _log_message(
