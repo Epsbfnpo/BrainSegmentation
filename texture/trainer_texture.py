@@ -279,8 +279,13 @@ def _compute_foreground_dice(
     preds = logits.argmax(dim=1)
     preds_fg = preds[mask]
     labels_fg = labels[mask].clamp(min=0)
-    preds_one_hot = F.one_hot(preds_fg, num_classes=num_classes).to(logits.dtype)
-    labels_one_hot = F.one_hot(labels_fg, num_classes=num_classes).to(logits.dtype)
+    # use float32 to avoid overflow when AMP casts logits to float16
+    preds_one_hot = F.one_hot(preds_fg, num_classes=num_classes).to(
+        device=logits.device, dtype=torch.float32
+    )
+    labels_one_hot = F.one_hot(labels_fg, num_classes=num_classes).to(
+        device=logits.device, dtype=torch.float32
+    )
     intersection = (preds_one_hot * labels_one_hot).sum(dim=0) * 2.0
     denominator = preds_one_hot.sum(dim=0) + labels_one_hot.sum(dim=0)
     dice = (intersection + eps) / (denominator + eps)
