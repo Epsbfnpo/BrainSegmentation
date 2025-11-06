@@ -262,6 +262,11 @@ def main() -> None:
 
         roi_size = (args.roi_x, args.roi_y, args.roi_z)
 
+        def debug(msg: str) -> None:
+            print(f"[rank {rank}] {msg}", flush=True)
+
+        debug("starting dataloader creation")
+
         train_loader, val_loader, train_sampler, _ = create_texture_dataloaders(
             args.source_split_json,
             args.target_split_json,
@@ -283,12 +288,15 @@ def main() -> None:
             seed=args.seed,
         )
 
+        debug("dataloaders ready")
+
         texture_stats_dim = _infer_texture_dim(train_loader, is_main=is_main)
         if distributed and world_size > 1:
             tensor = torch.tensor([texture_stats_dim], device=device, dtype=torch.int32)
             dist.broadcast(tensor, src=0)
             texture_stats_dim = int(tensor[0].item())
         _log_message(log_path, f"Inferred texture feature dimension: {texture_stats_dim}", is_main=is_main)
+        debug("texture feature dimension inferred")
 
         branch_cfg = TextureBranchConfig(
             embed_dim=args.texture_embed_dim,
@@ -307,9 +315,12 @@ def main() -> None:
             branch_cfg=branch_cfg,
         )
         model = model.to(device)
+        debug("model constructed and moved to device")
 
         optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, args.epochs))
+
+        debug("optimizer and scheduler ready")
 
         if distributed:
             model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
@@ -434,6 +445,7 @@ def main() -> None:
         signal.signal(signal.SIGINT, handle_signal)
 
         _log_message(log_path, "Commencing training loop", is_main=is_main)
+        debug("entered training loop")
 
         exit_reason = "completed"
         for epoch in range(start_epoch, args.epochs + 1):
@@ -447,7 +459,9 @@ def main() -> None:
                 train_sampler.set_epoch(epoch)
 
             will_validate = True
+            debug("before can_start_epoch decision")
             can_start = global_decision(time_manager.can_start_epoch(will_validate) if is_main else None)
+            debug(f"after can_start_epoch decision -> {can_start}")
             if not can_start:
                 exit_reason = "time_limit"
                 stop_reason = stop_reason or "time_limit"
@@ -458,6 +472,7 @@ def main() -> None:
 
             epoch_start = time.time()
             train_start = time.time()
+            debug("starting train_epoch")
             train_stats = train_epoch(
                 model,
                 train_loader,
@@ -475,11 +490,14 @@ def main() -> None:
                 use_tqdm=is_main,
                 progress_desc=f"Train {epoch}/{args.epochs}",
             )
+            debug("finished train_epoch")
             train_duration = time.time() - train_start
             if is_main:
                 time_manager.record_train(train_duration)
 
+            debug("checking should_stop")
             should_stop = global_decision(time_manager.should_stop() if is_main else None)
+            debug(f"should_stop -> {should_stop}")
             if should_stop:
                 exit_reason = "time_limit"
                 stop_reason = stop_reason or "time_limit"
@@ -492,7 +510,9 @@ def main() -> None:
             val_dice = 0.0
             val_duration = 0.0
             if will_validate:
+                debug("before can_run_validation decision")
                 can_validate = global_decision(time_manager.can_run_validation() if is_main else None)
+                debug(f"after can_run_validation -> {can_validate}")
                 if not can_validate:
                     exit_reason = "time_limit"
                     stop_reason = stop_reason or "time_limit"
@@ -502,6 +522,7 @@ def main() -> None:
                     break
                 val_start = time.time()
                 if is_main:
+                    debug("starting validation on main rank")
                     val_loss, val_dice = validate(
                         model,
                         val_loader,
@@ -518,18 +539,22 @@ def main() -> None:
                         use_tqdm=True,
                         progress_desc=f"Val {epoch}/{args.epochs}",
                     )
+                    debug("finished validation on main rank")
                 val_duration = time.time() - val_start
                 if is_main:
                     time_manager.record_val(val_duration)
                 if distributed and world_size > 1:
+                    debug("broadcasting validation metrics")
                     metrics_list = [val_loss, val_dice]
                     dist.broadcast_object_list(metrics_list, src=0)
                     val_loss, val_dice = metrics_list
                     # ensure all workers exit the broadcast phase before
                     # progressing to logging or stopping decisions
                     dist.barrier()
+                    debug("post-validation barrier complete")
 
             scheduler.step()
+            debug("scheduler stepped")
 
             epoch_duration = time.time() - epoch_start
             if is_main:
@@ -568,6 +593,7 @@ def main() -> None:
                     best_path = os.path.join(args.results_dir, "best_model.pth")
                     save_checkpoint(model, optimizer, epoch, best_path, best_metric=best_metric)
                     _log_message(log_path, f"✅ New best model saved (dice={best_metric:.4f})", is_main=is_main)
+                debug("metrics logged and best model check complete")
 
                 if epoch % max(1, args.save_every) == 0:
                     ckpt_path = os.path.join(args.results_dir, f"checkpoint_epoch_{epoch:03d}.pth")
@@ -576,18 +602,22 @@ def main() -> None:
 
             if stop_reason:
                 if distributed and world_size > 1:
+                    debug("stop_reason set before final barrier")
                     dist.barrier()
                 shared_reason = sync_stop(stop_reason)
                 exit_reason = shared_reason or stop_reason
                 break
 
             if distributed and world_size > 1:
+                debug("epoch barrier before next loop")
                 dist.barrier()
 
             shared_reason = sync_stop(stop_reason)
             if shared_reason:
                 exit_reason = shared_reason
                 break
+
+            debug("epoch loop completed")
 
         if exit_reason != "time_limit" and exit_reason != "signal":
             if is_main:
