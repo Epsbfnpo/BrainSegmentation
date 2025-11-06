@@ -76,7 +76,9 @@ def build_dice_metric(num_classes: int, include_background: bool, foreground_onl
 
 def _prepare_batch(batch: Dict[str, torch.Tensor], device: torch.device):
     images = batch["image"].to(device)
-    labels = batch["label"].long().to(device)
+    labels = batch["label"].to(device=device, dtype=torch.long)
+    if labels.ndim == 5 and labels.size(1) == 1:
+        labels = labels.squeeze(1)
     texture_stats = batch.get("texture_stats")
     if texture_stats is not None:
         texture_stats = texture_stats.to(device)
