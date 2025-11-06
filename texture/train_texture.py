@@ -92,6 +92,18 @@ def get_parser() -> argparse.ArgumentParser:
     parser.add_argument("--domain_loss_weight", type=float, default=0.5)
     parser.add_argument("--embed_align_weight", type=float, default=0.1)
     parser.add_argument("--stats_align_weight", type=float, default=0.1)
+    parser.add_argument(
+        "--domain_warmup_epochs",
+        type=int,
+        default=10,
+        help="Number of epochs to ramp the adversarial losses from 0 to the configured weight",
+    )
+    parser.add_argument(
+        "--align_warmup_epochs",
+        type=int,
+        default=10,
+        help="Number of epochs to warm up the embedding/statistics alignment penalties",
+    )
 
     # Checkpointing / resume
     parser.add_argument("--pretrained_checkpoint", type=str, default=None)
@@ -197,6 +209,13 @@ def _safe_barrier(stage: str, *, debug_fn: Optional[Callable[[str], None]] = Non
             debug_fn(f"exit barrier: {stage}")
 
 
+def _warmup_scale(epoch: int, warmup_epochs: int) -> float:
+    if warmup_epochs <= 0:
+        return 1.0
+    progress = max(0, epoch - 1)
+    return float(min(1.0, progress / float(warmup_epochs)))
+
+
 def _cleanup_distributed(debug_fn: Optional[Callable[[str], None]] = None):
     if dist.is_available() and dist.is_initialized():
         _safe_barrier("cleanup", debug_fn=debug_fn)
@@ -262,6 +281,9 @@ class TimeManager:
 def main() -> None:
     parser = get_parser()
     args = parser.parse_args()
+
+    if args.align_warmup_epochs < 0:
+        args.align_warmup_epochs = args.domain_warmup_epochs
 
     dist_info = _setup_distributed(args.dist_timeout)
     rank = dist_info["rank"]
@@ -528,6 +550,12 @@ def main() -> None:
             epoch_start = time.time()
             train_start = time.time()
             debug("starting train_epoch")
+            domain_scale = _warmup_scale(epoch, args.domain_warmup_epochs)
+            align_scale = _warmup_scale(epoch, args.align_warmup_epochs)
+            current_domain_weight = args.domain_loss_weight * domain_scale
+            current_embed_weight = args.embed_align_weight * align_scale
+            current_stats_weight = args.stats_align_weight * align_scale
+            current_grl_lambda = args.grl_lambda * domain_scale
             train_stats = train_epoch(
                 model,
                 train_loader,
@@ -536,10 +564,10 @@ def main() -> None:
                 device,
                 amp=args.amp and device.type == "cuda",
                 scaler=scaler,
-                domain_loss_weight=args.domain_loss_weight,
-                embed_align_weight=args.embed_align_weight,
-                stats_align_weight=args.stats_align_weight,
-                grl_lambda=args.grl_lambda,
+                domain_loss_weight=current_domain_weight,
+                embed_align_weight=current_embed_weight,
+                stats_align_weight=current_stats_weight,
+                grl_lambda=current_grl_lambda,
                 is_distributed=distributed,
                 world_size=world_size,
                 use_tqdm=is_main,
@@ -622,7 +650,8 @@ def main() -> None:
                         f"Epoch {epoch}/{args.epochs}: total_loss={train_stats['total_loss']:.4f}, "
                         f"seg_loss={train_stats['seg_loss']:.4f}, domain_loss={train_stats['domain_loss']:.4f}, "
                         f"align_loss={train_stats['align_loss']:.4f}, stats_align_loss={train_stats['stats_align_loss']:.4f}, "
-                        f"domain_acc={train_stats['domain_acc']:.3f}, val_loss={val_loss:.4f}, val_dice={val_dice:.4f}"
+                        f"domain_acc={train_stats['domain_acc']:.3f}, val_loss={val_loss:.4f}, val_dice={val_dice:.4f}, "
+                        f"domain_w={current_domain_weight:.3f}, align_w={current_embed_weight:.3f}, stats_w={current_stats_weight:.3f}"
                     ),
                     is_main=is_main,
                 )
@@ -634,6 +663,9 @@ def main() -> None:
                         "val_loss": val_loss,
                         "val_dice": val_dice,
                         "lr": optimizer.param_groups[0]["lr"],
+                        "domain_weight": current_domain_weight,
+                        "embed_align_weight": current_embed_weight,
+                        "stats_align_weight": current_stats_weight,
                         "epoch_minutes": epoch_duration / 60.0,
                         "train_minutes": train_duration / 60.0,
                         "val_minutes": val_duration / 60.0,
