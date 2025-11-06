@@ -1,0 +1,175 @@
+"""Custom MONAI transforms for texture-focused training."""
+
+from __future__ import annotations
+
+from typing import Iterable, List, Sequence
+
+import numpy as np
+import torch
+from monai.config.type_definitions import NdarrayOrTensor
+from monai.data.meta_tensor import MetaTensor
+from monai.transforms import MapTransform, Transform
+
+__all__ = ["TextureStatsd", "AddDomainLabeld", "stack_texture_features"]
+
+
+class TextureStatsd(MapTransform):
+    """Compute handcrafted texture statistics for the given image keys."""
+
+    def __init__(
+        self,
+        keys: Iterable[str],
+        *,
+        prefix: str = "texture_stats",
+        mask_key: str | None = "label",
+        channel_wise: bool = False,
+        use_log: bool = True,
+    ) -> None:
+        super().__init__(keys)
+        self.prefix = prefix
+        self.mask_key = mask_key
+        self.channel_wise = channel_wise
+        self.use_log = use_log
+
+    def _prepare_array(self, image: NdarrayOrTensor) -> np.ndarray:
+        if isinstance(image, MetaTensor):
+            array = image.array
+        elif torch.is_tensor(image):
+            array = image.detach().cpu().numpy()
+        else:
+            array = np.asarray(image)
+        array = np.nan_to_num(array.astype(np.float32), copy=False)
+        return array
+
+    def _compute_features(self, array: np.ndarray, *, mask: np.ndarray | None) -> List[float]:
+        if array.ndim == 4:  # (C, H, W, D)
+            if self.channel_wise:
+                features: List[float] = []
+                for c in range(array.shape[0]):
+                    features.extend(self._compute_features(array[c], mask=mask))
+                return features
+            array = array[0]
+        elif array.ndim == 3:
+            array = array
+        else:
+            raise ValueError(f"Expected 3D or 4D tensor, got shape {array.shape}")
+
+        working = array.copy()
+        if self.use_log:
+            working = np.where(working > 0, np.log1p(working), working)
+
+        if mask is not None:
+            mask = mask.astype(bool)
+            if mask.shape != working.shape:
+                mask = mask.squeeze()
+            region = working[mask]
+            if region.size == 0:
+                region = working.ravel()
+        else:
+            region = working.ravel()
+
+        region = region.astype(np.float32)
+        if region.size == 0:
+            region = np.zeros(1, dtype=np.float32)
+
+        features: List[float] = []
+
+        # Intensity distribution statistics
+        features.append(float(region.mean()))
+        features.append(float(region.std()))
+        features.append(float(region.min()))
+        features.append(float(region.max()))
+        percentiles = [5, 25, 50, 75, 95]
+        features.extend(float(np.percentile(region, p)) for p in percentiles)
+        features.append(float(np.median(region)))
+        features.append(float(np.percentile(region, 99) - np.percentile(region, 1)))  # contrast range
+
+        # Gradient-based descriptors
+        gradients = np.gradient(working)
+        grad_mag = np.sqrt(sum(g ** 2 for g in gradients))
+        if mask is not None:
+            grad_region = grad_mag[mask]
+        else:
+            grad_region = grad_mag.ravel()
+        features.append(float(grad_region.mean()))
+        features.append(float(grad_region.std()))
+
+        # Laplacian approximation via divergence of gradients
+        laplacian = sum(np.gradient(g)[i] for i, g in enumerate(gradients))
+        if mask is not None:
+            lap_region = laplacian[mask]
+        else:
+            lap_region = laplacian.ravel()
+        features.append(float(np.mean(lap_region ** 2)))  # laplacian energy
+
+        # Frequency energy (low vs high)
+        spectrum = np.abs(np.fft.fftn(working))
+        spectrum = np.fft.fftshift(spectrum)
+        center = tuple(s // 2 for s in spectrum.shape)
+        radius = min(center)
+        if radius > 0:
+            grid = np.stack(
+                np.meshgrid(
+                    *[np.arange(s) - c for s, c in zip(spectrum.shape, center)], indexing="ij"
+                )
+            )
+            dist = np.sqrt(np.sum(grid ** 2, axis=0))
+            low_mask = dist <= radius * 0.25
+            high_mask = dist >= radius * 0.6
+            low_energy = float(np.mean(spectrum[low_mask]))
+            high_energy = float(np.mean(spectrum[high_mask]))
+        else:
+            low_energy = float(np.mean(spectrum))
+            high_energy = float(np.mean(spectrum))
+        features.extend([low_energy, high_energy])
+        features.append(float(high_energy / (low_energy + 1e-6)))
+
+        # Local variance at multiple scales via down-sampling
+        scales = [1, 2, 4]
+        for scale in scales:
+            if scale == 1:
+                scaled = working
+            else:
+                scaled = working[::scale, ::scale, ::scale]
+            features.append(float(np.var(scaled)))
+
+        return features
+
+    def __call__(self, data):
+        d = dict(data)
+        mask = None
+        if self.mask_key and self.mask_key in d:
+            mask_array = self._prepare_array(d[self.mask_key])
+            if mask_array.ndim == 4:
+                mask_array = mask_array[0]
+            mask = mask_array > 0
+
+        feature_vectors: List[float] = []
+        for key in self.key_iterator(d):
+            array = self._prepare_array(d[key])
+            feature_vectors.extend(self._compute_features(array, mask=mask))
+
+        d[self.prefix] = torch.tensor(feature_vectors, dtype=torch.float32)
+        d[f"{self.prefix}_dim"] = torch.tensor([len(feature_vectors)], dtype=torch.int64)
+        return d
+
+
+class AddDomainLabeld(Transform):
+    """Attach a domain index to the sample."""
+
+    def __init__(self, domain_index: int) -> None:
+        self.domain_index = int(domain_index)
+
+    def __call__(self, data):
+        d = dict(data)
+        d["domain"] = torch.tensor(self.domain_index, dtype=torch.long)
+        return d
+
+
+def stack_texture_features(batch: Sequence[dict], key: str = "texture_stats") -> torch.Tensor:
+    """Utility to stack variable-length feature vectors in a batch."""
+
+    features = [sample[key] for sample in batch]
+    if not features:
+        raise ValueError("Empty batch encountered when stacking texture features")
+    return torch.stack(features, dim=0)
