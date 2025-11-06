@@ -104,6 +104,9 @@ def _alignment_loss(embeddings: torch.Tensor, domain: torch.Tensor) -> torch.Ten
     embeddings = _to_plain_tensor(embeddings)
     domain = _to_plain_tensor(domain)
 
+    embeddings = embeddings.float()
+    domain = domain.long()
+
     unique_domains = domain.unique(sorted=True)
     if unique_domains.numel() < 2:
         return torch.zeros((), device=embeddings.device)
@@ -183,7 +186,7 @@ def train_epoch(
                 align_loss = _alignment_loss(texture_embedding, domain)
             stats_align_loss = torch.tensor(0.0, device=device)
             if stats_align_weight > 0.0 and texture_stats is not None:
-                norm_stats = F.normalize(texture_stats, dim=1)
+                norm_stats = F.normalize(texture_stats, dim=1, eps=1e-6)
                 stats_align_loss = _alignment_loss(norm_stats, domain)
 
             total_loss = (

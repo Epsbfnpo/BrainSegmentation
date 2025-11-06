@@ -66,12 +66,14 @@ class TextureStatsd(MapTransform):
             working = np.where(working > 0, np.log1p(working), working)
 
         if mask is not None:
-            mask = mask.astype(bool)
+            mask = np.asarray(mask, dtype=bool)
             if mask.shape != working.shape:
-                mask = mask.squeeze()
+                mask = np.squeeze(mask)
+            if mask.shape != working.shape or mask.size == 0 or not mask.any():
+                mask = None
+
+        if mask is not None:
             region = working[mask]
-            if region.size == 0:
-                region = working.ravel()
         else:
             region = working.ravel()
 
@@ -96,6 +98,8 @@ class TextureStatsd(MapTransform):
         grad_mag = np.sqrt(sum(g ** 2 for g in gradients))
         if mask is not None:
             grad_region = grad_mag[mask]
+            if grad_region.size == 0:
+                grad_region = grad_mag.ravel()
         else:
             grad_region = grad_mag.ravel()
         features.append(float(grad_region.mean()))
@@ -105,6 +109,8 @@ class TextureStatsd(MapTransform):
         laplacian = sum(np.gradient(g)[i] for i, g in enumerate(gradients))
         if mask is not None:
             lap_region = laplacian[mask]
+            if lap_region.size == 0:
+                lap_region = laplacian.ravel()
         else:
             lap_region = laplacian.ravel()
         features.append(float(np.mean(lap_region ** 2)))  # laplacian energy
@@ -140,7 +146,9 @@ class TextureStatsd(MapTransform):
                 scaled = working[::scale, ::scale, ::scale]
             features.append(float(np.var(scaled)))
 
-        return features
+        features_array = np.asarray(features, dtype=np.float32)
+        features_array = np.nan_to_num(features_array, nan=0.0, posinf=1e6, neginf=-1e6)
+        return features_array.tolist()
 
     def __call__(self, data):
         d = dict(data)
@@ -159,7 +167,10 @@ class TextureStatsd(MapTransform):
             array = self._prepare_array(d[key])
             feature_vectors.extend(self._compute_features(array, mask=mask))
 
-        d[self.prefix] = torch.tensor(feature_vectors, dtype=torch.float32)
+        features_np = np.asarray(feature_vectors, dtype=np.float32)
+        features_np = np.nan_to_num(features_np, nan=0.0, posinf=1e6, neginf=-1e6)
+
+        d[self.prefix] = torch.from_numpy(features_np)
         d[f"{self.prefix}_dim"] = torch.tensor([len(feature_vectors)], dtype=torch.int64)
         return d
 
