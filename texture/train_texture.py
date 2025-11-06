@@ -600,9 +600,13 @@ def main() -> None:
                     time_manager.record_val(val_duration)
                 if distributed and world_size > 1:
                     debug("broadcasting validation metrics")
-                    metrics_list = [val_loss, val_dice]
-                    dist.broadcast_object_list(metrics_list, src=0)
-                    val_loss, val_dice = metrics_list
+                    metrics_tensor = torch.zeros(2, device=device, dtype=torch.float32)
+                    if is_main:
+                        metrics_tensor[0] = float(val_loss)
+                        metrics_tensor[1] = float(val_dice)
+                    dist.broadcast(metrics_tensor, src=0)
+                    val_loss = float(metrics_tensor[0].item())
+                    val_dice = float(metrics_tensor[1].item())
 
             scheduler.step()
             debug("scheduler stepped")
