@@ -22,6 +22,7 @@ from monai.transforms import (
     RandGaussianSmoothd,
     RandSpatialCropd,
     RandZoomd,
+    SpatialPadd,
     Spacingd,
     ToTensord,
 )
@@ -77,6 +78,7 @@ def _compose_transforms(
     if is_training:
         transforms.extend(
             [
+                SpatialPadd(keys=["image", "label"], spatial_size=tuple(roi_size)),
                 RandSpatialCropd(
                     keys=["image", "label"],
                     roi_size=tuple(roi_size),
@@ -94,8 +96,11 @@ def _compose_transforms(
             ]
         )
     else:
-        transforms.append(
-            CenterSpatialCropd(keys=["image", "label"], roi_size=tuple(roi_size)),
+        transforms.extend(
+            [
+                SpatialPadd(keys=["image", "label"], spatial_size=tuple(roi_size)),
+                CenterSpatialCropd(keys=["image", "label"], roi_size=tuple(roi_size)),
+            ]
         )
 
     transforms.append(TextureStatsd(keys=["image"], prefix=texture_prefix, mask_key="label"))
