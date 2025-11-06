@@ -61,9 +61,11 @@ class TextureStatsd(MapTransform):
         else:
             raise ValueError(f"Expected 3D or 4D tensor, got shape {array.shape}")
 
-        working = array.copy()
+        working = array.astype(np.float32, copy=True)
         if self.use_log:
-            working = np.where(working > 0, np.log1p(working), working)
+            positive_mask = working > 0
+            if np.any(positive_mask):
+                working[positive_mask] = np.log1p(working[positive_mask])
 
         if mask is not None:
             mask = np.asarray(mask, dtype=bool)
@@ -148,7 +150,18 @@ class TextureStatsd(MapTransform):
 
         features_array = np.asarray(features, dtype=np.float32)
         features_array = np.nan_to_num(features_array, nan=0.0, posinf=1e6, neginf=-1e6)
-        return features_array.tolist()
+
+        median = float(np.median(features_array))
+        centered = features_array - median
+        mad = float(np.median(np.abs(centered)))
+        if mad <= 1e-6:
+            mean_abs = float(np.mean(np.abs(centered)))
+            scale = mean_abs if mean_abs > 1e-6 else 1.0
+        else:
+            scale = mad
+        normalized = centered / (scale + 1e-6)
+        normalized = np.clip(normalized, -10.0, 10.0)
+        return normalized.astype(np.float32).tolist()
 
     def __call__(self, data):
         d = dict(data)
@@ -170,7 +183,18 @@ class TextureStatsd(MapTransform):
         features_np = np.asarray(feature_vectors, dtype=np.float32)
         features_np = np.nan_to_num(features_np, nan=0.0, posinf=1e6, neginf=-1e6)
 
-        d[self.prefix] = torch.from_numpy(features_np)
+        median = float(np.median(features_np))
+        centered = features_np - median
+        mad = float(np.median(np.abs(centered)))
+        if mad <= 1e-6:
+            mean_abs = float(np.mean(np.abs(centered)))
+            scale = mean_abs if mean_abs > 1e-6 else 1.0
+        else:
+            scale = mad
+        features_np = centered / (scale + 1e-6)
+        features_np = np.clip(features_np, -10.0, 10.0)
+
+        d[self.prefix] = torch.from_numpy(features_np.astype(np.float32))
         d[f"{self.prefix}_dim"] = torch.tensor([len(feature_vectors)], dtype=torch.int64)
         return d
 

@@ -459,6 +459,8 @@ def main() -> None:
                 grl_lambda=args.grl_lambda,
                 is_distributed=distributed,
                 world_size=world_size,
+                use_tqdm=is_main,
+                progress_desc=f"Train {epoch}/{args.epochs}",
             )
             train_duration = time.time() - train_start
             time_manager.record_train(train_duration)
@@ -497,6 +499,8 @@ def main() -> None:
                         is_distributed=False,
                         world_size=1,
                         foreground_only=args.foreground_only,
+                        use_tqdm=True,
+                        progress_desc=f"Val {epoch}/{args.epochs}",
                     )
                 val_duration = time.time() - val_start
                 time_manager.record_val(val_duration)

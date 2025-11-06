@@ -10,6 +10,7 @@ import torch.nn.functional as F
 import torch.distributed as dist
 import torch.nn as nn
 from monai.data import MetaTensor, decollate_batch
+from tqdm.auto import tqdm
 from monai.losses import DiceCELoss
 from monai.metrics import DiceMetric
 from monai.transforms import AsDiscrete
@@ -89,7 +90,9 @@ def _prepare_batch(batch: Dict[str, torch.Tensor], device: torch.device):
         labels = labels.squeeze(1)
     texture_stats = batch.get("texture_stats")
     if texture_stats is not None:
-        texture_stats = _to_plain_tensor(texture_stats).to(device)
+        texture_stats = _to_plain_tensor(texture_stats).to(device=device, dtype=torch.float32)
+        texture_stats = torch.nan_to_num(texture_stats, nan=0.0, posinf=1e6, neginf=-1e6)
+        texture_stats = texture_stats.clamp_(-10.0, 10.0)
     domain = batch.get("domain")
     if domain is not None:
         domain = _to_plain_tensor(domain).to(device).view(-1)
@@ -149,6 +152,8 @@ def train_epoch(
     grl_lambda: float,
     is_distributed: bool,
     world_size: int,
+    use_tqdm: bool = False,
+    progress_desc: str | None = None,
 ) -> Dict[str, float]:
     model.train()
     sums = {
@@ -164,7 +169,15 @@ def train_epoch(
     if amp and scaler is None:
         scaler = torch.cuda.amp.GradScaler()
 
-    for batch in loader:
+    progress = None
+    if use_tqdm:
+        desc = progress_desc or "Train"
+        progress = tqdm(loader, desc=desc, dynamic_ncols=True, leave=False)
+        iterator = progress
+    else:
+        iterator = loader
+
+    for batch in iterator:
         images, labels, texture_stats, domain = _prepare_batch(batch, device)
         optimizer.zero_grad(set_to_none=True)
 
@@ -211,6 +224,17 @@ def train_epoch(
         sums["stats_align_loss"] += float(stats_align_loss.detach().item())
         sums["domain_acc"] += float(domain_acc.detach().item())
         sums["num_batches"] += 1.0
+
+        if progress is not None:
+            batches = max(1.0, sums["num_batches"])
+            progress.set_postfix(
+                loss=f"{sums['total_loss']/batches:.3f}",
+                seg=f"{sums['seg_loss']/batches:.3f}",
+                dom=f"{sums['domain_loss']/batches:.3f}"
+            )
+
+    if progress is not None:
+        progress.close()
 
     metrics_tensor = torch.tensor(
         [
@@ -278,6 +302,8 @@ def validate(
     is_distributed: bool,
     world_size: int,
     foreground_only: bool,
+    use_tqdm: bool = False,
+    progress_desc: str | None = None,
 ) -> Tuple[float, float]:
     model.eval()
     num_batches = 0
@@ -292,7 +318,15 @@ def validate(
     dice_sum = 0.0
     dice_count = 0.0
 
-    for batch in loader:
+    progress = None
+    if use_tqdm:
+        desc = progress_desc or "Validation"
+        progress = tqdm(loader, desc=desc, dynamic_ncols=True, leave=False)
+        iterator = progress
+    else:
+        iterator = loader
+
+    for batch in iterator:
         images, labels, texture_stats, domain = _prepare_batch(batch, device)
 
         with torch.cuda.amp.autocast(enabled=amp):
@@ -312,6 +346,14 @@ def validate(
             preds = [post_pred(pred) for pred in preds]
             labs = [post_label(label) for label in labs]
             dice_metric(y_pred=preds, y=labs)
+
+        if progress is not None:
+            processed = max(1.0, num_batches)
+            avg_loss = val_loss / processed
+            progress.set_postfix(loss=f"{avg_loss:.3f}")
+
+    if progress is not None:
+        progress.close()
 
     if foreground_only:
         metric = dice_sum / max(1.0, dice_count)
