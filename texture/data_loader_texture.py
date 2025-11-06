@@ -15,6 +15,7 @@ from monai.transforms import (
     EnsureTyped,
     Lambdad,
     LoadImaged,
+    NormalizeIntensityd,
     Orientationd,
     RandAdjustContrastd,
     RandFlipd,
@@ -68,6 +69,7 @@ def _compose_transforms(
     transforms: List = [
         LoadImaged(keys=["image", "label"]),
         EnsureChannelFirstd(keys=["image", "label"]),
+        NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=True),
     ]
 
     if apply_orientation:
