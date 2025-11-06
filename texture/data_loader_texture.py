@@ -20,14 +20,13 @@ from monai.transforms import (
     RandFlipd,
     RandGaussianNoised,
     RandGaussianSmoothd,
-    RandHistogramShiftd,
     RandSpatialCropd,
     RandZoomd,
     Spacingd,
     ToTensord,
 )
 
-from texture_transforms import TextureStatsd
+from texture_transforms import RandomHistogramShiftd, TextureStatsd
 
 __all__ = ["create_texture_dataloaders"]
 
@@ -90,12 +89,7 @@ def _compose_transforms(
                 RandAdjustContrastd(keys=["image"], prob=0.2, gamma=(0.7, 1.5)),
                 RandGaussianNoised(keys=["image"], prob=0.2, mean=0.0, std=0.01),
                 RandGaussianSmoothd(keys=["image"], prob=0.2, sigma_x=(0.5, 1.5), sigma_y=(0.5, 1.5), sigma_z=(0.5, 1.5)),
-                RandHistogramShiftd(
-                    keys=["image"],
-                    prob=0.2,
-                    num_control_points=4,
-                    shift_range=(-0.05, 0.05),
-                ),
+                RandomHistogramShiftd(keys=["image"], prob=0.2, num_control_points=4, shift_range=(-0.05, 0.05)),
                 RandZoomd(keys=["image", "label"], prob=0.15, min_zoom=0.9, max_zoom=1.1, keep_size=True),
             ]
         )

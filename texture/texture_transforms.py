@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Iterable, List, Sequence
+import random
+from typing import Iterable, List, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -10,7 +11,12 @@ from monai.config.type_definitions import NdarrayOrTensor
 from monai.data.meta_tensor import MetaTensor
 from monai.transforms import MapTransform, Transform
 
-__all__ = ["TextureStatsd", "AddDomainLabeld", "stack_texture_features"]
+__all__ = [
+    "TextureStatsd",
+    "AddDomainLabeld",
+    "stack_texture_features",
+    "RandomHistogramShiftd",
+]
 
 
 class TextureStatsd(MapTransform):
@@ -173,3 +179,85 @@ def stack_texture_features(batch: Sequence[dict], key: str = "texture_stats") ->
     if not features:
         raise ValueError("Empty batch encountered when stacking texture features")
     return torch.stack(features, dim=0)
+
+
+class RandomHistogramShiftd(MapTransform):
+    """Histogram shift augmentation that is compatible across MONAI versions."""
+
+    def __init__(
+        self,
+        keys: Iterable[str],
+        prob: float = 0.1,
+        num_control_points: int = 4,
+        shift_range: Tuple[float, float] = (-0.05, 0.05),
+        channel_wise: bool = True,
+        allow_missing_keys: bool = False,
+    ) -> None:
+        super().__init__(keys, allow_missing_keys)
+        if num_control_points < 2:
+            raise ValueError("num_control_points must be >= 2")
+        self.prob = float(prob)
+        self.num_control_points = int(num_control_points)
+        self.shift_range = (float(shift_range[0]), float(shift_range[1]))
+        self.channel_wise = channel_wise
+
+    def _prepare_array(self, image: NdarrayOrTensor) -> Tuple[np.ndarray, str]:
+        if isinstance(image, MetaTensor):
+            return np.asarray(image.array), "meta"
+        if torch.is_tensor(image):
+            return image.detach().cpu().numpy(), "tensor"
+        return np.asarray(image), "array"
+
+    def _to_original_type(self, array: np.ndarray, original, kind: str):
+        if kind == "meta":
+            orig_array = np.asarray(original.array)
+            cast_array = array.astype(orig_array.dtype, copy=False)
+            meta = dict(getattr(original, "meta", {}))
+            output = MetaTensor(cast_array, meta=meta)
+            if hasattr(original, "affine"):
+                output.affine = original.affine
+            if hasattr(original, "applied_operations"):
+                output.applied_operations = list(original.applied_operations)
+            return output
+        if kind == "tensor":
+            return torch.as_tensor(array, dtype=original.dtype)
+        return array.astype(np.float32, copy=False)
+
+    def _generate_mapping(self) -> Tuple[np.ndarray, np.ndarray]:
+        ctrl_x = np.linspace(0.0, 1.0, self.num_control_points, dtype=np.float32)
+        offsets = np.random.uniform(self.shift_range[0], self.shift_range[1], size=ctrl_x.shape).astype(np.float32)
+        offsets[0] = 0.0
+        offsets[-1] = 0.0
+        ctrl_y = np.clip(ctrl_x + offsets, 0.0, 1.0)
+        return ctrl_x, ctrl_y
+
+    def _apply_shift(self, array: np.ndarray) -> np.ndarray:
+        original_shape = array.shape
+        if array.ndim == 4 and self.channel_wise:
+            shifted_channels: List[np.ndarray] = []
+            for channel in array:
+                shifted_channels.append(self._apply_shift(channel))
+            return np.stack(shifted_channels, axis=0)
+
+        flat = array.astype(np.float32, copy=False)
+        arr_min = flat.min()
+        arr_max = flat.max()
+        if not np.isfinite(arr_min) or not np.isfinite(arr_max) or arr_max <= arr_min + 1e-6:
+            return flat.reshape(original_shape)
+
+        ctrl_x, ctrl_y = self._generate_mapping()
+        scaled = (flat - arr_min) / (arr_max - arr_min)
+        shifted = np.interp(scaled, ctrl_x, ctrl_y)
+        shifted = shifted * (arr_max - arr_min) + arr_min
+        return shifted.reshape(original_shape)
+
+    def __call__(self, data):
+        d = dict(data)
+        for key in self.key_iterator(d):
+            if random.random() >= self.prob:
+                continue
+            original = d[key]
+            array, kind = self._prepare_array(original)
+            shifted = self._apply_shift(array)
+            d[key] = self._to_original_type(shifted, original, kind)
+        return d
