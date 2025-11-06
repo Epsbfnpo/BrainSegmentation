@@ -11,7 +11,7 @@ import signal
 import time
 from collections import deque
 from datetime import datetime, timedelta
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 
 import torch
 import torch.distributed as dist
@@ -165,6 +165,10 @@ def _setup_distributed(dist_timeout: int) -> Dict[str, int]:
     distributed = world_size > 1
 
     if distributed:
+        # Ensure NCCL asynchronous errors surface as Python exceptions rather than silent hangs.
+        if "TORCH_NCCL_ASYNC_ERROR_HANDLING" not in os.environ:
+            legacy_setting = os.environ.get("NCCL_ASYNC_ERROR_HANDLING")
+            os.environ["TORCH_NCCL_ASYNC_ERROR_HANDLING"] = legacy_setting or "1"
         torch.cuda.set_device(local_rank)
         timeout = timedelta(minutes=dist_timeout)
         dist.init_process_group(backend="nccl", timeout=timeout)
@@ -172,9 +176,30 @@ def _setup_distributed(dist_timeout: int) -> Dict[str, int]:
     return {"rank": rank, "world_size": world_size, "local_rank": local_rank, "distributed": distributed}
 
 
-def _cleanup_distributed():
+def _safe_barrier(stage: str, *, debug_fn: Optional[Callable[[str], None]] = None) -> None:
+    if not (dist.is_available() and dist.is_initialized()):
+        return
+    if debug_fn:
+        debug_fn(f"enter barrier: {stage}")
+    try:
+        try:
+            work = dist.barrier(async_op=True)
+        except TypeError:
+            dist.barrier()
+        else:
+            work.wait()
+    except Exception as exc:
+        if debug_fn:
+            debug_fn(f"barrier failure at {stage}: {exc}")
+        raise
+    else:
+        if debug_fn:
+            debug_fn(f"exit barrier: {stage}")
+
+
+def _cleanup_distributed(debug_fn: Optional[Callable[[str], None]] = None):
     if dist.is_available() and dist.is_initialized():
-        dist.barrier()
+        _safe_barrier("cleanup", debug_fn=debug_fn)
         dist.destroy_process_group()
 
 
@@ -245,6 +270,8 @@ def main() -> None:
     distributed = dist_info["distributed"]
     is_main = rank == 0
 
+    debug: Callable[[str], None] = lambda msg: None
+
     try:
         if torch.cuda.is_available():
             device = torch.device("cuda", local_rank)
@@ -262,8 +289,19 @@ def main() -> None:
 
         roi_size = (args.roi_x, args.roi_y, args.roi_z)
 
+        rank_trace_path = os.path.join(args.results_dir, f"rank_{rank:02d}_trace.log")
+
         def debug(msg: str) -> None:
-            print(f"[rank {rank}] {msg}", flush=True)
+            line = f"[rank {rank}] {msg}"
+            print(line, flush=True)
+            try:
+                os.makedirs(os.path.dirname(rank_trace_path), exist_ok=True)
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                with open(rank_trace_path, "a", encoding="utf-8") as trace_file:
+                    trace_file.write(f"{timestamp} {line}\n")
+            except OSError:
+                # Avoid crashing training due to logging issues on shared filesystems.
+                pass
 
         debug("starting dataloader creation")
 
@@ -289,6 +327,23 @@ def main() -> None:
         )
 
         debug("dataloaders ready")
+        try:
+            train_steps = len(train_loader)
+        except TypeError:
+            train_steps = -1
+        try:
+            val_steps = len(val_loader)
+        except TypeError:
+            val_steps = -1
+        debug(
+            "dataset stats -> train_samples=%d, val_samples=%d, train_steps_per_epoch=%d, val_steps=%d"
+            % (
+                len(train_loader.dataset) if hasattr(train_loader, "dataset") else -1,
+                len(val_loader.dataset) if hasattr(val_loader, "dataset") else -1,
+                train_steps,
+                val_steps,
+            )
+        )
 
         texture_stats_dim = _infer_texture_dim(train_loader, is_main=is_main)
         if distributed and world_size > 1:
@@ -599,14 +654,14 @@ def main() -> None:
             if stop_reason:
                 if distributed and world_size > 1:
                     debug("stop_reason set before final barrier")
-                    dist.barrier()
+                    _safe_barrier("pre-exit", debug_fn=debug)
                 shared_reason = sync_stop(stop_reason)
                 exit_reason = shared_reason or stop_reason
                 break
 
             if distributed and world_size > 1:
                 debug("epoch barrier before next loop")
-                dist.barrier()
+                _safe_barrier(f"epoch-{epoch}-end", debug_fn=debug)
 
             shared_reason = sync_stop(stop_reason)
             if shared_reason:
@@ -624,7 +679,7 @@ def main() -> None:
             _log_message(log_path, f"Training stopped early due to {exit_reason}", is_main=is_main)
 
     finally:
-        _cleanup_distributed()
+        _cleanup_distributed(debug)
 
 
 if __name__ == "__main__":
