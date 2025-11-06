@@ -22,7 +22,8 @@ DIST_TIMEOUT_MINUTES=${DIST_TIMEOUT_MINUTES:-180}
 mkdir -p "${RESULTS_DIR}"
 
 export PYTHONUNBUFFERED=1
-export NCCL_ASYNC_ERROR_HANDLING=1
+export TORCH_NCCL_ASYNC_ERROR_HANDLING=${TORCH_NCCL_ASYNC_ERROR_HANDLING:-1}
+export NCCL_ASYNC_ERROR_HANDLING=${NCCL_ASYNC_ERROR_HANDLING:-1}
 export TORCH_DISTRIBUTED_DEBUG=${TORCH_DISTRIBUTED_DEBUG:-OFF}
 
 CMD=(
@@ -50,8 +51,84 @@ CMD=(
     --dist_timeout "${DIST_TIMEOUT_MINUTES}"
 )
 
+set +e
 if [[ ${NUM_GPUS} -gt 1 ]]; then
     torchrun --nproc_per_node="${NUM_GPUS}" "${CMD[@]}"
 else
     python "${CMD[@]}"
 fi
+EXIT_STATUS=$?
+set -e
+
+echo "=============================================================="
+echo "TEXTURE ADAPTATION TRAINING SUMMARY"
+echo "Command exited with status ${EXIT_STATUS}"
+echo "Results directory: ${RESULTS_DIR}"
+echo "=============================================================="
+
+TRAIN_LOG="${RESULTS_DIR}/training.log"
+LATEST_CKPT="${RESULTS_DIR}/checkpoint_latest.pth"
+FINAL_MODEL="${RESULTS_DIR}/last_model.pth"
+BEST_MODEL="${RESULTS_DIR}/best_model.pth"
+ELASTIC_ERROR="${RESULTS_DIR}/elastic_error.json"
+
+if [[ -f "${TRAIN_LOG}" ]]; then
+    echo "📄 Last training log entries:"
+    tail -n 15 "${TRAIN_LOG}" || true
+    echo "--------------------------------------------------------------"
+fi
+
+if [[ ${EXIT_STATUS} -eq 0 ]]; then
+    if [[ -f "${FINAL_MODEL}" ]]; then
+        echo "✅ Training finished successfully."
+        echo "   Final model : ${FINAL_MODEL}"
+        [[ -f "${BEST_MODEL}" ]] && echo "   Best model  : ${BEST_MODEL}"
+    else
+        echo "⏸ Training paused (time limit or manual stop)."
+        if [[ -f "${LATEST_CKPT}" ]]; then
+            echo "   Latest checkpoint: ${LATEST_CKPT}"
+            stat -c "   Modified: %y" "${LATEST_CKPT}" 2>/dev/null || true
+        fi
+    fi
+else
+    echo "❌ Training command exited with failure (${EXIT_STATUS})."
+    if [[ -f "${ELASTIC_ERROR}" ]]; then
+        echo "   Elastic error details:"
+        python -c "import json; import sys; from pathlib import Path; p=Path(sys.argv[1]);\nprint(json.dumps(json.loads(p.read_text()), indent=2)[:2000])" "${ELASTIC_ERROR}" 2>/dev/null || head -n 20 "${ELASTIC_ERROR}" || true
+    fi
+    if [[ -f "${LATEST_CKPT}" ]]; then
+        echo "   A checkpoint is available for recovery: ${LATEST_CKPT}"
+    fi
+fi
+
+NEEDS_RESUBMIT=0
+if [[ -n "${SLURM_JOB_ID:-}" ]]; then
+    if [[ ! -f "${FINAL_MODEL}" ]]; then
+        if [[ ${EXIT_STATUS} -eq 0 ]]; then
+            NEEDS_RESUBMIT=1
+        elif [[ -f "${LATEST_CKPT}" ]]; then
+            NEEDS_RESUBMIT=1
+        fi
+    fi
+fi
+
+if [[ ${NEEDS_RESUBMIT} -eq 1 ]]; then
+    echo ""
+    echo "🔄 Auto-resubmitting follow-up job..."
+    RESUBMIT_JOB_NAME=${SLURM_JOB_NAME:-texture}
+    SUBMIT_DIR=${SLURM_SUBMIT_DIR:-${SCRIPT_DIR}}
+    if command -v sbatch >/dev/null 2>&1; then
+        sbatch --dependency=singleton --job-name="${RESUBMIT_JOB_NAME}" "${SUBMIT_DIR}/run_texture_training.sbatch"
+    else
+        echo "⚠️ 'sbatch' command not found; please resubmit manually."
+    fi
+else
+    echo ""
+    echo "No auto-resubmission required."
+fi
+
+echo "=============================================================="
+echo "Helpful commands:"
+echo "  tail -f ${TRAIN_LOG}"
+echo "  ls -lh ${RESULTS_DIR}"
+echo "=============================================================="
