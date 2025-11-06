@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 import torch.distributed as dist
 import torch.nn as nn
-from monai.data import decollate_batch
+from monai.data import MetaTensor, decollate_batch
 from monai.losses import DiceCELoss
 from monai.metrics import DiceMetric
 from monai.transforms import AsDiscrete
@@ -74,17 +74,25 @@ def build_dice_metric(num_classes: int, include_background: bool, foreground_onl
     return DiceMetric(include_background=include_background, reduction="mean", get_not_nans=False)
 
 
+def _to_plain_tensor(tensor: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
+    if tensor is None:
+        return None
+    if isinstance(tensor, MetaTensor):
+        return tensor.as_tensor()
+    return tensor
+
+
 def _prepare_batch(batch: Dict[str, torch.Tensor], device: torch.device):
-    images = batch["image"].to(device)
-    labels = batch["label"].to(device=device, dtype=torch.long)
+    images = _to_plain_tensor(batch["image"]).to(device)
+    labels = _to_plain_tensor(batch["label"]).to(device=device, dtype=torch.long)
     if labels.ndim == 5 and labels.size(1) == 1:
         labels = labels.squeeze(1)
     texture_stats = batch.get("texture_stats")
     if texture_stats is not None:
-        texture_stats = texture_stats.to(device)
+        texture_stats = _to_plain_tensor(texture_stats).to(device)
     domain = batch.get("domain")
     if domain is not None:
-        domain = domain.to(device).view(-1)
+        domain = _to_plain_tensor(domain).to(device).view(-1)
     return images, labels, texture_stats, domain
 
 
@@ -92,6 +100,9 @@ def _alignment_loss(embeddings: torch.Tensor, domain: torch.Tensor) -> torch.Ten
     if embeddings is None or domain is None:
         device = embeddings.device if embeddings is not None else domain.device
         return torch.zeros((), device=device)
+
+    embeddings = _to_plain_tensor(embeddings)
+    domain = _to_plain_tensor(domain)
 
     unique_domains = domain.unique(sorted=True)
     if unique_domains.numel() < 2:
