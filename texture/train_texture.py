@@ -6,10 +6,11 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import math
 import os
 import signal
 import time
-from collections import deque
+from collections import Counter, deque
 from datetime import datetime, timedelta
 from typing import Callable, Dict, Optional
 
@@ -111,6 +112,26 @@ def get_parser() -> argparse.ArgumentParser:
     parser.add_argument("--save_every", type=int, default=10)
     parser.add_argument("--auto_resume", action="store_true", help="Automatically resume from latest checkpoint")
     parser.add_argument("--max_keep_checkpoints", type=int, default=5, help="Number of epoch checkpoints to keep")
+
+    # Debug / logging controls
+    parser.add_argument(
+        "--debug_interval",
+        type=int,
+        default=50,
+        help="Steps between detailed training debug logs (0 disables per-step debug logging)",
+    )
+    parser.add_argument(
+        "--debug_val_batches",
+        type=int,
+        default=2,
+        help="Number of validation batches to log with detailed debug info",
+    )
+    parser.add_argument(
+        "--debug_sample_count",
+        type=int,
+        default=4,
+        help="Number of dataset samples to inspect prior to training for debugging",
+    )
 
     # Distributed + scheduling
     parser.add_argument("--dist_timeout", type=int, default=120, help="Distributed init timeout in minutes")
@@ -278,6 +299,94 @@ class TimeManager:
         }
 
 
+def _as_cpu_tensor(data) -> torch.Tensor:
+    if isinstance(data, torch.Tensor):
+        return data.detach().cpu()
+    if hasattr(data, "as_tensor"):
+        return data.as_tensor().detach().cpu()
+    return torch.as_tensor(data)
+
+
+def _summarize_module(module: torch.nn.Module) -> Dict[str, float]:
+    total = 0
+    sum_sq = 0.0
+    max_abs = 0.0
+    with torch.no_grad():
+        for param in module.parameters():
+            data = param.detach().float()
+            total += data.numel()
+            sum_sq += float(data.pow(2).sum().item())
+            max_abs = max(max_abs, float(data.abs().max().item()))
+    rms = math.sqrt(sum_sq / max(1, total)) if total > 0 else 0.0
+    return {"total_params": total, "rms": rms, "max_abs": max_abs}
+
+
+def _inspect_samples(dataset, count: int, *, prefix: str, debug: Callable[[str], None]) -> None:
+    if dataset is None or count <= 0:
+        return
+    length = len(dataset) if hasattr(dataset, "__len__") else None
+    debug(f"{prefix} dataset length={length if length is not None else 'unknown'}")
+    domain_counter: Counter = Counter()
+    fg_fracs = []
+    unique_labels: set[int] = set()
+    inspected = 0
+    for idx in range(min(count, length or count)):
+        try:
+            sample = dataset[idx]
+        except Exception as exc:
+            debug(f"{prefix} sample[{idx}] failed to load for debug inspection: {exc}")
+            continue
+        inspected += 1
+        label_tensor = _as_cpu_tensor(sample.get("label"))
+        sample_unique = torch.unique(label_tensor).to(dtype=torch.long)
+        unique_labels.update(sample_unique.tolist())
+        fg_fraction = float((label_tensor >= 0).float().mean().item())
+        fg_fracs.append(fg_fraction)
+        domain_value = sample.get("domain")
+        if domain_value is not None:
+            try:
+                domain_int = int(_as_cpu_tensor(domain_value).item())
+            except Exception:
+                domain_int = int(domain_value)
+            domain_counter[domain_int] += 1
+        texture_stats = sample.get("texture_stats")
+        if texture_stats is not None:
+            stats_tensor = _as_cpu_tensor(texture_stats).float()
+            stats_mean = float(stats_tensor.mean().item())
+            stats_std = float(stats_tensor.std(unbiased=False).item())
+            stats_min = float(stats_tensor.min().item())
+            stats_max = float(stats_tensor.max().item())
+            stats_summary = (
+                f"mean={stats_mean:.4f}, std={stats_std:.4f}, min={stats_min:.4f}, max={stats_max:.4f}"
+            )
+        else:
+            stats_summary = "missing"
+        debug(
+            (
+                f"{prefix}[{idx}]: domain={domain_value}, fg_frac={fg_fraction:.3f}, "
+                f"unique_labels={sorted(sample_unique.tolist())[:12]}"
+                f"{'...' if sample_unique.numel() > 12 else ''}, texture_stats={stats_summary}"
+            )
+        )
+    if fg_fracs:
+        fg_avg = float(sum(fg_fracs) / len(fg_fracs))
+        fg_min = float(min(fg_fracs))
+        fg_max = float(max(fg_fracs))
+        debug(
+            (
+                f"{prefix} foreground fraction stats -> mean={fg_avg:.3f}, min={fg_min:.3f}, "
+                f"max={fg_max:.3f}"
+            )
+        )
+    if domain_counter:
+        debug(f"{prefix} domain counts (first {inspected} samples) -> {dict(domain_counter)}")
+    if unique_labels:
+        sorted_labels = sorted(unique_labels)
+        preview = sorted_labels[:20]
+        suffix = "..." if len(sorted_labels) > 20 else ""
+        debug(f"{prefix} union of labels across inspected samples: {preview}{suffix}")
+
+
 def main() -> None:
     parser = get_parser()
     args = parser.parse_args()
@@ -367,6 +476,20 @@ def main() -> None:
             )
         )
 
+        if is_main:
+            _inspect_samples(
+                getattr(train_loader, "dataset", None),
+                args.debug_sample_count,
+                prefix="train",
+                debug=debug,
+            )
+            _inspect_samples(
+                getattr(val_loader, "dataset", None),
+                max(0, min(args.debug_sample_count, 2)),
+                prefix="val",
+                debug=debug,
+            )
+
         texture_stats_dim = _infer_texture_dim(train_loader, is_main=is_main)
         if distributed and world_size > 1:
             tensor = torch.tensor([texture_stats_dim], device=device, dtype=torch.int32)
@@ -393,6 +516,12 @@ def main() -> None:
         )
         model = model.to(device)
         debug("model constructed and moved to device")
+
+        seg_summary = _summarize_module(model.segmenter)
+        debug(
+            "segmenter parameter summary before loading weights -> params=%d, rms=%.4e, max=%.4e"
+            % (seg_summary["total_params"], seg_summary["rms"], seg_summary["max_abs"])
+        )
 
         optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, args.epochs))
@@ -435,6 +564,14 @@ def main() -> None:
             else:
                 model.segmenter.load_state_dict(state_dict, strict=False)
             _log_message(log_path, f"Loaded pretrained weights from {args.pretrained_checkpoint}", is_main=is_main)
+            if isinstance(model, DDP):
+                seg_summary = _summarize_module(model.module.segmenter)
+            else:
+                seg_summary = _summarize_module(model.segmenter)
+            debug(
+                "segmenter parameter summary after loading weights -> params=%d, rms=%.4e, max=%.4e"
+                % (seg_summary["total_params"], seg_summary["rms"], seg_summary["max_abs"])
+            )
         elif args.pretrained_checkpoint:
             _log_message(log_path, f"⚠️ Pretrained checkpoint not found at {args.pretrained_checkpoint}", is_main=is_main)
 
@@ -572,11 +709,26 @@ def main() -> None:
                 world_size=world_size,
                 use_tqdm=is_main,
                 progress_desc=f"Train {epoch}/{args.epochs}",
+                debug_interval=args.debug_interval if is_main else 0,
+                debug_fn=debug if is_main else None,
             )
             debug("finished train_epoch")
             train_duration = time.time() - train_start
             if is_main:
                 time_manager.record_train(train_duration)
+                debug(
+                    "epoch %d train summary -> total=%.4f, seg=%.4f, domain=%.4f, align=%.4f, stats=%.4f, dom_acc=%.3f, batches=%d"
+                    % (
+                        epoch,
+                        train_stats["total_loss"],
+                        train_stats["seg_loss"],
+                        train_stats["domain_loss"],
+                        train_stats["align_loss"],
+                        train_stats["stats_align_loss"],
+                        train_stats["domain_acc"],
+                        train_stats["num_batches"],
+                    )
+                )
 
             debug("checking should_stop")
             should_stop = global_decision(time_manager.should_stop() if is_main else None)
@@ -621,11 +773,17 @@ def main() -> None:
                         foreground_only=args.foreground_only,
                         use_tqdm=True,
                         progress_desc=f"Val {epoch}/{args.epochs}",
+                        debug_batches=args.debug_val_batches,
+                        debug_fn=debug,
                     )
                     debug("finished validation on main rank")
                 val_duration = time.time() - val_start
                 if is_main:
                     time_manager.record_val(val_duration)
+                    debug(
+                        "epoch %d val summary -> loss=%.4f, dice=%.4f, duration=%.2fs"
+                        % (epoch, val_loss, val_dice, val_duration)
+                    )
                 if distributed and world_size > 1:
                     debug("broadcasting validation metrics")
                     metrics_tensor = torch.zeros(2, device=device, dtype=torch.float32)
@@ -638,6 +796,19 @@ def main() -> None:
 
             scheduler.step()
             debug("scheduler stepped")
+            if is_main:
+                current_lr = optimizer.param_groups[0]["lr"]
+                remaining = time_manager.summary()
+                debug(
+                    "epoch %d lr=%.6e, remaining=%.2f min (avg train=%.2f, avg val=%.2f)"
+                    % (
+                        epoch,
+                        current_lr,
+                        remaining["remaining_minutes"],
+                        remaining["avg_train_minutes"],
+                        remaining["avg_val_minutes"],
+                    )
+                )
 
             epoch_duration = time.time() - epoch_start
             if is_main:
