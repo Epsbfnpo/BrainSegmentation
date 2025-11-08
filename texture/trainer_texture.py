@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple, Any
 
 import torch
 import torch.nn.functional as F
@@ -226,7 +226,9 @@ def train_epoch(
     progress_desc: str | None = None,
     debug_interval: int = 0,
     debug_fn: Optional[Callable[[str], None]] = None,
-) -> Dict[str, float]:
+    num_classes: Optional[int] = None,
+    collect_stats: bool = False,
+) -> Dict[str, Any]:
     model.train()
     sums = {
         "total_loss": 0.0,
@@ -248,6 +250,19 @@ def train_epoch(
         iterator = enumerate(progress, start=1)
     else:
         iterator = enumerate(loader, start=1)
+
+    gather_stats = collect_stats or (is_distributed and world_size > 1)
+    if gather_stats and (num_classes is None or num_classes <= 0):
+        raise ValueError("collect_stats requires num_classes to be a positive integer")
+
+    label_hist: Optional[torch.Tensor] = None
+    pred_hist: Optional[torch.Tensor] = None
+    fg_voxels = 0.0
+    total_voxels = 0.0
+
+    if gather_stats:
+        label_hist = torch.zeros(num_classes, device=device, dtype=torch.float32)
+        pred_hist = torch.zeros(num_classes, device=device, dtype=torch.float32)
 
     for step, batch in iterator:
         images, labels, texture_stats, domain = _prepare_batch(batch, device)
@@ -296,6 +311,18 @@ def train_epoch(
         sums["stats_align_loss"] += float(stats_align_loss.detach().item())
         sums["domain_acc"] += float(domain_acc.detach().item())
         sums["num_batches"] += 1.0
+
+        if collect_stats and label_hist is not None and pred_hist is not None:
+            with torch.no_grad():
+                valid_mask = labels >= 0
+                total_voxels += float(labels.numel())
+                fg_voxels += float(valid_mask.sum().item())
+                if valid_mask.any():
+                    labels_fg = labels[valid_mask].clamp(min=0)
+                    label_hist += torch.bincount(labels_fg, minlength=num_classes).to(label_hist.dtype)
+                    preds = logits.detach().argmax(dim=1)
+                    preds_fg = preds[valid_mask]
+                    pred_hist += torch.bincount(preds_fg, minlength=num_classes).to(pred_hist.dtype)
 
         if progress is not None:
             batches = max(1.0, sums["num_batches"])
@@ -377,7 +404,7 @@ def train_epoch(
     totals = metrics_tensor.tolist()
     num_batches = max(1.0, totals[-1])
 
-    return {
+    metrics: Dict[str, Any] = {
         "total_loss": totals[0] / num_batches,
         "seg_loss": totals[1] / num_batches,
         "domain_loss": totals[2] / num_batches,
@@ -386,6 +413,24 @@ def train_epoch(
         "domain_acc": totals[5] / num_batches,
         "num_batches": int(num_batches),
     }
+
+    if gather_stats and label_hist is not None and pred_hist is not None and is_distributed and world_size > 1:
+        _aggregate_tensor(label_hist)
+        _aggregate_tensor(pred_hist)
+
+    if collect_stats and label_hist is not None and pred_hist is not None:
+        voxel_tensor = torch.tensor(
+            [fg_voxels, total_voxels], device=device, dtype=torch.float32
+        )
+        if gather_stats and is_distributed and world_size > 1:
+            _aggregate_tensor(voxel_tensor)
+        fg_total = float(voxel_tensor[0].item())
+        total_total = float(voxel_tensor[1].item())
+        metrics["label_hist"] = label_hist.detach().cpu().tolist()
+        metrics["pred_hist"] = pred_hist.detach().cpu().tolist()
+        metrics["fg_fraction"] = (fg_total / total_total) if total_total > 0 else 0.0
+
+    return metrics
 
 
 def _compute_foreground_dice(
@@ -432,7 +477,8 @@ def validate(
     progress_desc: str | None = None,
     debug_batches: int = 0,
     debug_fn: Optional[Callable[[str], None]] = None,
-) -> Tuple[float, float]:
+    collect_stats: bool = False,
+) -> Tuple[float, float, Dict[str, Any]]:
     model.eval()
     num_batches = 0
     val_loss = 0.0
@@ -445,6 +491,19 @@ def validate(
 
     dice_sum = 0.0
     dice_count = 0.0
+
+    per_class_intersection: Optional[torch.Tensor] = None
+    per_class_pred: Optional[torch.Tensor] = None
+    per_class_label: Optional[torch.Tensor] = None
+    label_hist: Optional[torch.Tensor] = None
+    pred_hist: Optional[torch.Tensor] = None
+
+    if collect_stats:
+        per_class_intersection = torch.zeros(num_classes, device=device, dtype=torch.float32)
+        per_class_pred = torch.zeros(num_classes, device=device, dtype=torch.float32)
+        per_class_label = torch.zeros(num_classes, device=device, dtype=torch.float32)
+        label_hist = torch.zeros(num_classes, device=device, dtype=torch.float32)
+        pred_hist = torch.zeros(num_classes, device=device, dtype=torch.float32)
 
     progress = None
     if use_tqdm:
@@ -463,6 +522,21 @@ def validate(
 
         val_loss += float(loss.detach().item())
         num_batches += 1
+
+        if collect_stats:
+            with torch.no_grad():
+                preds_argmax = logits.detach().argmax(dim=1)
+                valid_mask = labels >= 0
+                if valid_mask.any():
+                    labels_fg = labels[valid_mask].clamp(min=0)
+                    preds_fg = preds_argmax[valid_mask]
+                    label_hist += torch.bincount(labels_fg, minlength=num_classes).to(label_hist.dtype)
+                    pred_hist += torch.bincount(preds_fg, minlength=num_classes).to(pred_hist.dtype)
+                    preds_one_hot = F.one_hot(preds_fg, num_classes=num_classes).to(dtype=torch.float32)
+                    labels_one_hot = F.one_hot(labels_fg, num_classes=num_classes).to(dtype=torch.float32)
+                    per_class_intersection += (preds_one_hot * labels_one_hot).sum(dim=0)
+                    per_class_pred += preds_one_hot.sum(dim=0)
+                    per_class_label += labels_one_hot.sum(dim=0)
 
         if foreground_only:
             batch_dice = _compute_foreground_dice(logits, labels, num_classes)
@@ -487,6 +561,24 @@ def validate(
                 unique_labels = torch.unique(labels).to(device="cpu", dtype=torch.long)
                 fg_fraction = float((labels >= 0).float().mean().item())
                 pred_summary = _summarize_predictions(logits, labels)
+                if collect_stats:
+                    local_hist = torch.bincount(
+                        labels[labels >= 0].clamp(min=0), minlength=num_classes
+                    ).to(dtype=torch.float32)
+                    pred_hist_local = torch.bincount(
+                        logits.detach().argmax(dim=1)[labels >= 0], minlength=num_classes
+                    ).to(dtype=torch.float32)
+                    top_labels = torch.topk(local_hist, k=min(5, num_classes))
+                    top_preds = torch.topk(pred_hist_local, k=min(5, num_classes))
+                    label_preview = [
+                        (int(idx), float(val)) for idx, val in zip(top_labels.indices.tolist(), top_labels.values.tolist())
+                    ]
+                    pred_preview = [
+                        (int(idx), float(val)) for idx, val in zip(top_preds.indices.tolist(), top_preds.values.tolist())
+                    ]
+                else:
+                    label_preview = []
+                    pred_preview = []
             debug_fn(
                 (
                     f"val-step {step:03d}: loss={loss.item():.4f}, fg_frac={fg_fraction:.3f}, "
@@ -496,6 +588,11 @@ def validate(
                     f"pred_conf={pred_summary['conf_mean']:.3f}±{pred_summary['conf_std']:.3f}, "
                     f"pred_entropy={pred_summary['entropy']:.3f}, prob_range=[{pred_summary['prob_min']:.3f},{pred_summary['prob_max']:.3f}], "
                     f"fg_match={pred_summary.get('fg_match', float('nan')):.3f}, top_preds={pred_summary['top_counts']}"
+                    + (
+                        f", batch_label_top={label_preview}, batch_pred_top={pred_preview}"
+                        if collect_stats and label_preview and pred_preview
+                        else ""
+                    )
                 )
             )
 
@@ -517,11 +614,31 @@ def validate(
         loss_tensor = _aggregate_tensor(loss_tensor)
         metric_tensor = _aggregate_tensor(metric_tensor)
 
+    extra: Dict[str, Any] = {}
+
+    if collect_stats and per_class_intersection is not None and per_class_pred is not None and per_class_label is not None:
+        if is_distributed and world_size > 1:
+            _aggregate_tensor(per_class_intersection)
+            _aggregate_tensor(per_class_pred)
+            _aggregate_tensor(per_class_label)
+            _aggregate_tensor(label_hist)
+            _aggregate_tensor(pred_hist)
+
+        eps = 1e-5
+        dice_per_class = (2 * per_class_intersection + eps) / (per_class_pred + per_class_label + eps)
+        union = per_class_pred + per_class_label - per_class_intersection
+        iou_per_class = (per_class_intersection + eps) / (union + eps)
+        extra["per_class_dice"] = dice_per_class.detach().cpu().tolist()
+        extra["per_class_iou"] = iou_per_class.detach().cpu().tolist()
+        if label_hist is not None and pred_hist is not None:
+            extra["label_hist"] = label_hist.detach().cpu().tolist()
+            extra["pred_hist"] = pred_hist.detach().cpu().tolist()
+
     avg_loss = loss_tensor[0].item() / max(1.0, loss_tensor[1].item())
     metric_sum = metric_tensor[0].item()
     metric_count = max(1.0, metric_tensor[1].item())
 
-    return avg_loss, metric_sum / metric_count
+    return avg_loss, metric_sum / metric_count, extra
 
 
 def _get_model_state(model: torch.nn.Module) -> Dict[str, torch.Tensor]:

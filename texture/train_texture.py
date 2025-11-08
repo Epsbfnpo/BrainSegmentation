@@ -321,6 +321,22 @@ def _summarize_module(module: torch.nn.Module) -> Dict[str, float]:
     return {"total_params": total, "rms": rms, "max_abs": max_abs}
 
 
+def _topk_histogram(hist, k: int = 5):
+    if not hist:
+        return []
+    values = [(idx, float(val)) for idx, val in enumerate(hist)]
+    values = [item for item in values if item[1] > 0]
+    if not values:
+        return []
+    values.sort(key=lambda item: item[1], reverse=True)
+    total = sum(val for _, val in values)
+    top = []
+    for idx, val in values[:k]:
+        frac = val / total if total > 0 else 0.0
+        top.append((idx, val, frac))
+    return top
+
+
 def _inspect_samples(dataset, count: int, *, prefix: str, debug: Callable[[str], None]) -> None:
     if dataset is None or count <= 0:
         return
@@ -718,6 +734,8 @@ def main() -> None:
                 progress_desc=f"Train {epoch}/{args.epochs}",
                 debug_interval=args.debug_interval if is_main else 0,
                 debug_fn=debug if is_main else None,
+                num_classes=args.out_channels,
+                collect_stats=is_main,
             )
             debug("finished train_epoch")
             train_duration = time.time() - train_start
@@ -736,6 +754,19 @@ def main() -> None:
                         train_stats["num_batches"],
                     )
                 )
+
+                if train_stats.get("label_hist") and train_stats.get("pred_hist"):
+                    label_top = _topk_histogram(train_stats["label_hist"])
+                    pred_top = _topk_histogram(train_stats["pred_hist"])
+                    fg_fraction = train_stats.get("fg_fraction", 0.0)
+                    debug(
+                        (
+                            f"epoch {epoch} train label dist top -> "
+                            f"{[(idx, int(val), frac) for idx, val, frac in label_top]}"
+                            f", pred dist top -> {[(idx, int(val), frac) for idx, val, frac in pred_top]}"
+                            f", fg_fraction={fg_fraction:.3f}"
+                        )
+                    )
 
                 base_model_ref = model.module if hasattr(model, "module") else model
                 seg_summary = _summarize_module(getattr(base_model_ref, "segmenter", base_model_ref))
@@ -774,6 +805,7 @@ def main() -> None:
             val_loss = 0.0
             val_dice = 0.0
             val_duration = 0.0
+            val_extra: Dict[str, object] = {}
             if will_validate:
                 debug("before can_run_validation decision")
                 can_validate = global_decision(time_manager.can_run_validation() if is_main else None)
@@ -788,7 +820,7 @@ def main() -> None:
                 val_start = time.time()
                 if is_main:
                     debug("starting validation on main rank")
-                    val_loss, val_dice = validate(
+                    val_loss, val_dice, val_extra = validate(
                         model,
                         val_loader,
                         loss_fn,
@@ -805,6 +837,7 @@ def main() -> None:
                         progress_desc=f"Val {epoch}/{args.epochs}",
                         debug_batches=args.debug_val_batches,
                         debug_fn=debug,
+                        collect_stats=True,
                     )
                     debug("finished validation on main rank")
                 val_duration = time.time() - val_start
@@ -814,6 +847,23 @@ def main() -> None:
                         "epoch %d val summary -> loss=%.4f, dice=%.4f, duration=%.2fs"
                         % (epoch, val_loss, val_dice, val_duration)
                     )
+                    if val_extra:
+                        label_top = _topk_histogram(val_extra.get("label_hist", []))
+                        pred_top = _topk_histogram(val_extra.get("pred_hist", []))
+                        dice_scores = val_extra.get("per_class_dice", [])
+                        top_dice = []
+                        if dice_scores:
+                            pairs = [(idx, float(score)) for idx, score in enumerate(dice_scores)]
+                            pairs.sort(key=lambda item: item[1], reverse=True)
+                            top_dice = pairs[:5]
+                        debug(
+                            (
+                                f"epoch {epoch} val label dist top -> "
+                                f"{[(idx, int(val), frac) for idx, val, frac in label_top]}"
+                                f", pred dist top -> {[(idx, int(val), frac) for idx, val, frac in pred_top]}"
+                                f", dice top -> {[(idx, round(score, 4)) for idx, score in top_dice]}"
+                            )
+                        )
                 if distributed and world_size > 1:
                     debug("broadcasting validation metrics")
                     metrics_tensor = torch.zeros(2, device=device, dtype=torch.float32)
@@ -857,22 +907,24 @@ def main() -> None:
                     is_main=is_main,
                 )
 
-                metrics_history.append(
-                    {
-                        "epoch": epoch,
-                        **train_stats,
-                        "val_loss": val_loss,
-                        "val_dice": val_dice,
-                        "lr": optimizer.param_groups[0]["lr"],
-                        "domain_weight": current_domain_weight,
-                        "embed_align_weight": current_embed_weight,
-                        "stats_align_weight": current_stats_weight,
-                        "epoch_minutes": epoch_duration / 60.0,
-                        "train_minutes": train_duration / 60.0,
-                        "val_minutes": val_duration / 60.0,
-                        "time_remaining_minutes": time_manager.summary()["remaining_minutes"],
-                    }
-                )
+                metrics_entry: Dict[str, object] = {
+                    "epoch": epoch,
+                    **train_stats,
+                    "val_loss": val_loss,
+                    "val_dice": val_dice,
+                    "lr": optimizer.param_groups[0]["lr"],
+                    "domain_weight": current_domain_weight,
+                    "embed_align_weight": current_embed_weight,
+                    "stats_align_weight": current_stats_weight,
+                    "epoch_minutes": epoch_duration / 60.0,
+                    "train_minutes": train_duration / 60.0,
+                    "val_minutes": val_duration / 60.0,
+                    "time_remaining_minutes": time_manager.summary()["remaining_minutes"],
+                }
+                if val_extra:
+                    for key, value in val_extra.items():
+                        metrics_entry[f"val_{key}"] = value
+                metrics_history.append(metrics_entry)
                 with open(history_path, "w", encoding="utf-8") as f:
                     json.dump(metrics_history, f, indent=2)
 
