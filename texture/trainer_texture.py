@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -75,6 +75,17 @@ def build_dice_metric(num_classes: int, include_background: bool, foreground_onl
     return DiceMetric(include_background=include_background, reduction="mean", get_not_nans=False)
 
 
+def _module_grad_norm(module: Optional[nn.Module]) -> float:
+    if module is None:
+        return 0.0
+    total = 0.0
+    for param in module.parameters():
+        if param.grad is not None:
+            grad = param.grad.detach()
+            total += float(grad.float().norm(2).item()) ** 2
+    return float(total ** 0.5)
+
+
 def _to_plain_tensor(tensor: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
     if tensor is None:
         return None
@@ -97,6 +108,65 @@ def _prepare_batch(batch: Dict[str, torch.Tensor], device: torch.device):
     if domain is not None:
         domain = _to_plain_tensor(domain).to(device).view(-1)
     return images, labels, texture_stats, domain
+
+
+def _summarize_predictions(logits: torch.Tensor, labels: Optional[torch.Tensor] = None) -> Dict[str, object]:
+    with torch.no_grad():
+        probs = torch.softmax(logits.detach().float(), dim=1)
+        preds = probs.argmax(dim=1)
+        conf = probs.max(dim=1).values
+        entropy = (-probs * probs.clamp(min=1e-6).log()).sum(dim=1)
+
+        flat_preds = preds.view(-1)
+        hist = torch.bincount(flat_preds, minlength=logits.size(1)).float()
+        top_k = min(5, hist.numel())
+        if top_k > 0:
+            top_vals, top_idx = torch.topk(hist, k=top_k, largest=True)
+            top_counts = [(int(idx), int(val.item())) for idx, val in zip(top_idx.tolist(), top_vals)]
+        else:
+            top_counts = []
+
+        summary: Dict[str, object] = {
+            "conf_mean": float(conf.mean().item()),
+            "conf_std": float(conf.std(unbiased=False).item()) if conf.numel() > 1 else 0.0,
+            "prob_max": float(probs.max().item()),
+            "prob_min": float(probs.min().item()),
+            "entropy": float(entropy.mean().item()),
+            "top_counts": top_counts,
+            "unique_preds": torch.unique(flat_preds).cpu().tolist(),
+        }
+
+        if labels is not None:
+            valid_mask = labels >= 0
+            if valid_mask.any():
+                valid_preds = preds[valid_mask]
+                valid_labels = labels[valid_mask].clamp(min=0)
+                match_ratio = (valid_preds == valid_labels).float().mean().item()
+                summary["fg_match"] = float(match_ratio)
+                summary["fg_unique_preds"] = torch.unique(valid_preds).cpu().tolist()
+                summary["fg_voxels"] = int(valid_mask.sum().item())
+            else:
+                summary["fg_match"] = float("nan")
+                summary["fg_unique_preds"] = []
+                summary["fg_voxels"] = 0
+
+        return summary
+
+
+def _summarize_domain_logits(domain_logits: Optional[torch.Tensor]) -> Dict[str, float]:
+    if domain_logits is None:
+        return {"mean": 0.0, "std": 0.0, "max": 0.0, "min": 0.0, "margin": 0.0}
+    with torch.no_grad():
+        logits = domain_logits.detach().float()
+        probs = torch.softmax(logits, dim=1)
+        margin = (probs[:, 0] - probs[:, 1]).abs().mean().item() if probs.size(1) >= 2 else 0.0
+        return {
+            "mean": float(logits.mean().item()),
+            "std": float(logits.std(unbiased=False).item()) if logits.numel() > 1 else 0.0,
+            "max": float(logits.max().item()),
+            "min": float(logits.min().item()),
+            "margin": float(margin),
+        }
 
 
 def _alignment_loss(embeddings: torch.Tensor, domain: torch.Tensor) -> torch.Tensor:
@@ -154,6 +224,8 @@ def train_epoch(
     world_size: int,
     use_tqdm: bool = False,
     progress_desc: str | None = None,
+    debug_interval: int = 0,
+    debug_fn: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, float]:
     model.train()
     sums = {
@@ -173,11 +245,11 @@ def train_epoch(
     if use_tqdm:
         desc = progress_desc or "Train"
         progress = tqdm(loader, desc=desc, dynamic_ncols=True, leave=False)
-        iterator = progress
+        iterator = enumerate(progress, start=1)
     else:
-        iterator = loader
+        iterator = enumerate(loader, start=1)
 
-    for batch in iterator:
+    for step, batch in iterator:
         images, labels, texture_stats, domain = _prepare_batch(batch, device)
         optimizer.zero_grad(set_to_none=True)
 
@@ -231,6 +303,55 @@ def train_epoch(
                 loss=f"{sums['total_loss']/batches:.3f}",
                 seg=f"{sums['seg_loss']/batches:.3f}",
                 dom=f"{sums['domain_loss']/batches:.3f}"
+            )
+
+        if debug_interval and debug_fn and step % max(1, debug_interval) == 0:
+            with torch.no_grad():
+                base_model = model.module if hasattr(model, "module") else model
+                grad_norm = 0.0
+                grad_params = [p.grad for p in model.parameters() if p.grad is not None]
+                if grad_params:
+                    grad_norm = torch.norm(
+                        torch.stack([g.detach().float().norm(2) for g in grad_params])
+                    ).item()
+                seg_grad = _module_grad_norm(getattr(base_model, "segmenter", None))
+                domain_grad = _module_grad_norm(getattr(base_model, "domain_classifier", None))
+                texture_grad = _module_grad_norm(getattr(base_model, "texture_projection", None))
+                stats_grad = _module_grad_norm(getattr(base_model, "stats_projector", None))
+                encoder_grad = _module_grad_norm(getattr(base_model, "texture_encoder", None))
+
+                label_min = float(labels.min().item())
+                label_max = float(labels.max().item())
+                unique_labels = torch.unique(labels).to(device="cpu", dtype=torch.long)
+                fg_fraction = float((labels >= 0).float().mean().item())
+                if domain is not None:
+                    domain_cpu = domain.detach().to(device="cpu", dtype=torch.long)
+                    max_bins = int(domain_cpu.max().item()) + 1 if domain_cpu.numel() > 0 else 1
+                    domain_counts = torch.bincount(domain_cpu, minlength=max(1, max_bins))
+                    domain_summary = ", ".join(
+                        f"d{idx}={int(count)}" for idx, count in enumerate(domain_counts.tolist())
+                    )
+                else:
+                    domain_summary = "n/a"
+
+                pred_summary = _summarize_predictions(logits, labels)
+                dom_summary = _summarize_domain_logits(domain_logits if domain is not None else None)
+
+            debug_fn(
+                (
+                    f"step {step:04d}: total={total_loss.item():.4f}, seg={seg_loss.item():.4f}, "
+                    f"domain={domain_loss.item():.4f}, align={align_loss.item():.4f}, "
+                    f"stats_align={stats_align_loss.item():.4f}, dom_acc={domain_acc.item():.3f}, "
+                    f"fg_frac={fg_fraction:.3f}, label_range=[{label_min:.0f},{label_max:.0f}], "
+                    f"unique_labels={sorted(unique_labels.tolist())[:12]}{'...' if unique_labels.numel() > 12 else ''}, "
+                    f"domain_counts={domain_summary}, grad_norm={grad_norm:.3e}, "
+                    f"seg_grad={seg_grad:.3e}, tex_grad={texture_grad:.3e}, stats_grad={stats_grad:.3e}, "
+                    f"enc_grad={encoder_grad:.3e}, dom_grad={domain_grad:.3e}, "
+                    f"pred_conf={pred_summary['conf_mean']:.3f}±{pred_summary['conf_std']:.3f}, "
+                    f"pred_entropy={pred_summary['entropy']:.3f}, prob_range=[{pred_summary['prob_min']:.3f},{pred_summary['prob_max']:.3f}], "
+                    f"fg_match={pred_summary.get('fg_match', float('nan')):.3f}, "
+                    f"top_preds={pred_summary['top_counts']}, dom_logits={dom_summary}"
+                )
             )
 
     if progress is not None:
@@ -309,6 +430,8 @@ def validate(
     foreground_only: bool,
     use_tqdm: bool = False,
     progress_desc: str | None = None,
+    debug_batches: int = 0,
+    debug_fn: Optional[Callable[[str], None]] = None,
 ) -> Tuple[float, float]:
     model.eval()
     num_batches = 0
@@ -327,11 +450,11 @@ def validate(
     if use_tqdm:
         desc = progress_desc or "Validation"
         progress = tqdm(loader, desc=desc, dynamic_ncols=True, leave=False)
-        iterator = progress
+        iterator = enumerate(progress, start=1)
     else:
-        iterator = loader
+        iterator = enumerate(loader, start=1)
 
-    for batch in iterator:
+    for step, batch in iterator:
         images, labels, texture_stats, domain = _prepare_batch(batch, device)
 
         with torch.cuda.amp.autocast(enabled=amp):
@@ -356,6 +479,25 @@ def validate(
             processed = max(1.0, num_batches)
             avg_loss = val_loss / processed
             progress.set_postfix(loss=f"{avg_loss:.3f}")
+
+        if debug_fn and step <= max(0, debug_batches):
+            with torch.no_grad():
+                label_min = float(labels.min().item())
+                label_max = float(labels.max().item())
+                unique_labels = torch.unique(labels).to(device="cpu", dtype=torch.long)
+                fg_fraction = float((labels >= 0).float().mean().item())
+                pred_summary = _summarize_predictions(logits, labels)
+            debug_fn(
+                (
+                    f"val-step {step:03d}: loss={loss.item():.4f}, fg_frac={fg_fraction:.3f}, "
+                    f"label_range=[{label_min:.0f},{label_max:.0f}], "
+                    f"unique_labels={sorted(unique_labels.tolist())[:12]}"
+                    f"{'...' if unique_labels.numel() > 12 else ''}, "
+                    f"pred_conf={pred_summary['conf_mean']:.3f}±{pred_summary['conf_std']:.3f}, "
+                    f"pred_entropy={pred_summary['entropy']:.3f}, prob_range=[{pred_summary['prob_min']:.3f},{pred_summary['prob_max']:.3f}], "
+                    f"fg_match={pred_summary.get('fg_match', float('nan')):.3f}, top_preds={pred_summary['top_counts']}"
+                )
+            )
 
     if progress is not None:
         progress.close()
