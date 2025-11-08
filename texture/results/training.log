@@ -1,5 +1,5 @@
-[2025-11-09 07:03:11] Starting texture adaptation run
-[2025-11-09 07:03:11] {
+[2025-11-09 09:03:50] Starting texture adaptation run
+[2025-11-09 09:03:50] {
   "source_split_json": "/datasets/work/hb-nhmrc-dhcp/work/liu275/dHCP_split.json",
   "target_split_json": "/datasets/work/hb-nhmrc-dhcp/work/liu275/PPREMOPREBO_split.json",
   "results_dir": "/datasets/work/hb-nhmrc-dhcp/work/liu275/texture/results",
@@ -49,22 +49,32 @@
   "job_time_limit": 115,
   "time_buffer_minutes": 5
 }
-[2025-11-09 07:03:23] Inferred texture feature dimension: 20
-[2025-11-09 07:03:27] Loaded pretrained weights from /datasets/work/hb-nhmrc-dhcp/work/liu275/model_final.pt
-[2025-11-09 07:03:27] Commencing training loop
-[2025-11-09 07:05:29] Epoch 1/200: total_loss=1.2140, seg_loss=1.2140, domain_loss=0.6734, align_loss=0.0000, stats_align_loss=0.0000, domain_acc=0.641, val_loss=1.0443, val_dice=0.0214, domain_w=0.000, align_w=0.000, stats_w=0.000
-[2025-11-09 07:05:31] ✅ New best model saved (dice=0.0214)
-[2025-11-09 07:07:09] Epoch 2/200: total_loss=1.0355, seg_loss=0.9730, domain_loss=0.8934, align_loss=0.0000, stats_align_loss=0.0010, domain_acc=0.325, val_loss=0.8179, val_dice=0.0300, domain_w=0.070, align_w=0.020, stats_w=0.020
-[2025-11-09 07:07:11] ✅ New best model saved (dice=0.0300)
-[2025-11-09 07:08:49] Epoch 3/200: total_loss=1.0496, seg_loss=0.9441, domain_loss=0.7535, align_loss=0.0000, stats_align_loss=0.0011, domain_acc=0.466, val_loss=0.7729, val_dice=0.0316, domain_w=0.140, align_w=0.040, stats_w=0.040
-[2025-11-09 07:08:51] ✅ New best model saved (dice=0.0316)
-[2025-11-09 07:10:29] Epoch 4/200: total_loss=1.0746, seg_loss=0.9242, domain_loss=0.7155, align_loss=0.0005, stats_align_loss=0.0011, domain_acc=0.567, val_loss=0.7460, val_dice=0.0312, domain_w=0.210, align_w=0.060, stats_w=0.060
-[2025-11-09 07:12:08] Epoch 5/200: total_loss=1.1208, seg_loss=0.9169, domain_loss=0.7279, align_loss=0.0006, stats_align_loss=0.0010, domain_acc=0.445, val_loss=0.9119, val_dice=0.0219, domain_w=0.280, align_w=0.080, stats_w=0.080
-[2025-11-09 07:13:47] Epoch 6/200: total_loss=1.1454, seg_loss=0.8997, domain_loss=0.7016, align_loss=0.0006, stats_align_loss=0.0011, domain_acc=0.550, val_loss=0.7225, val_dice=0.0319, domain_w=0.350, align_w=0.100, stats_w=0.100
-[2025-11-09 07:13:49] ✅ New best model saved (dice=0.0319)
-[2025-11-09 07:15:27] Epoch 7/200: total_loss=1.1551, seg_loss=0.8843, domain_loss=0.6443, align_loss=0.0004, stats_align_loss=0.0009, domain_acc=0.714, val_loss=0.7238, val_dice=0.0323, domain_w=0.420, align_w=0.120, stats_w=0.120
-[2025-11-09 07:15:28] ✅ New best model saved (dice=0.0323)
-[2025-11-09 07:17:07] Epoch 8/200: total_loss=1.2014, seg_loss=0.8824, domain_loss=0.6507, align_loss=0.0005, stats_align_loss=0.0010, domain_acc=0.728, val_loss=0.9418, val_dice=0.0206, domain_w=0.490, align_w=0.140, stats_w=0.140
-[2025-11-09 07:18:45] Epoch 9/200: total_loss=1.2267, seg_loss=0.8540, domain_loss=0.6651, align_loss=0.0005, stats_align_loss=0.0010, domain_acc=0.729, val_loss=0.8982, val_dice=0.0217, domain_w=0.560, align_w=0.160, stats_w=0.160
-[2025-11-09 07:20:24] Epoch 10/200: total_loss=1.2849, seg_loss=0.8854, domain_loss=0.6336, align_loss=0.0004, stats_align_loss=0.0010, domain_acc=0.728, val_loss=0.7806, val_dice=0.0271, domain_w=0.630, align_w=0.180, stats_w=0.180
-[2025-11-09 07:22:04] Epoch 11/200: total_loss=1.2990, seg_loss=0.8508, domain_loss=0.6398, align_loss=0.0006, stats_align_loss=0.0011, domain_acc=0.728, val_loss=0.8146, val_dice=0.0254, domain_w=0.700, align_w=0.200, stats_w=0.200
+[2025-11-09 09:04:03] Inferred texture feature dimension: 20
+[2025-11-09 09:04:06] Loaded pretrained weights from /datasets/work/hb-nhmrc-dhcp/work/liu275/model_final.pt
+[2025-11-09 09:04:06] Commencing training loop
+[2025-11-09 09:05:52] Epoch 1/200: total_loss=1.2140, seg_loss=1.2140, domain_loss=0.6734, align_loss=0.0000, stats_align_loss=0.0000, domain_acc=0.641, val_loss=1.0443, val_dice=0.0214, domain_w=0.000, align_w=0.000, stats_w=0.000
+[2025-11-09 09:05:53] ✅ New best model saved (dice=0.0214)
+[2025-11-09 09:07:33] Epoch 2/200: total_loss=1.0355, seg_loss=0.9730, domain_loss=0.8934, align_loss=0.0000, stats_align_loss=0.0010, domain_acc=0.325, val_loss=0.8179, val_dice=0.0300, domain_w=0.070, align_w=0.020, stats_w=0.020
+[2025-11-09 09:07:34] ✅ New best model saved (dice=0.0300)
+[2025-11-09 09:09:14] Epoch 3/200: total_loss=1.0496, seg_loss=0.9441, domain_loss=0.7535, align_loss=0.0000, stats_align_loss=0.0011, domain_acc=0.466, val_loss=0.7729, val_dice=0.0316, domain_w=0.140, align_w=0.040, stats_w=0.040
+[2025-11-09 09:09:15] ✅ New best model saved (dice=0.0316)
+[2025-11-09 09:10:55] Epoch 4/200: total_loss=1.0746, seg_loss=0.9242, domain_loss=0.7155, align_loss=0.0005, stats_align_loss=0.0011, domain_acc=0.567, val_loss=0.7460, val_dice=0.0312, domain_w=0.210, align_w=0.060, stats_w=0.060
+[2025-11-09 09:12:35] Epoch 5/200: total_loss=1.1208, seg_loss=0.9169, domain_loss=0.7279, align_loss=0.0006, stats_align_loss=0.0010, domain_acc=0.445, val_loss=0.9119, val_dice=0.0219, domain_w=0.280, align_w=0.080, stats_w=0.080
+[2025-11-09 09:14:15] Epoch 6/200: total_loss=1.1454, seg_loss=0.8997, domain_loss=0.7016, align_loss=0.0006, stats_align_loss=0.0011, domain_acc=0.550, val_loss=0.7225, val_dice=0.0319, domain_w=0.350, align_w=0.100, stats_w=0.100
+[2025-11-09 09:14:16] ✅ New best model saved (dice=0.0319)
+[2025-11-09 09:15:55] Epoch 7/200: total_loss=1.1551, seg_loss=0.8843, domain_loss=0.6443, align_loss=0.0004, stats_align_loss=0.0009, domain_acc=0.714, val_loss=0.7238, val_dice=0.0323, domain_w=0.420, align_w=0.120, stats_w=0.120
+[2025-11-09 09:15:57] ✅ New best model saved (dice=0.0323)
+[2025-11-09 09:17:37] Epoch 8/200: total_loss=1.2014, seg_loss=0.8824, domain_loss=0.6507, align_loss=0.0005, stats_align_loss=0.0010, domain_acc=0.728, val_loss=0.9418, val_dice=0.0206, domain_w=0.490, align_w=0.140, stats_w=0.140
+[2025-11-09 09:19:17] Epoch 9/200: total_loss=1.2267, seg_loss=0.8540, domain_loss=0.6651, align_loss=0.0005, stats_align_loss=0.0010, domain_acc=0.729, val_loss=0.8982, val_dice=0.0217, domain_w=0.560, align_w=0.160, stats_w=0.160
+[2025-11-09 09:20:56] Epoch 10/200: total_loss=1.2849, seg_loss=0.8854, domain_loss=0.6336, align_loss=0.0004, stats_align_loss=0.0010, domain_acc=0.728, val_loss=0.7806, val_dice=0.0271, domain_w=0.630, align_w=0.180, stats_w=0.180
+[2025-11-09 09:22:38] Epoch 11/200: total_loss=1.2990, seg_loss=0.8508, domain_loss=0.6398, align_loss=0.0006, stats_align_loss=0.0011, domain_acc=0.728, val_loss=0.8146, val_dice=0.0254, domain_w=0.700, align_w=0.200, stats_w=0.200
+[2025-11-09 09:24:17] Epoch 12/200: total_loss=1.2915, seg_loss=0.8648, domain_loss=0.6092, align_loss=0.0003, stats_align_loss=0.0010, domain_acc=0.728, val_loss=0.8998, val_dice=0.0191, domain_w=0.700, align_w=0.200, stats_w=0.200
+[2025-11-09 09:25:57] Epoch 13/200: total_loss=1.2977, seg_loss=0.8675, domain_loss=0.6142, align_loss=0.0007, stats_align_loss=0.0010, domain_acc=0.727, val_loss=0.8245, val_dice=0.0248, domain_w=0.700, align_w=0.200, stats_w=0.200
+[2025-11-09 09:27:35] Epoch 14/200: total_loss=1.2848, seg_loss=0.8492, domain_loss=0.6218, align_loss=0.0005, stats_align_loss=0.0012, domain_acc=0.727, val_loss=0.7426, val_dice=0.0268, domain_w=0.700, align_w=0.200, stats_w=0.200
+[2025-11-09 09:29:15] Epoch 15/200: total_loss=1.2762, seg_loss=0.8495, domain_loss=0.6091, align_loss=0.0004, stats_align_loss=0.0011, domain_acc=0.728, val_loss=0.7423, val_dice=0.0269, domain_w=0.700, align_w=0.200, stats_w=0.200
+[2025-11-09 09:30:55] Epoch 16/200: total_loss=1.2852, seg_loss=0.8395, domain_loss=0.6361, align_loss=0.0008, stats_align_loss=0.0011, domain_acc=0.727, val_loss=0.9781, val_dice=0.0174, domain_w=0.700, align_w=0.200, stats_w=0.200
+[2025-11-09 09:32:35] Epoch 17/200: total_loss=1.2476, seg_loss=0.8132, domain_loss=0.6201, align_loss=0.0006, stats_align_loss=0.0011, domain_acc=0.728, val_loss=0.8529, val_dice=0.0230, domain_w=0.700, align_w=0.200, stats_w=0.200
+[2025-11-09 09:34:14] Epoch 18/200: total_loss=1.2506, seg_loss=0.8250, domain_loss=0.6075, align_loss=0.0003, stats_align_loss=0.0011, domain_acc=0.728, val_loss=0.6333, val_dice=0.0348, domain_w=0.700, align_w=0.200, stats_w=0.200
+[2025-11-09 09:34:16] ✅ New best model saved (dice=0.0348)
+[2025-11-09 09:35:55] Epoch 19/200: total_loss=1.2596, seg_loss=0.8120, domain_loss=0.6390, align_loss=0.0007, stats_align_loss=0.0012, domain_acc=0.728, val_loss=0.6985, val_dice=0.0328, domain_w=0.700, align_w=0.200, stats_w=0.200
+[2025-11-09 09:37:35] Epoch 20/200: total_loss=1.2461, seg_loss=0.8160, domain_loss=0.6140, align_loss=0.0004, stats_align_loss=0.0010, domain_acc=0.728, val_loss=0.7769, val_dice=0.0271, domain_w=0.700, align_w=0.200, stats_w=0.200
