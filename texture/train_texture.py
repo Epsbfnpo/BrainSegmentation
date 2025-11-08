@@ -661,6 +661,13 @@ def main() -> None:
         _log_message(log_path, "Commencing training loop", is_main=is_main)
         debug("entered training loop")
 
+        base_model_ref = model.module if hasattr(model, "module") else model
+        prev_seg_summary = _summarize_module(getattr(base_model_ref, "segmenter", base_model_ref))
+        prev_domain_summary = _summarize_module(getattr(base_model_ref, "domain_classifier", base_model_ref))
+        prev_texture_summary = _summarize_module(getattr(base_model_ref, "texture_projection", base_model_ref))
+        prev_stats_summary = _summarize_module(getattr(base_model_ref, "stats_projector", base_model_ref))
+        prev_encoder_summary = _summarize_module(getattr(base_model_ref, "texture_encoder", base_model_ref))
+
         exit_reason = "completed"
         for epoch in range(start_epoch, args.epochs + 1):
             current_epoch = epoch
@@ -729,6 +736,29 @@ def main() -> None:
                         train_stats["num_batches"],
                     )
                 )
+
+                base_model_ref = model.module if hasattr(model, "module") else model
+                seg_summary = _summarize_module(getattr(base_model_ref, "segmenter", base_model_ref))
+                domain_summary = _summarize_module(getattr(base_model_ref, "domain_classifier", base_model_ref))
+                texture_summary = _summarize_module(getattr(base_model_ref, "texture_projection", base_model_ref))
+                stats_summary = _summarize_module(getattr(base_model_ref, "stats_projector", base_model_ref))
+                encoder_summary = _summarize_module(getattr(base_model_ref, "texture_encoder", base_model_ref))
+
+                debug(
+                    (
+                        f"epoch {epoch} parameter stats -> seg_rms={seg_summary['rms']:.4e} (Δ{seg_summary['rms'] - prev_seg_summary['rms']:.2e}), "
+                        f"domain_rms={domain_summary['rms']:.4e} (Δ{domain_summary['rms'] - prev_domain_summary['rms']:.2e}), "
+                        f"texproj_rms={texture_summary['rms']:.4e} (Δ{texture_summary['rms'] - prev_texture_summary['rms']:.2e}), "
+                        f"statsproj_rms={stats_summary['rms']:.4e} (Δ{stats_summary['rms'] - prev_stats_summary['rms']:.2e}), "
+                        f"encoder_rms={encoder_summary['rms']:.4e} (Δ{encoder_summary['rms'] - prev_encoder_summary['rms']:.2e})"
+                    )
+                )
+
+                prev_seg_summary = seg_summary
+                prev_domain_summary = domain_summary
+                prev_texture_summary = texture_summary
+                prev_stats_summary = stats_summary
+                prev_encoder_summary = encoder_summary
 
             debug("checking should_stop")
             should_stop = global_decision(time_manager.should_stop() if is_main else None)
