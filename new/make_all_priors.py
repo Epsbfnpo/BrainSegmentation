@@ -210,6 +210,10 @@ def generate_priors(split_json: str,
                     adjacency_norm: str,
                     rmask_policy: str,
                     rmask_arg: float,
+                    required_quantile: float,
+                    forbidden_quantile: float,
+                    min_required_freq: float,
+                    max_forbidden_freq: float,
                     sdf_chunk_size: int) -> None:
     out_path = Path(out_dir)
     ensure_dir(out_path)
@@ -317,6 +321,38 @@ def generate_priors(split_json: str,
         with open(out_path / "R_meta.json", "w") as f:
             json.dump({"policy": rmask_policy, "arg": rmask_arg}, f, indent=2)
 
+        freq_vals = aggregated[aggregated > 0]
+        rule_payload = {
+            "required": [],
+            "forbidden": [],
+            "meta": {
+                "required_quantile": float(required_quantile),
+                "forbidden_quantile": float(forbidden_quantile),
+                "min_required_freq": float(min_required_freq),
+                "max_forbidden_freq": float(max_forbidden_freq),
+            },
+        }
+        if freq_vals.size > 0:
+            req_thr = max(min_required_freq, float(np.quantile(freq_vals, required_quantile)))
+            forb_thr = min(max_forbidden_freq, float(np.quantile(freq_vals, forbidden_quantile)))
+            required_edges = []
+            forbidden_edges = []
+            for i in range(NUM_CLASSES):
+                for j in range(NUM_CLASSES):
+                    if i == j:
+                        continue
+                    val = float(aggregated[i, j])
+                    if val >= req_thr:
+                        required_edges.append([int(i), int(j)])
+                    elif val <= forb_thr:
+                        forbidden_edges.append([int(i), int(j)])
+            rule_payload["required"] = required_edges
+            rule_payload["forbidden"] = forbidden_edges
+        else:
+            rule_payload["issues"] = "no positive adjacency frequency; rules skipped"
+        with open(out_path / "structural_rules.json", "w") as f:
+            json.dump(rule_payload, f, indent=2)
+
     if include_sdf:
         tmp_dir = Path(tempfile.mkdtemp(prefix="sdf_shards_"))
         try:
@@ -405,6 +441,14 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--rmask-policy", type=str, choices=["row-topk", "global-quant"], default="row-topk")
     parser.add_argument("--rmask-arg", type=float, default=0.10)
     parser.add_argument("--sdf-chunk-size", type=int, default=3)
+    parser.add_argument("--required-quantile", type=float, default=0.90,
+                        help="Quantile threshold (0-1) for marking required edges")
+    parser.add_argument("--forbidden-quantile", type=float, default=0.02,
+                        help="Quantile threshold (0-1) for marking forbidden edges")
+    parser.add_argument("--min-required-freq", type=float, default=0.15,
+                        help="Minimum aggregated frequency for required edges")
+    parser.add_argument("--max-forbidden-freq", type=float, default=0.005,
+                        help="Maximum aggregated frequency for forbidden edges")
     args = parser.parse_args(argv)
     return args
 
@@ -428,6 +472,10 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         adjacency_norm=str(args.norm),
         rmask_policy=str(args.rmask_policy),
         rmask_arg=float(args.rmask_arg),
+        required_quantile=float(args.required_quantile),
+        forbidden_quantile=float(args.forbidden_quantile),
+        min_required_freq=float(args.min_required_freq),
+        max_forbidden_freq=float(args.max_forbidden_freq),
         sdf_chunk_size=int(args.sdf_chunk_size),
     )
 

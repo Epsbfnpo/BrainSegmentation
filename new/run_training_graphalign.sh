@@ -24,14 +24,25 @@ LAMBDA_VOLUME=${LAMBDA_VOLUME:-0.2}
 LAMBDA_SHAPE=${LAMBDA_SHAPE:-0.2}
 LAMBDA_EDGE=${LAMBDA_EDGE:-0.1}
 LAMBDA_SPEC=${LAMBDA_SPEC:-0.05}
+LAMBDA_REQUIRED=${LAMBDA_REQUIRED:-0.05}
+LAMBDA_FORBIDDEN=${LAMBDA_FORBIDDEN:-0.05}
+LAMBDA_SYM=${LAMBDA_SYM:-0.02}
+LAMBDA_DYN=${LAMBDA_DYN:-0.2}
+DYN_START_EPOCH=${DYN_START_EPOCH:-60}
+DYN_RAMP_EPOCHS=${DYN_RAMP_EPOCHS:-40}
+DYN_MISMATCH_REF=${DYN_MISMATCH_REF:-0.08}
+DYN_MAX_SCALE=${DYN_MAX_SCALE:-3.0}
+AGE_RELIABILITY_MIN=${AGE_RELIABILITY_MIN:-0.3}
+AGE_RELIABILITY_POW=${AGE_RELIABILITY_POW:-0.5}
 
 # ---------- Derived paths ----------
 VOLUME_STATS="${TARGET_PRIOR_ROOT}/volume_stats.json"
 SDF_TEMPLATES="${TARGET_PRIOR_ROOT}/sdf_templates.npz"
 ADJACENCY_PRIOR="${TARGET_PRIOR_ROOT}/adjacency_prior.npz"
 RESTRICTED_MASK="${TARGET_PRIOR_ROOT}/R_mask.npy"
+STRUCTURAL_RULES="${TARGET_PRIOR_ROOT}/structural_rules.json"
 
-for required in "${TARGET_SPLIT_JSON}" "${VOLUME_STATS}" "${SDF_TEMPLATES}" "${ADJACENCY_PRIOR}"; do
+for required in "${TARGET_SPLIT_JSON}" "${VOLUME_STATS}" "${SDF_TEMPLATES}" "${ADJACENCY_PRIOR}" "${STRUCTURAL_RULES}"; do
     if [ ! -f "$required" ]; then
         echo "Missing required file: $required" >&2
         exit 1
@@ -58,10 +69,24 @@ CMD=(
     --lambda_shape "${LAMBDA_SHAPE}"
     --lambda_edge "${LAMBDA_EDGE}"
     --lambda_spec "${LAMBDA_SPEC}"
+    --lambda_required "${LAMBDA_REQUIRED}"
+    --lambda_forbidden "${LAMBDA_FORBIDDEN}"
+    --lambda_symmetry "${LAMBDA_SYM}"
+    --lambda_dyn "${LAMBDA_DYN}"
+    --dyn_start_epoch "${DYN_START_EPOCH}"
+    --dyn_ramp_epochs "${DYN_RAMP_EPOCHS}"
+    --dyn_mismatch_ref "${DYN_MISMATCH_REF}"
+    --dyn_max_scale "${DYN_MAX_SCALE}"
+    --age_reliability_min "${AGE_RELIABILITY_MIN}"
+    --age_reliability_pow "${AGE_RELIABILITY_POW}"
 )
 
 if [ -f "${RESTRICTED_MASK}" ]; then
     CMD+=(--restricted_mask "${RESTRICTED_MASK}")
+fi
+
+if [ -f "${STRUCTURAL_RULES}" ]; then
+    CMD+=(--structural_rules "${STRUCTURAL_RULES}")
 fi
 
 if [ -n "${PRETRAINED_CHECKPOINT}" ]; then

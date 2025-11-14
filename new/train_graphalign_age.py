@@ -182,6 +182,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lambda_spec", type=float, default=0.05)
     parser.add_argument("--sdf_temperature", type=float, default=4.0)
     parser.add_argument("--prior_warmup_epochs", type=int, default=10)
+    parser.add_argument("--structural_rules", type=str, default=None)
+    parser.add_argument("--lambda_required", type=float, default=0.05)
+    parser.add_argument("--lambda_forbidden", type=float, default=0.05)
+    parser.add_argument("--lambda_symmetry", type=float, default=0.02)
+    parser.add_argument("--lambda_dyn", type=float, default=0.2)
+    parser.add_argument("--dyn_start_epoch", type=int, default=60)
+    parser.add_argument("--dyn_ramp_epochs", type=int, default=40)
+    parser.add_argument("--dyn_mismatch_ref", type=float, default=0.08)
+    parser.add_argument("--dyn_max_scale", type=float, default=3.0)
+    parser.add_argument("--age_reliability_min", type=float, default=0.3)
+    parser.add_argument("--age_reliability_pow", type=float, default=0.5)
     parser.add_argument("--dist_timeout", type=int, default=180)
     parser.add_argument("--use_amp", dest="use_amp", action="store_true", default=True)
     parser.add_argument("--no_amp", dest="use_amp", action="store_false")
@@ -262,12 +273,24 @@ def main():
         sdf_templates_path=args.sdf_templates,
         adjacency_prior_path=args.adjacency_prior,
         r_mask_path=args.restricted_mask,
+        structural_rules_path=args.structural_rules,
+        lr_pairs_path=args.laterality_pairs_json,
         lambda_volume=args.lambda_volume,
         lambda_shape=args.lambda_shape,
         lambda_edge=args.lambda_edge,
         lambda_spec=args.lambda_spec,
+        lambda_required=args.lambda_required,
+        lambda_forbidden=args.lambda_forbidden,
+        lambda_symmetry=args.lambda_symmetry,
         sdf_temperature=args.sdf_temperature,
         warmup_epochs=args.prior_warmup_epochs,
+        lambda_dyn=args.lambda_dyn,
+        dyn_start_epoch=args.dyn_start_epoch,
+        dyn_ramp_epochs=args.dyn_ramp_epochs,
+        dyn_mismatch_ref=args.dyn_mismatch_ref,
+        dyn_max_scale=args.dyn_max_scale,
+        age_reliability_min=args.age_reliability_min,
+        age_reliability_pow=args.age_reliability_pow,
         debug=args.debug_mode,
         debug_max_batches=args.prior_debug_batches,
     ).to(device)
@@ -332,6 +355,9 @@ def main():
             print(
                 f"Epoch {epoch:03d}: loss={train_metrics['loss']:.4f} seg={train_metrics['seg']:.4f} "
                 f"prior={train_metrics['prior']:.4f} warmup={train_metrics.get('warmup', 1.0):.3f} "
+                f"edge={train_metrics.get('edge', 0.0):.4f} spec={train_metrics.get('spectral', 0.0):.4f} "
+                f"req={train_metrics.get('required', 0.0):.4f} forb={train_metrics.get('forbidden', 0.0):.4f} "
+                f"sym={train_metrics.get('symmetry', 0.0):.4f} dyn={train_metrics.get('dyn_lambda', 1.0):.3f} "
                 f"grad={train_metrics.get('grad_norm', 0.0):.3f} time={duration:.1f}s",
                 flush=True,
             )
@@ -354,11 +380,33 @@ def main():
                 debug_mode=args.debug_mode,
                 debug_step_limit=args.debug_val_limit,
                 is_main=is_main,
+                prior_loss=prior_loss,
             )
             if is_main:
-                print(f"  Validation dice={val_metrics['dice']:.4f}")
+                extra_msgs = []
+                adj_errors = val_metrics.get("adjacency_errors")
+                if adj_errors:
+                    extra_msgs.append(f"adj_mae={adj_errors.get('mean_adj_error', 0.0):.4f}")
+                    extra_msgs.append(f"spec={adj_errors.get('spectral_distance', 0.0):.4f}")
+                struct = val_metrics.get("structural_violations")
+                if struct:
+                    extra_msgs.append(f"req_miss={struct.get('required_missing', 0.0):.2f}")
+                    extra_msgs.append(f"forb={struct.get('forbidden_present', 0.0):.2f}")
+                sym_scores = val_metrics.get("symmetry_scores")
+                if sym_scores:
+                    extra_msgs.append(f"sym={sym_scores[0]:.4f}")
+                msg_extra = " ".join(extra_msgs)
+                print(f"  Validation dice={val_metrics['dice']:.4f} {msg_extra}".strip())
                 if writer is not None:
                     writer.add_scalar("val/dice", val_metrics["dice"], epoch)
+                    if adj_errors:
+                        writer.add_scalar("val/adjacency_mae", adj_errors.get("mean_adj_error", 0.0), epoch)
+                        writer.add_scalar("val/spectral_gap", adj_errors.get("spectral_distance", 0.0), epoch)
+                    if struct:
+                        writer.add_scalar("val/required_missing", struct.get("required_missing", 0.0), epoch)
+                        writer.add_scalar("val/forbidden_present", struct.get("forbidden_present", 0.0), epoch)
+                    if sym_scores:
+                        writer.add_scalar("val/symmetry_score", sym_scores[0], epoch)
                 if val_metrics["dice"] > best_dice:
                     best_dice = val_metrics["dice"]
                     best_path = results_dir / "best_model.pt"

@@ -132,8 +132,19 @@ def train_epoch(model: nn.Module,
         "shape": 0.0,
         "edge": 0.0,
         "spectral": 0.0,
+        "required": 0.0,
+        "forbidden": 0.0,
+        "symmetry": 0.0,
         "warmup": 0.0,
         "grad_norm": 0.0,
+        "dyn_lambda": 0.0,
+        "qap_mismatch": 0.0,
+        "age_weight": 0.0,
+        "adj_mae": 0.0,
+        "spec_gap": 0.0,
+        "symmetry_gap": 0.0,
+        "required_missing": 0.0,
+        "forbidden_present": 0.0,
     }
     steps = 0
     debug_step_limit = max(1, int(debug_step_limit))
@@ -182,7 +193,18 @@ def train_epoch(model: nn.Module,
         running["shape"] += prior_dict.get("shape", torch.zeros(1, device=device)).detach().item()
         running["edge"] += prior_dict.get("edge", torch.zeros(1, device=device)).detach().item()
         running["spectral"] += prior_dict.get("spectral", torch.zeros(1, device=device)).detach().item()
+        running["required"] += prior_dict.get("required", torch.zeros(1, device=device)).detach().item()
+        running["forbidden"] += prior_dict.get("forbidden", torch.zeros(1, device=device)).detach().item()
+        running["symmetry"] += prior_dict.get("symmetry", torch.zeros(1, device=device)).detach().item()
         running["warmup"] += float(prior_dict.get("warmup", torch.tensor(1.0, device=device)).detach().item())
+        running["dyn_lambda"] += float(prior_dict.get("dyn_lambda", torch.tensor(1.0, device=device)).detach().item())
+        running["qap_mismatch"] += float(prior_dict.get("qap_mismatch", torch.tensor(0.0, device=device)).detach().item())
+        running["age_weight"] += float(prior_dict.get("age_weight", torch.tensor(1.0, device=device)).detach().item())
+        running["adj_mae"] += float(prior_dict.get("adj_mae", torch.tensor(0.0, device=device)).detach().item())
+        running["spec_gap"] += float(prior_dict.get("spec_gap", torch.tensor(0.0, device=device)).detach().item())
+        running["symmetry_gap"] += float(prior_dict.get("symmetry_gap", torch.tensor(0.0, device=device)).detach().item())
+        running["required_missing"] += float(prior_dict.get("required_missing", torch.tensor(0.0, device=device)).detach().item())
+        running["forbidden_present"] += float(prior_dict.get("forbidden_present", torch.tensor(0.0, device=device)).detach().item())
         running["grad_norm"] += float(grad_norm.detach().item() if isinstance(grad_norm, torch.Tensor) else grad_norm)
         steps += 1
 
@@ -201,6 +223,14 @@ def train_epoch(model: nn.Module,
             writer.add_scalar("train/prior_loss", prior_dict["total"].item(), global_step)
             writer.add_scalar("train/warmup", prior_dict.get("warmup", torch.tensor(1.0)).item(), global_step)
             writer.add_scalar("train/grad_norm", running["grad_norm"] / steps, global_step)
+            writer.add_scalar("train/prior_volume", prior_dict.get("volume", torch.zeros(1, device=device)).item(), global_step)
+            writer.add_scalar("train/prior_edge", prior_dict.get("edge", torch.zeros(1, device=device)).item(), global_step)
+            writer.add_scalar("train/prior_spectral", prior_dict.get("spectral", torch.zeros(1, device=device)).item(), global_step)
+            writer.add_scalar("train/prior_required", prior_dict.get("required", torch.zeros(1, device=device)).item(), global_step)
+            writer.add_scalar("train/prior_forbidden", prior_dict.get("forbidden", torch.zeros(1, device=device)).item(), global_step)
+            writer.add_scalar("train/prior_symmetry", prior_dict.get("symmetry", torch.zeros(1, device=device)).item(), global_step)
+            writer.add_scalar("train/prior_dyn_lambda", prior_dict.get("dyn_lambda", torch.tensor(1.0, device=device)).item(), global_step)
+            writer.add_scalar("train/prior_qap", prior_dict.get("qap_mismatch", torch.tensor(0.0, device=device)).item(), global_step)
 
         global_step += 1
 
@@ -229,7 +259,8 @@ def validate_epoch(model: nn.Module,
                    eval_scales: Optional[Sequence[float]] = None,
                    debug_mode: bool = False,
                    debug_step_limit: int = 1,
-                   is_main: bool = True) -> Dict[str, float]:
+                   is_main: bool = True,
+                   prior_loss=None) -> Dict[str, float]:
     model.eval()
     dice_metric = DiceMetric(include_background=not foreground_only, reduction="mean_batch")
     post_pred = AsDiscrete(argmax=True, to_onehot=True, num_classes=num_classes)
@@ -237,6 +268,18 @@ def validate_epoch(model: nn.Module,
 
     steps = 0
     debug_step_limit = max(1, int(debug_step_limit))
+    struct_totals = {
+        "adj_mae": 0.0,
+        "spec_gap": 0.0,
+        "symmetry_gap": 0.0,
+        "required_missing": 0.0,
+        "forbidden_present": 0.0,
+        "dyn_lambda": 0.0,
+        "qap_mismatch": 0.0,
+        "age_weight": 0.0,
+    }
+    struct_steps = 0
+
     with torch.no_grad():
         for step, batch in enumerate(loader):
             images = batch["image"].to(device)
@@ -287,6 +330,13 @@ def validate_epoch(model: nn.Module,
             dice_metric(y_pred=preds, y=target)
             steps += 1
 
+            if prior_loss is not None and "age" in batch:
+                ages = batch["age"].to(device).view(-1)
+                diag = prior_loss.diagnostics(probs, ages, apply_warmup=False)
+                struct_steps += 1
+                for key in struct_totals:
+                    struct_totals[key] += float(diag.get(key, 0.0))
+
             if debug_mode and is_main and step < debug_step_limit:
                 partial = dice_metric.aggregate().detach().cpu().numpy()
                 print(f"[Val][Step {step:03d}] running dice mean={partial.mean():.4f}", flush=True)
@@ -295,4 +345,19 @@ def validate_epoch(model: nn.Module,
     dice_metric.reset()
     dice = float(reduce_mean(dice))
 
-    return {"dice": dice, "steps": steps}
+    result = {"dice": dice, "steps": steps}
+    if struct_steps > 0:
+        avg = {k: v / struct_steps for k, v in struct_totals.items()}
+        result["structural_violations"] = {
+            "required_missing": avg["required_missing"],
+            "forbidden_present": avg["forbidden_present"],
+        }
+        result["adjacency_errors"] = {
+            "mean_adj_error": avg["adj_mae"],
+            "spectral_distance": avg["spec_gap"],
+        }
+        result["symmetry_scores"] = [max(0.0, 1.0 - avg["symmetry_gap"])]
+        result["prior_dyn_lambda"] = avg["dyn_lambda"]
+        result["prior_qap_mismatch"] = avg["qap_mismatch"]
+        result["prior_age_weight"] = avg["age_weight"]
+    return result
