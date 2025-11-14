@@ -20,7 +20,9 @@ from torch.utils.tensorboard import SummaryWriter
 from age_aware_modules import SimplifiedDAUnetModule
 from data_loader_age_aware import get_target_dataloaders
 from graph_prior_loss import AgeConditionedGraphPriorLoss
-from trainer_age_aware import CombinedSegmentationLoss, train_epoch, validate_epoch
+from prior_validator import check_prior_directory
+from trainer_age_aware import (CombinedSegmentationLoss, ExponentialMovingAverage,
+                               train_epoch, validate_epoch)
 
 
 def init_distributed(args) -> bool:
@@ -95,7 +97,8 @@ def save_checkpoint(path: Path,
                     scheduler,
                     epoch: int,
                     global_step: int,
-                    best_dice: float) -> None:
+                    best_dice: float,
+                    ema_state: Optional[dict] = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
@@ -105,6 +108,7 @@ def save_checkpoint(path: Path,
             "state_dict": get_model_state(model),
             "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict(),
+            "ema_state_dict": ema_state,
         },
         path,
     )
@@ -125,7 +129,12 @@ def load_checkpoint(path: Path,
     if "scheduler" in payload:
         scheduler.load_state_dict(payload["scheduler"])
 
-    return payload.get("epoch", 0), payload.get("global_step", 0), payload.get("best_dice", 0.0)
+    return (
+        payload.get("epoch", 0),
+        payload.get("global_step", 0),
+        payload.get("best_dice", 0.0),
+        payload.get("ema_state_dict"),
+    )
 
 
 def register_signal_handlers(flag_container: dict, *, is_main: bool) -> None:
@@ -193,6 +202,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dyn_max_scale", type=float, default=3.0)
     parser.add_argument("--age_reliability_min", type=float, default=0.3)
     parser.add_argument("--age_reliability_pow", type=float, default=0.5)
+    parser.add_argument("--lr_min", type=float, default=1e-7)
+    parser.add_argument("--lr_warmup_epochs", type=int, default=20)
+    parser.add_argument("--lr_warmup_start_factor", type=float, default=0.1)
+    parser.add_argument("--grad_accum_steps", type=int, default=1)
+    parser.add_argument("--ema_decay", type=float, default=0.0)
     parser.add_argument("--dist_timeout", type=int, default=180)
     parser.add_argument("--use_amp", dest="use_amp", action="store_true", default=True)
     parser.add_argument("--no_amp", dest="use_amp", action="store_false")
@@ -205,6 +219,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sw_overlap", type=float, default=0.25)
     parser.add_argument("--multi_scale_eval", action="store_true", default=False)
     parser.add_argument("--eval_scales", type=float, nargs="*", default=[1.0])
+    parser.add_argument("--eval_tta", action="store_true", default=False)
+    parser.add_argument("--tta_flip_axes", type=int, nargs="*", default=[0])
     parser.add_argument("--grad_clip", type=float, default=12.0)
     parser.add_argument("--save_interval", type=int, default=20, help="Save checkpoint every N epochs")
     parser.add_argument("--max_keep_ckpt", type=int, default=5)
@@ -215,6 +231,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--debug_val_limit", type=int, default=1)
     parser.add_argument("--prior_debug_batches", type=int, default=2)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--prior_dir", type=str, default=None, help="Directory containing generated priors")
+    parser.add_argument("--precheck_priors", dest="precheck_priors", action="store_true")
+    parser.add_argument("--skip_prior_check", dest="precheck_priors", action="store_false")
+    parser.set_defaults(precheck_priors=True)
     return parser.parse_args()
 
 
@@ -238,6 +258,23 @@ def main():
     if not torch.cuda.is_available():
         args.use_amp = False
 
+    prior_dir = Path(args.prior_dir).resolve() if args.prior_dir else None
+    if prior_dir is None and args.volume_stats:
+        prior_dir = Path(args.volume_stats).resolve().parent
+    if args.precheck_priors and prior_dir is not None:
+        report = None
+        if is_main:
+            report = check_prior_directory(str(prior_dir), expected_num_classes=args.out_channels)
+            for line in report.summary_lines():
+                print(line)
+        prior_ok = torch.tensor([1], device=device)
+        if report is not None and not report.is_ok:
+            prior_ok.fill_(0)
+        if distributed:
+            dist.broadcast(prior_ok, src=0)
+        if int(prior_ok.item()) == 0:
+            raise RuntimeError("Prior validation failed; please fix the reported issues before training")
+
     train_loader, val_loader = get_target_dataloaders(
         args,
         is_distributed=distributed,
@@ -256,8 +293,38 @@ def main():
             find_unused_parameters=False,
         )
 
+    ema_helper: Optional[ExponentialMovingAverage] = None
+    if args.ema_decay > 0.0:
+        if is_main:
+            print(f"📈 EMA enabled with decay={args.ema_decay}")
+        ema_helper = ExponentialMovingAverage(model, decay=args.ema_decay)
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-7)
+
+    warmup_epochs = max(0, int(args.lr_warmup_epochs))
+    if warmup_epochs > 0:
+        warmup = torch.optim.lr_scheduler.LinearLR(
+            optimizer,
+            start_factor=float(args.lr_warmup_start_factor),
+            total_iters=warmup_epochs,
+        )
+        cosine_iters = max(1, args.epochs - warmup_epochs)
+        cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=cosine_iters,
+            eta_min=float(args.lr_min),
+        )
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer,
+            schedulers=[warmup, cosine],
+            milestones=[warmup_epochs],
+        )
+    else:
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=max(1, args.epochs),
+            eta_min=float(args.lr_min),
+        )
 
     loss_fn = CombinedSegmentationLoss(
         num_classes=args.out_channels,
@@ -305,7 +372,7 @@ def main():
     if args.resume:
         resume_path = Path(args.resume)
         if resume_path.exists():
-            resume_epoch, resume_step, resume_best = load_checkpoint(
+            resume_epoch, resume_step, resume_best, ema_state = load_checkpoint(
                 resume_path,
                 model=model,
                 optimizer=optimizer,
@@ -314,6 +381,8 @@ def main():
             start_epoch = resume_epoch + 1
             global_step = resume_step
             best_dice = resume_best
+            if ema_helper is not None and ema_state is not None:
+                ema_helper.load_state_dict(ema_state)
             if is_main:
                 print(f"🔁 Resumed from {resume_path} at epoch {resume_epoch}, global_step {global_step}, best dice {best_dice:.4f}")
         elif is_main:
@@ -340,15 +409,19 @@ def main():
             epoch=epoch,
             use_amp=args.use_amp,
             grad_clip=args.grad_clip,
+            grad_accum_steps=args.grad_accum_steps,
             writer=writer,
             global_step=global_step,
             is_main=is_main,
             log_interval=args.log_interval,
             debug_mode=args.debug_mode,
             debug_step_limit=args.debug_step_limit,
+            ema_helper=ema_helper,
         )
         scheduler.step()
         global_step = int(train_metrics.get("global_step", global_step))
+        current_lr = optimizer.param_groups[0]["lr"]
+        train_metrics["lr"] = current_lr
         duration = time.time() - start_time
 
         if is_main:
@@ -362,9 +435,11 @@ def main():
                 flush=True,
             )
             if writer is not None:
-                writer.add_scalar("train/lr", train_metrics["lr"], epoch)
+                writer.add_scalar("train/lr", current_lr, epoch)
 
         if epoch % args.eval_interval == 0 or epoch == args.epochs:
+            if ema_helper is not None:
+                ema_helper.apply_shadow()
             val_metrics = validate_epoch(
                 model,
                 val_loader,
@@ -377,11 +452,15 @@ def main():
                 sw_overlap=args.sw_overlap,
                 multi_scale=args.multi_scale_eval,
                 eval_scales=args.eval_scales,
+                eval_tta=args.eval_tta,
+                tta_axes=args.tta_flip_axes,
                 debug_mode=args.debug_mode,
                 debug_step_limit=args.debug_val_limit,
                 is_main=is_main,
                 prior_loss=prior_loss,
             )
+            if ema_helper is not None:
+                ema_helper.restore()
             if is_main:
                 extra_msgs = []
                 adj_errors = val_metrics.get("adjacency_errors")
@@ -418,6 +497,7 @@ def main():
                         epoch=epoch,
                         global_step=global_step,
                         best_dice=best_dice,
+                        ema_state=ema_helper.state_dict() if ema_helper is not None else None,
                     )
                     print(f"  ✅ New best checkpoint saved to {best_path}")
 
@@ -431,6 +511,7 @@ def main():
                 epoch=epoch,
                 global_step=global_step,
                 best_dice=best_dice,
+                ema_state=ema_helper.state_dict() if ema_helper is not None else None,
             )
             checkpoint_history.append(ckpt_path)
             while len(checkpoint_history) > args.max_keep_ckpt:
@@ -449,6 +530,7 @@ def main():
                 epoch=epoch,
                 global_step=global_step,
                 best_dice=best_dice,
+                ema_state=ema_helper.state_dict() if ema_helper is not None else None,
             )
             print(f"  💾 Signal-triggered checkpoint saved to {emergency_path}")
             checkpoint_history.append(emergency_path)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import math
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import nibabel as nib
@@ -14,9 +15,71 @@ from monai.transforms import (CenterSpatialCropd, Compose, EnsureChannelFirstd,
                               RandGaussianNoised, RandGaussianSmoothd, RandHistogramShiftd,
                               RandRotated, RandScaleIntensityd, RandShiftIntensityd, RandZoomd,
                               Spacingd, SpatialPadd, Randomizable)
-from torch.utils.data import DistributedSampler, WeightedRandomSampler
+from torch.utils.data import DistributedSampler, WeightedRandomSampler, Sampler
 
 from age_aware_modules import prepare_class_ratios
+
+
+class DistributedWeightedSampler(Sampler[int]):
+    """Weighted sampler compatible with DistributedDataParallel.
+
+    Each replica draws ``num_samples`` indices (with replacement) according to the
+    provided weights. The sampled subsets are disjoint by construction, ensuring
+    that the global sampling distribution matches the requested weights.
+    """
+
+    def __init__(self,
+                 weights: torch.Tensor,
+                 *,
+                 num_replicas: Optional[int] = None,
+                 rank: Optional[int] = None,
+                 replacement: bool = True,
+                 seed: int = 0):
+        if weights.ndim != 1:
+            raise ValueError("weights must be a 1D tensor")
+        if weights.numel() == 0:
+            raise ValueError("weights tensor must be non-empty")
+
+        if num_replicas is None:
+            if not torch.distributed.is_available() or not torch.distributed.is_initialized():
+                raise RuntimeError("num_replicas must be provided when not in a distributed context")
+            num_replicas = torch.distributed.get_world_size()
+        if rank is None:
+            if not torch.distributed.is_available() or not torch.distributed.is_initialized():
+                raise RuntimeError("rank must be provided when not in a distributed context")
+            rank = torch.distributed.get_rank()
+
+        self.weights = weights.to(dtype=torch.double)
+        self.num_samples = int(math.ceil(self.weights.numel() / num_replicas))
+        self.total_size = self.num_samples * num_replicas
+        self.num_replicas = int(num_replicas)
+        self.rank = int(rank)
+        self.replacement = bool(replacement)
+        self.seed = int(seed)
+        self.epoch = 0
+
+        self.generator = torch.Generator(device="cpu")
+
+    def __iter__(self):
+        g = torch.Generator(device="cpu")
+        g.manual_seed(self.seed + self.epoch)
+
+        probs = self.weights.clone()
+        total = float(probs.sum())
+        if total <= 0:
+            probs.fill_(1.0 / probs.numel())
+        else:
+            probs.div_(total)
+
+        indices = torch.multinomial(probs, self.total_size, self.replacement, generator=g)
+        indices = indices.view(self.num_replicas, self.num_samples)
+        yield from indices[self.rank].tolist()
+
+    def __len__(self) -> int:  # pragma: no cover - trivial
+        return self.num_samples
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
 
 
 class ExtractAged(MapTransform):
@@ -384,10 +447,30 @@ def get_target_dataloaders(args,
     sample_weights = _compute_sample_weights(train_items, args, class_ratios=class_ratios, is_main=is_main)
 
     if is_distributed:
-        train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True, drop_last=True)
-        val_sampler = DistributedSampler(val_dataset, num_replicas=world_size, rank=rank, shuffle=False, drop_last=False)
-        if sample_weights is not None and is_main:
-            print("⚠️  Weighted sampling is incompatible with DistributedSampler; falling back to distributed shuffling")
+        if sample_weights is not None:
+            train_sampler = DistributedWeightedSampler(
+                sample_weights,
+                num_replicas=world_size,
+                rank=rank,
+            )
+            if is_main:
+                print("✅ Distributed weighted sampling enabled for target dataset")
+                print(f"   Local samples per replica: {len(train_sampler)}")
+        else:
+            train_sampler = DistributedSampler(
+                train_dataset,
+                num_replicas=world_size,
+                rank=rank,
+                shuffle=True,
+                drop_last=True,
+            )
+        val_sampler = DistributedSampler(
+            val_dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=False,
+            drop_last=False,
+        )
         sample_weights = None
     else:
         if sample_weights is not None:

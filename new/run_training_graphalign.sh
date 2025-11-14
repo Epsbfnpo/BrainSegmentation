@@ -20,6 +20,11 @@ ROI_Z=${ROI_Z:-128}
 FEATURE_SIZE=${FEATURE_SIZE:-48}
 LR=${LR:-5e-5}
 WEIGHT_DECAY=${WEIGHT_DECAY:-1e-5}
+LR_MIN=${LR_MIN:-1e-7}
+LR_WARMUP_EPOCHS=${LR_WARMUP_EPOCHS:-20}
+LR_WARMUP_START=${LR_WARMUP_START:-0.1}
+GRAD_ACCUM_STEPS=${GRAD_ACCUM_STEPS:-1}
+EMA_DECAY=${EMA_DECAY:-0.0}
 LAMBDA_VOLUME=${LAMBDA_VOLUME:-0.2}
 LAMBDA_SHAPE=${LAMBDA_SHAPE:-0.2}
 LAMBDA_EDGE=${LAMBDA_EDGE:-0.1}
@@ -34,6 +39,8 @@ DYN_MISMATCH_REF=${DYN_MISMATCH_REF:-0.08}
 DYN_MAX_SCALE=${DYN_MAX_SCALE:-3.0}
 AGE_RELIABILITY_MIN=${AGE_RELIABILITY_MIN:-0.3}
 AGE_RELIABILITY_POW=${AGE_RELIABILITY_POW:-0.5}
+EVAL_TTA=${EVAL_TTA:-0}
+TTA_AXES=${TTA_AXES:-"0"}
 
 # ---------- Derived paths ----------
 VOLUME_STATS="${TARGET_PRIOR_ROOT}/volume_stats.json"
@@ -61,6 +68,10 @@ CMD=(
     --roi_x "${ROI_X}" --roi_y "${ROI_Y}" --roi_z "${ROI_Z}"
     --feature_size "${FEATURE_SIZE}"
     --lr "${LR}" --weight_decay "${WEIGHT_DECAY}"
+    --lr_min "${LR_MIN}"
+    --lr_warmup_epochs "${LR_WARMUP_EPOCHS}"
+    --lr_warmup_start_factor "${LR_WARMUP_START}"
+    --grad_accum_steps "${GRAD_ACCUM_STEPS}"
     --class_prior_json "${CLASS_PRIOR_JSON}"
     --volume_stats "${VOLUME_STATS}"
     --sdf_templates "${SDF_TEMPLATES}"
@@ -79,6 +90,7 @@ CMD=(
     --dyn_max_scale "${DYN_MAX_SCALE}"
     --age_reliability_min "${AGE_RELIABILITY_MIN}"
     --age_reliability_pow "${AGE_RELIABILITY_POW}"
+    --prior_dir "${TARGET_PRIOR_ROOT}"
 )
 
 if [ -f "${RESTRICTED_MASK}" ]; then
@@ -91,6 +103,18 @@ fi
 
 if [ -n "${PRETRAINED_CHECKPOINT}" ]; then
     CMD+=(--pretrained_checkpoint "${PRETRAINED_CHECKPOINT}")
+fi
+
+if python - <<PY >/dev/null 2>&1; then
+import sys
+sys.exit(0 if float("${EMA_DECAY}") > 0 else 1)
+PY
+then
+    CMD+=(--ema_decay "${EMA_DECAY}")
+fi
+
+if [ "${EVAL_TTA}" -ne 0 ]; then
+    CMD+=(--eval_tta --tta_flip_axes ${TTA_AXES})
 fi
 
 printf 'Running command:\n  %s\n' "${CMD[*]}"
