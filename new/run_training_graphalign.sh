@@ -11,8 +11,8 @@ EPOCHS=${EPOCHS:-400}
 RESULTS_DIR=${RESULTS_DIR:-${REPO_ROOT}/results/target_only}
 TARGET_SPLIT_JSON=${TARGET_SPLIT_JSON:-${REPO_ROOT}/PPREMOPREBO_split.json}
 TARGET_PRIOR_ROOT=${TARGET_PRIOR_ROOT:-${REPO_ROOT}/new/priors/target}
-CLASS_PRIOR_JSON=${CLASS_PRIOR_JSON:-${REPO_ROOT}/PPREMOPREBO_class_prior_foreground.json}
 PRETRAINED_CHECKPOINT=${PRETRAINED_CHECKPOINT:-}
+OUT_CHANNELS=${OUT_CHANNELS:-87}
 
 ROI_X=${ROI_X:-128}
 ROI_Y=${ROI_Y:-128}
@@ -41,6 +41,10 @@ AGE_RELIABILITY_MIN=${AGE_RELIABILITY_MIN:-0.3}
 AGE_RELIABILITY_POW=${AGE_RELIABILITY_POW:-0.5}
 EVAL_TTA=${EVAL_TTA:-0}
 TTA_AXES=${TTA_AXES:-"0"}
+EVAL_MULTI_SCALE=${EVAL_MULTI_SCALE:-0}
+EVAL_SCALES=${EVAL_SCALES:-"1.0"}
+PRECHECK_PRIORS=${PRECHECK_PRIORS:-1}
+LATERALITY_PAIRS=${LATERALITY_PAIRS:-}
 
 # ---------- Derived paths ----------
 VOLUME_STATS="${TARGET_PRIOR_ROOT}/volume_stats.json"
@@ -56,6 +60,12 @@ for required in "${TARGET_SPLIT_JSON}" "${VOLUME_STATS}" "${SDF_TEMPLATES}" "${A
     fi
 done
 
+if [ "${PRECHECK_PRIORS}" -ne 0 ]; then
+    python "${SCRIPT_DIR}/prior_validator.py" \
+        --dir "${TARGET_PRIOR_ROOT}" \
+        --num-classes "${OUT_CHANNELS}"
+fi
+
 mkdir -p "${RESULTS_DIR}"
 
 CMD=(
@@ -65,6 +75,7 @@ CMD=(
     --results_dir "${RESULTS_DIR}"
     --epochs "${EPOCHS}"
     --batch_size "${BATCH_SIZE}"
+    --out_channels "${OUT_CHANNELS}"
     --roi_x "${ROI_X}" --roi_y "${ROI_Y}" --roi_z "${ROI_Z}"
     --feature_size "${FEATURE_SIZE}"
     --lr "${LR}" --weight_decay "${WEIGHT_DECAY}"
@@ -72,7 +83,6 @@ CMD=(
     --lr_warmup_epochs "${LR_WARMUP_EPOCHS}"
     --lr_warmup_start_factor "${LR_WARMUP_START}"
     --grad_accum_steps "${GRAD_ACCUM_STEPS}"
-    --class_prior_json "${CLASS_PRIOR_JSON}"
     --volume_stats "${VOLUME_STATS}"
     --sdf_templates "${SDF_TEMPLATES}"
     --adjacency_prior "${ADJACENCY_PRIOR}"
@@ -93,6 +103,12 @@ CMD=(
     --prior_dir "${TARGET_PRIOR_ROOT}"
 )
 
+if [ "${PRECHECK_PRIORS}" -ne 0 ]; then
+    CMD+=(--precheck_priors)
+else
+    CMD+=(--skip_prior_check)
+fi
+
 if [ -f "${RESTRICTED_MASK}" ]; then
     CMD+=(--restricted_mask "${RESTRICTED_MASK}")
 fi
@@ -105,6 +121,10 @@ if [ -n "${PRETRAINED_CHECKPOINT}" ]; then
     CMD+=(--pretrained_checkpoint "${PRETRAINED_CHECKPOINT}")
 fi
 
+if [ -n "${LATERALITY_PAIRS}" ]; then
+    CMD+=(--laterality_pairs_json "${LATERALITY_PAIRS}")
+fi
+
 if python - <<PY >/dev/null 2>&1; then
 import sys
 sys.exit(0 if float("${EMA_DECAY}") > 0 else 1)
@@ -115,6 +135,10 @@ fi
 
 if [ "${EVAL_TTA}" -ne 0 ]; then
     CMD+=(--eval_tta --tta_flip_axes ${TTA_AXES})
+fi
+
+if [ "${EVAL_MULTI_SCALE}" -ne 0 ]; then
+    CMD+=(--multi_scale_eval --eval_scales ${EVAL_SCALES})
 fi
 
 printf 'Running command:\n  %s\n' "${CMD[*]}"

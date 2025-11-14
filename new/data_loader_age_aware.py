@@ -340,19 +340,19 @@ def _base_transforms(args,
 
 
 def _load_class_ratios(args, *, is_main: bool) -> Optional[List[float]]:
-    prior_path = getattr(args, "class_prior_json", None)
-    if not prior_path or not os.path.exists(prior_path):
+    stats_path = getattr(args, "volume_stats", None)
+    if not stats_path or not os.path.exists(stats_path):
         if is_main:
-            print("⚠️  No class prior JSON provided; RandCropByLabelClassesd will use uniform ratios")
+            print("⚠️  No volume_stats.json found; RandCropByLabelClassesd will use uniform ratios")
         return None
-    with open(prior_path, "r") as f:
+    with open(stats_path, "r") as f:
         prior_data = json.load(f)
     ratios = prepare_class_ratios(
         prior_data,
         expected_num_classes=args.out_channels,
         foreground_only=args.foreground_only,
         is_main=is_main,
-        context="Target class prior",
+        context="Target volume prior",
     )
     ratios = ratios.astype(np.float64)
     if ratios.sum() <= 0:

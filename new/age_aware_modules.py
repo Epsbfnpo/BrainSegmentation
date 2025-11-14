@@ -22,13 +22,49 @@ def prepare_class_ratios(prior_data: Dict,
     mode = str(prior_data.get("mode", "")).lower()
     foreground_modes = {"foreground_only", "foreground-only", "foreground"}
 
+    inferred_from_volume_stats = False
+    if ratios.size == 0:
+        # Attempt to interpret as volume_stats.json style mapping
+        volume_keys = [k for k, v in prior_data.items() if isinstance(v, dict) and "means" in v]
+        if volume_keys:
+            accum = np.zeros(expected_num_classes, dtype=np.float64)
+            counts = np.zeros(expected_num_classes, dtype=np.float64)
+            for key in volume_keys:
+                entry = prior_data[key]
+                means = np.asarray(entry.get("means", []), dtype=np.float64)
+                n = np.asarray(entry.get("n", []), dtype=np.float64)
+                if means.size == 0:
+                    continue
+                if means.size != expected_num_classes and is_main:
+                    print(
+                        f"  ⚠️  {context}: entry {key} has {means.size} means; expected {expected_num_classes}"
+                    )
+                means = np.pad(means, (0, max(0, expected_num_classes - means.size)))[:expected_num_classes]
+                if n.size == 0:
+                    n = np.ones_like(means)
+                n = np.pad(n, (0, max(0, expected_num_classes - n.size)))[:expected_num_classes]
+                accum += means * n
+                counts += n
+            valid = counts > 0
+            ratios = np.zeros(expected_num_classes, dtype=np.float64)
+            ratios[valid] = accum[valid] / counts[valid]
+            inferred_from_volume_stats = True
+        else:
+            ratios = np.asarray(prior_data.get("ratios", []), dtype=np.float64)
+
+    if ratios.size == 0:
+        ratios = np.ones(expected_num_classes, dtype=np.float64)
+
+    if inferred_from_volume_stats:
+        mode = "foreground_only"
+
     if foreground_only:
         if mode not in foreground_modes and ratios.size > 0:
             ratios = ratios[1:]
         elif ratios.size == expected_num_classes + 1:
             ratios = ratios[1:]
     else:
-        if mode in foreground_modes:
+        if mode in foreground_modes and ratios.size == expected_num_classes - 1:
             background_ratio = prior_data.get("background_ratio")
             if background_ratio is None:
                 background_ratio = max(0.0, 1.0 - ratios.sum())
@@ -42,26 +78,27 @@ def prepare_class_ratios(prior_data: Dict,
         else:
             ratios = np.pad(ratios, (0, expected_num_classes - ratios.size), constant_values=0.0)
 
-    if ratios.sum() <= 0 and is_main:
-        print(f"  ⚠️  {context}: sum of ratios is non-positive; using uniform prior")
+    if ratios.sum() <= 0:
+        if is_main:
+            print(f"  ⚠️  {context}: sum of ratios is non-positive; using uniform prior")
         ratios = np.ones(expected_num_classes, dtype=np.float64)
 
     return ratios
 
 
-def _load_class_weights(prior_path: Optional[str],
+def _load_class_weights(stats_path: Optional[str],
                         num_classes: int,
                         foreground_only: bool,
                         enhanced: bool,
                         *,
                         device: Optional[torch.device] = None,
                         is_main: bool = False) -> Optional[torch.Tensor]:
-    if prior_path is None or not os.path.exists(prior_path):
+    if stats_path is None or not os.path.exists(stats_path):
         if is_main:
-            print("  ⚠️  No class prior file provided; using uniform weights")
+            print("  ⚠️  No volume_stats.json provided; using uniform class weights")
         return None
 
-    with open(prior_path, "r") as f:
+    with open(stats_path, "r") as f:
         prior_data = json.load(f)
 
     ratios = prepare_class_ratios(
@@ -69,7 +106,7 @@ def _load_class_weights(prior_path: Optional[str],
         expected_num_classes=num_classes,
         foreground_only=foreground_only,
         is_main=is_main,
-        context="Class prior",
+        context="Volume prior",
     )
 
     eps = 1e-7
@@ -100,7 +137,7 @@ class SimplifiedDAUnetModule(nn.Module):
                  backbone: nn.Module,
                  num_classes: int,
                  *,
-                 class_prior_path: Optional[str] = None,
+                 volume_stats_path: Optional[str] = None,
                  foreground_only: bool = True,
                  enhanced_class_weights: bool = True,
                  use_age_conditioning: bool = False,
@@ -116,7 +153,7 @@ class SimplifiedDAUnetModule(nn.Module):
         is_main = (not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0
         device = next(backbone.parameters()).device
         self.class_weights = _load_class_weights(
-            class_prior_path,
+            volume_stats_path,
             num_classes=num_classes,
             foreground_only=foreground_only,
             enhanced=enhanced_class_weights,
@@ -129,7 +166,7 @@ class SimplifiedDAUnetModule(nn.Module):
             print(f"  Classes: {num_classes}")
             print(f"  Foreground-only remap: {foreground_only}")
             if self.class_weights is not None:
-                print("  Loaded class weights from prior")
+                print("  Loaded class weights from volume prior")
             else:
                 print("  Using uniform class weights")
 

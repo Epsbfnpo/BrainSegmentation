@@ -77,7 +77,7 @@ def build_model(args, device: torch.device) -> SimplifiedDAUnetModule:
     wrapper = SimplifiedDAUnetModule(
         backbone,
         num_classes=args.out_channels,
-        class_prior_path=args.class_prior_json,
+        volume_stats_path=args.volume_stats,
         foreground_only=args.foreground_only,
         enhanced_class_weights=args.enhanced_class_weights,
         use_age_conditioning=False,
@@ -171,7 +171,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no_apply_orientation", dest="apply_orientation", action="store_false")
     parser.add_argument("--target_spacing", nargs=3, type=float, default=[0.8, 0.8, 0.8])
     parser.add_argument("--foreground_only", action="store_true", default=True)
-    parser.add_argument("--class_prior_json", type=str, default=None)
     parser.add_argument("--enhanced_class_weights", action="store_true", default=True)
     parser.add_argument("--pretrained_checkpoint", type=str, default=None)
     parser.add_argument("--laterality_pairs_json", type=str, default=None)
