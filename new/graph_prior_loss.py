@@ -44,16 +44,26 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                  lambda_spec: float = 0.05,
                  sdf_temperature: float = 4.0,
                  huber_delta: float = 1.0,
-                 spectral_top_k: int = 20):
+                 spectral_top_k: int = 20,
+                 warmup_epochs: int = 10,
+                 debug: bool = False,
+                 debug_max_batches: int = 2):
         super().__init__()
         self.num_classes = num_classes
-        self.lambda_volume = lambda_volume
-        self.lambda_shape = lambda_shape
-        self.lambda_edge = lambda_edge
-        self.lambda_spec = lambda_spec
+        self._base_lambda_volume = float(lambda_volume)
+        self._base_lambda_shape = float(lambda_shape)
+        self._base_lambda_edge = float(lambda_edge)
+        self._base_lambda_spec = float(lambda_spec)
         self.sdf_temperature = sdf_temperature
         self.huber_delta = huber_delta
         self.spectral_top_k = spectral_top_k
+        self.warmup_epochs = max(0, int(warmup_epochs))
+        self.current_epoch = 0
+        self.total_epochs: Optional[int] = None
+        self.debug_mode = debug
+        self.debug_max_batches = max(0, int(debug_max_batches))
+        self._debug_counter = 0
+        self._last_metrics: Dict[str, float] = {}
 
         self.volume_bins: Optional[torch.Tensor] = None
         self.volume_means: Optional[torch.Tensor] = None
@@ -81,6 +91,32 @@ class AgeConditionedGraphPriorLoss(nn.Module):
             self.register_buffer("r_mask", mask)
         else:
             self.register_buffer("r_mask", torch.empty(0))
+
+    # ------------------------------------------------------------------
+    # schedule helpers
+    # ------------------------------------------------------------------
+    def set_epoch(self, epoch: int) -> None:
+        """Update the internal epoch counter for warmup scheduling."""
+
+        self.current_epoch = int(epoch)
+
+    def configure_schedule(self, total_epochs: int) -> None:
+        self.total_epochs = int(total_epochs)
+
+    def get_warmup_factor(self) -> float:
+        if self.warmup_epochs <= 0:
+            return 1.0
+        return float(min(1.0, max(0.0, self.current_epoch / max(1, self.warmup_epochs))))
+
+    def set_debug(self, enabled: bool, max_batches: Optional[int] = None) -> None:
+        self.debug_mode = bool(enabled)
+        if max_batches is not None:
+            self.debug_max_batches = max(0, int(max_batches))
+        if not self.debug_mode:
+            self._debug_counter = 0
+
+    def get_last_metrics(self) -> Dict[str, float]:
+        return dict(self._last_metrics)
 
     # ------------------------------------------------------------------
     # loading helpers
@@ -248,6 +284,12 @@ class AgeConditionedGraphPriorLoss(nn.Module):
         edge_losses = []
         spectral_losses = []
 
+        warmup = self.get_warmup_factor()
+        lambda_volume = self._base_lambda_volume * warmup
+        lambda_shape = self._base_lambda_shape * warmup
+        lambda_edge = self._base_lambda_edge * warmup
+        lambda_spec = self._base_lambda_spec * warmup
+
         for b in range(B):
             age = ages[b]
             frac = probs[b].view(C, -1).sum(dim=1)
@@ -302,15 +344,31 @@ class AgeConditionedGraphPriorLoss(nn.Module):
         edge_loss = torch.stack(edge_losses).mean() if edge_losses else torch.zeros(1, device=device)
         spectral_loss = torch.stack(spectral_losses).mean() if spectral_losses else torch.zeros(1, device=device)
 
-        total = (self.lambda_volume * volume_loss +
-                 self.lambda_shape * shape_loss +
-                 self.lambda_edge * edge_loss +
-                 self.lambda_spec * spectral_loss)
+        total = (lambda_volume * volume_loss +
+                 lambda_shape * shape_loss +
+                 lambda_edge * edge_loss +
+                 lambda_spec * spectral_loss)
 
-        return {
+        metrics = {
             "total": total,
             "volume": volume_loss,
             "shape": shape_loss,
             "edge": edge_loss,
             "spectral": spectral_loss,
+            "warmup": torch.tensor(warmup, device=device, dtype=total.dtype),
         }
+
+        self._last_metrics = {k: float(v.detach().cpu().item()) for k, v in metrics.items() if isinstance(v, torch.Tensor)}
+
+        if self.debug_mode and self._debug_counter < self.debug_max_batches:
+            self._debug_counter += 1
+            debug_msg = (
+                f"[AgePrior] warmup={warmup:.3f} "
+                f"vol={metrics['volume'].item():.4f} "
+                f"shape={metrics['shape'].item():.4f} "
+                f"edge={metrics['edge'].item():.4f} "
+                f"spec={metrics['spectral'].item():.4f}"
+            )
+            print(debug_msg, flush=True)
+
+        return metrics

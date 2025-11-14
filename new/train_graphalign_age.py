@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
-from __future__ import annotations
+"""Target-only training entrypoint with production diagnostics."""
 
 import argparse
 import os
 import random
+import signal
 import time
+from collections import deque
+from datetime import timedelta
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import torch
 import torch.distributed as dist
-from datetime import timedelta
-
 from monai.networks.nets import SwinUNETR
+from torch.utils.tensorboard import SummaryWriter
 
 from age_aware_modules import SimplifiedDAUnetModule
 from data_loader_age_aware import get_target_dataloaders
@@ -28,11 +31,10 @@ def init_distributed(args) -> bool:
         dist.init_process_group("nccl", init_method="env://", timeout=timedelta(minutes=args.dist_timeout))
         torch.cuda.set_device(args.local_rank)
         return True
-    else:
-        args.rank = 0
-        args.world_size = 1
-        args.local_rank = 0
-        return False
+    args.rank = 0
+    args.world_size = 1
+    args.local_rank = 0
+    return False
 
 
 def cleanup_distributed():
@@ -62,7 +64,7 @@ def build_model(args, device: torch.device) -> SimplifiedDAUnetModule:
 
     if args.pretrained_checkpoint:
         if is_main_process(args):
-            print(f"Loading pretrained weights from {args.pretrained_checkpoint}")
+            print(f"📦 Loading pretrained weights from {args.pretrained_checkpoint}")
         state = torch.load(args.pretrained_checkpoint, map_location=device)
         if "state_dict" in state:
             state = state["state_dict"]
@@ -76,14 +78,71 @@ def build_model(args, device: torch.device) -> SimplifiedDAUnetModule:
         class_prior_path=args.class_prior_json,
         foreground_only=args.foreground_only,
         enhanced_class_weights=args.enhanced_class_weights,
+        use_age_conditioning=False,
+        debug_mode=args.debug_mode,
     )
     return wrapper
+
+
+def get_model_state(model: torch.nn.Module) -> dict:
+    return model.module.state_dict() if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model.state_dict()
+
+
+def save_checkpoint(path: Path,
+                    *,
+                    model: torch.nn.Module,
+                    optimizer: torch.optim.Optimizer,
+                    scheduler,
+                    epoch: int,
+                    global_step: int,
+                    best_dice: float) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "epoch": epoch,
+            "global_step": global_step,
+            "best_dice": best_dice,
+            "state_dict": get_model_state(model),
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(),
+        },
+        path,
+    )
+
+
+def load_checkpoint(path: Path,
+                    *,
+                    model: torch.nn.Module,
+                    optimizer: torch.optim.Optimizer,
+                    scheduler):
+    payload = torch.load(path, map_location="cpu")
+    model_state = payload.get("state_dict", payload)
+    target = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
+    target.load_state_dict(model_state, strict=True)
+
+    if "optimizer" in payload:
+        optimizer.load_state_dict(payload["optimizer"])
+    if "scheduler" in payload:
+        scheduler.load_state_dict(payload["scheduler"])
+
+    return payload.get("epoch", 0), payload.get("global_step", 0), payload.get("best_dice", 0.0)
+
+
+def register_signal_handlers(flag_container: dict, *, is_main: bool) -> None:
+    def _handler(signum, frame):
+        if is_main:
+            print(f"⚠️  Received signal {signum}; checkpoint will be saved at epoch boundary", flush=True)
+        flag_container["triggered"] = True
+
+    for sig in (signal.SIGTERM, signal.SIGUSR1):
+        signal.signal(sig, _handler)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Target-only age-aware segmentation training")
     parser.add_argument("--split_json", required=True, type=str, help="Target dataset split JSON")
     parser.add_argument("--results_dir", default="./results", type=str)
+    parser.add_argument("--log_dir", default=None, type=str, help="TensorBoard log directory")
     parser.add_argument("--epochs", default=400, type=int)
     parser.add_argument("--batch_size", default=2, type=int)
     parser.add_argument("--num_workers", default=4, type=int)
@@ -106,6 +165,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--class_prior_json", type=str, default=None)
     parser.add_argument("--enhanced_class_weights", action="store_true", default=True)
     parser.add_argument("--pretrained_checkpoint", type=str, default=None)
+    parser.add_argument("--laterality_pairs_json", type=str, default=None)
+    parser.add_argument("--use_label_crop", dest="use_label_crop", action="store_true", default=True)
+    parser.add_argument("--no_label_crop", dest="use_label_crop", action="store_false")
+    parser.add_argument("--label_crop_samples", type=int, default=1)
+    parser.add_argument("--enable_weighted_sampling", action="store_true", default=False)
     parser.add_argument("--loss_config", type=str, default="dice_focal", choices=["dice_ce", "dice_focal", "dice_ce_focal"])
     parser.add_argument("--focal_gamma", type=float, default=2.0)
     parser.add_argument("--volume_stats", type=str, default=None)
@@ -117,12 +181,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lambda_edge", type=float, default=0.1)
     parser.add_argument("--lambda_spec", type=float, default=0.05)
     parser.add_argument("--sdf_temperature", type=float, default=4.0)
+    parser.add_argument("--prior_warmup_epochs", type=int, default=10)
     parser.add_argument("--dist_timeout", type=int, default=180)
     parser.add_argument("--use_amp", dest="use_amp", action="store_true", default=True)
     parser.add_argument("--no_amp", dest="use_amp", action="store_false")
     parser.add_argument("--use_swin_checkpoint", dest="use_swin_checkpoint", action="store_true", default=True)
     parser.add_argument("--no_swin_checkpoint", dest="use_swin_checkpoint", action="store_false")
     parser.add_argument("--eval_interval", type=int, default=5)
+    parser.add_argument("--eval_sliding_window", dest="use_sliding_window", action="store_true", default=True)
+    parser.add_argument("--no_eval_sliding_window", dest="use_sliding_window", action="store_false")
+    parser.add_argument("--sw_batch_size", type=int, default=1)
+    parser.add_argument("--sw_overlap", type=float, default=0.25)
+    parser.add_argument("--multi_scale_eval", action="store_true", default=False)
+    parser.add_argument("--eval_scales", type=float, nargs="*", default=[1.0])
+    parser.add_argument("--grad_clip", type=float, default=12.0)
+    parser.add_argument("--save_interval", type=int, default=20, help="Save checkpoint every N epochs")
+    parser.add_argument("--max_keep_ckpt", type=int, default=5)
+    parser.add_argument("--resume", type=str, default=None, help="Resume from checkpoint path")
+    parser.add_argument("--log_interval", type=int, default=20)
+    parser.add_argument("--debug_mode", action="store_true", default=False)
+    parser.add_argument("--debug_step_limit", type=int, default=2)
+    parser.add_argument("--debug_val_limit", type=int, default=1)
+    parser.add_argument("--prior_debug_batches", type=int, default=2)
     parser.add_argument("--seed", type=int, default=42)
     return parser.parse_args()
 
@@ -132,10 +212,17 @@ def main():
     set_seed(args.seed)
 
     results_dir = Path(args.results_dir)
-    if is_main_process(args):
-        results_dir.mkdir(parents=True, exist_ok=True)
+    results_dir.mkdir(parents=True, exist_ok=True)
 
     distributed = init_distributed(args)
+    is_main = is_main_process(args)
+
+    log_dir = Path(args.log_dir) if args.log_dir else results_dir / "tensorboard"
+    writer: Optional[SummaryWriter] = SummaryWriter(log_dir=str(log_dir)) if is_main else None
+
+    signal_state = {"triggered": False}
+    register_signal_handlers(signal_state, is_main=is_main)
+
     device = torch.device(f"cuda:{args.local_rank}" if torch.cuda.is_available() else "cpu")
     if not torch.cuda.is_available():
         args.use_amp = False
@@ -151,7 +238,12 @@ def main():
     class_weights = model.get_class_weights()
 
     if distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank, find_unused_parameters=False)
+        model = torch.nn.parallel.DistributedDataParallel(
+            model,
+            device_ids=[args.local_rank],
+            output_device=args.local_rank,
+            find_unused_parameters=False,
+        )
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-7)
@@ -175,16 +267,46 @@ def main():
         lambda_edge=args.lambda_edge,
         lambda_spec=args.lambda_spec,
         sdf_temperature=args.sdf_temperature,
+        warmup_epochs=args.prior_warmup_epochs,
+        debug=args.debug_mode,
+        debug_max_batches=args.prior_debug_batches,
     ).to(device)
+    prior_loss.configure_schedule(args.epochs)
+    prior_loss.set_debug(args.debug_mode, args.prior_debug_batches)
 
     best_dice = 0.0
-    best_path = results_dir / "best_model.pt"
+    global_step = 0
+    start_epoch = 1
+    checkpoint_history: deque[Path] = deque()
 
-    for epoch in range(1, args.epochs + 1):
+    if args.resume:
+        resume_path = Path(args.resume)
+        if resume_path.exists():
+            resume_epoch, resume_step, resume_best = load_checkpoint(
+                resume_path,
+                model=model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+            )
+            start_epoch = resume_epoch + 1
+            global_step = resume_step
+            best_dice = resume_best
+            if is_main:
+                print(f"🔁 Resumed from {resume_path} at epoch {resume_epoch}, global_step {global_step}, best dice {best_dice:.4f}")
+        elif is_main:
+            print(f"⚠️  Resume checkpoint {resume_path} not found; starting from scratch")
+
+    if is_main:
+        print(f"📂 Results directory: {results_dir}")
+        print(f"📝 Logging to: {log_dir}")
+
+    for epoch in range(start_epoch, args.epochs + 1):
         if distributed and hasattr(train_loader.sampler, "set_epoch"):
             train_loader.sampler.set_epoch(epoch)
 
-        start = time.time()
+        prior_loss.set_epoch(epoch)
+
+        start_time = time.time()
         train_metrics = train_epoch(
             model,
             train_loader,
@@ -194,12 +316,27 @@ def main():
             device=device,
             epoch=epoch,
             use_amp=args.use_amp,
+            grad_clip=args.grad_clip,
+            writer=writer,
+            global_step=global_step,
+            is_main=is_main,
+            log_interval=args.log_interval,
+            debug_mode=args.debug_mode,
+            debug_step_limit=args.debug_step_limit,
         )
         scheduler.step()
-        duration = time.time() - start
+        global_step = int(train_metrics.get("global_step", global_step))
+        duration = time.time() - start_time
 
-        if is_main_process(args):
-            print(f"Epoch {epoch:03d}: train loss={train_metrics['loss']:.4f} seg={train_metrics['seg']:.4f} prior={train_metrics['prior']:.4f} time={duration:.1f}s")
+        if is_main:
+            print(
+                f"Epoch {epoch:03d}: loss={train_metrics['loss']:.4f} seg={train_metrics['seg']:.4f} "
+                f"prior={train_metrics['prior']:.4f} warmup={train_metrics.get('warmup', 1.0):.3f} "
+                f"grad={train_metrics.get('grad_norm', 0.0):.3f} time={duration:.1f}s",
+                flush=True,
+            )
+            if writer is not None:
+                writer.add_scalar("train/lr", train_metrics["lr"], epoch)
 
         if epoch % args.eval_interval == 0 or epoch == args.epochs:
             val_metrics = validate_epoch(
@@ -208,13 +345,69 @@ def main():
                 device=device,
                 num_classes=args.out_channels,
                 foreground_only=args.foreground_only,
+                use_sliding_window=args.use_sliding_window,
+                roi_size=(args.roi_x, args.roi_y, args.roi_z),
+                sw_batch_size=args.sw_batch_size,
+                sw_overlap=args.sw_overlap,
+                multi_scale=args.multi_scale_eval,
+                eval_scales=args.eval_scales,
+                debug_mode=args.debug_mode,
+                debug_step_limit=args.debug_val_limit,
+                is_main=is_main,
             )
-            if is_main_process(args):
+            if is_main:
                 print(f"  Validation dice={val_metrics['dice']:.4f}")
-                if val_metrics['dice'] > best_dice:
-                    best_dice = val_metrics['dice']
-                    torch.save({'epoch': epoch, 'state_dict': model.state_dict(), 'dice': best_dice}, best_path)
-                    print(f"  ✓ New best model saved to {best_path}")
+                if writer is not None:
+                    writer.add_scalar("val/dice", val_metrics["dice"], epoch)
+                if val_metrics["dice"] > best_dice:
+                    best_dice = val_metrics["dice"]
+                    best_path = results_dir / "best_model.pt"
+                    save_checkpoint(
+                        best_path,
+                        model=model,
+                        optimizer=optimizer,
+                        scheduler=scheduler,
+                        epoch=epoch,
+                        global_step=global_step,
+                        best_dice=best_dice,
+                    )
+                    print(f"  ✅ New best checkpoint saved to {best_path}")
+
+        if is_main and args.save_interval > 0 and epoch % args.save_interval == 0:
+            ckpt_path = results_dir / f"checkpoint_epoch{epoch:03d}.pt"
+            save_checkpoint(
+                ckpt_path,
+                model=model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                epoch=epoch,
+                global_step=global_step,
+                best_dice=best_dice,
+            )
+            checkpoint_history.append(ckpt_path)
+            while len(checkpoint_history) > args.max_keep_ckpt:
+                old = checkpoint_history.popleft()
+                if old.exists():
+                    old.unlink()
+                    print(f"  🧹 Removed old checkpoint {old}")
+
+        if signal_state.get("triggered") and is_main:
+            emergency_path = results_dir / f"checkpoint_signal_epoch{epoch:03d}.pt"
+            save_checkpoint(
+                emergency_path,
+                model=model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                epoch=epoch,
+                global_step=global_step,
+                best_dice=best_dice,
+            )
+            print(f"  💾 Signal-triggered checkpoint saved to {emergency_path}")
+            checkpoint_history.append(emergency_path)
+            signal_state["triggered"] = False
+
+    if writer is not None:
+        writer.close()
 
     cleanup_distributed()
 

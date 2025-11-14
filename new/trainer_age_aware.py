@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import Dict, Optional
+from typing import Dict, Optional, Sequence
 
 import torch
 import torch.distributed as dist
@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from monai.losses import DiceLoss, FocalLoss
 from monai.metrics import DiceMetric
 from monai.transforms import AsDiscrete
+from monai.inferers import sliding_window_inference
 
 
 def is_dist() -> bool:
@@ -109,7 +110,14 @@ def train_epoch(model: nn.Module,
                 *,
                 device: torch.device,
                 epoch: int,
-                use_amp: bool = True) -> Dict[str, float]:
+                use_amp: bool = True,
+                grad_clip: float = 12.0,
+                writer=None,
+                global_step: int = 0,
+                is_main: bool = True,
+                log_interval: int = 20,
+                debug_mode: bool = False,
+                debug_step_limit: int = 2) -> Dict[str, float]:
     model.train()
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
@@ -124,10 +132,13 @@ def train_epoch(model: nn.Module,
         "shape": 0.0,
         "edge": 0.0,
         "spectral": 0.0,
+        "warmup": 0.0,
+        "grad_norm": 0.0,
     }
     steps = 0
+    debug_step_limit = max(1, int(debug_step_limit))
 
-    for batch in loader:
+    for step, batch in enumerate(loader):
         images = batch["image"].to(device)
         labels = batch["label"].to(device)
         ages = batch.get("age")
@@ -141,16 +152,23 @@ def train_epoch(model: nn.Module,
             logits = model(images)
             seg_losses = loss_fn(logits, labels)
             probs = torch.softmax(logits, dim=1)
-            prior_dict = prior_loss(probs, ages) if prior_loss is not None else {"total": torch.zeros_like(seg_losses["total"]),
-                                                                                "volume": torch.zeros_like(seg_losses["total"]),
-                                                                                "shape": torch.zeros_like(seg_losses["total"]),
-                                                                                "edge": torch.zeros_like(seg_losses["total"]),
-                                                                                "spectral": torch.zeros_like(seg_losses["total"])}
+            if prior_loss is not None:
+                prior_dict = prior_loss(probs, ages)
+            else:
+                zeros = torch.zeros_like(seg_losses["total"])
+                prior_dict = {
+                    "total": zeros,
+                    "volume": zeros,
+                    "shape": zeros,
+                    "edge": zeros,
+                    "spectral": zeros,
+                    "warmup": torch.tensor(1.0, device=probs.device, dtype=zeros.dtype),
+                }
             loss = seg_losses["total"] + prior_dict["total"]
 
         scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=12.0)
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip, error_if_nonfinite=False)
         scaler.step(optimizer)
         scaler.update()
 
@@ -164,7 +182,27 @@ def train_epoch(model: nn.Module,
         running["shape"] += prior_dict.get("shape", torch.zeros(1, device=device)).detach().item()
         running["edge"] += prior_dict.get("edge", torch.zeros(1, device=device)).detach().item()
         running["spectral"] += prior_dict.get("spectral", torch.zeros(1, device=device)).detach().item()
+        running["warmup"] += float(prior_dict.get("warmup", torch.tensor(1.0, device=device)).detach().item())
+        running["grad_norm"] += float(grad_norm.detach().item() if isinstance(grad_norm, torch.Tensor) else grad_norm)
         steps += 1
+
+        if debug_mode and is_main and step < debug_step_limit:
+            print(
+                f"[Train][Epoch {epoch:03d}][Step {step:03d}] "
+                f"loss={loss.item():.4f} seg={seg_losses['total'].item():.4f} "
+                f"prior={prior_dict['total'].item():.4f} warmup={prior_dict.get('warmup', torch.tensor(1.0)).item():.3f} "
+                f"grad_norm={running['grad_norm'] / steps:.3f}",
+                flush=True,
+            )
+
+        if writer is not None and is_main and (step % log_interval == 0):
+            writer.add_scalar("train/loss", loss.item(), global_step)
+            writer.add_scalar("train/seg_loss", seg_losses["total"].item(), global_step)
+            writer.add_scalar("train/prior_loss", prior_dict["total"].item(), global_step)
+            writer.add_scalar("train/warmup", prior_dict.get("warmup", torch.tensor(1.0)).item(), global_step)
+            writer.add_scalar("train/grad_norm", running["grad_norm"] / steps, global_step)
+
+        global_step += 1
 
     for key in running:
         value = torch.tensor(running[key] / max(steps, 1), device=device)
@@ -172,6 +210,8 @@ def train_epoch(model: nn.Module,
 
     running["steps"] = steps
     running["epoch"] = epoch
+    running["lr"] = optimizer.param_groups[0]["lr"]
+    running["global_step"] = global_step
     return running
 
 
@@ -180,29 +220,76 @@ def validate_epoch(model: nn.Module,
                    *,
                    device: torch.device,
                    num_classes: int,
-                   foreground_only: bool = True) -> Dict[str, float]:
+                   foreground_only: bool = True,
+                   use_sliding_window: bool = False,
+                   roi_size: Optional[Sequence[int]] = None,
+                   sw_batch_size: int = 1,
+                   sw_overlap: float = 0.25,
+                   multi_scale: bool = False,
+                   eval_scales: Optional[Sequence[float]] = None,
+                   debug_mode: bool = False,
+                   debug_step_limit: int = 1,
+                   is_main: bool = True) -> Dict[str, float]:
     model.eval()
     dice_metric = DiceMetric(include_background=not foreground_only, reduction="mean_batch")
     post_pred = AsDiscrete(argmax=True, to_onehot=True, num_classes=num_classes)
     post_label = AsDiscrete(to_onehot=True, num_classes=num_classes)
 
-    val_loss = 0.0
     steps = 0
+    debug_step_limit = max(1, int(debug_step_limit))
     with torch.no_grad():
-        for batch in loader:
+        for step, batch in enumerate(loader):
             images = batch["image"].to(device)
             labels = batch["label"].to(device)
             labels_eval = labels.clone()
             labels_eval[labels_eval < 0] = 0
             labels_eval = labels_eval.long()
 
-            logits = model(images)
+            if use_sliding_window:
+                scales = list(eval_scales or ([1.0] if not multi_scale else eval_scales))
+                if not scales:
+                    scales = [1.0]
+                preds_multi = []
+                for scale in scales:
+                    if scale != 1.0:
+                        scaled = F.interpolate(
+                            images,
+                            scale_factor=scale,
+                            mode="trilinear",
+                            align_corners=False,
+                            recompute_scale_factor=True,
+                        )
+                    else:
+                        scaled = images
+                    logits_scaled = sliding_window_inference(
+                        scaled,
+                        roi_size=tuple(roi_size) if roi_size is not None else scaled.shape[2:],
+                        sw_batch_size=sw_batch_size,
+                        predictor=model,
+                        overlap=sw_overlap,
+                    )
+                    if scale != 1.0:
+                        logits_scaled = F.interpolate(
+                            logits_scaled,
+                            size=images.shape[2:],
+                            mode="trilinear",
+                            align_corners=False,
+                        )
+                    preds_multi.append(logits_scaled)
+                logits = torch.stack(preds_multi, dim=0).mean(dim=0)
+            else:
+                logits = model(images)
+
             probs = torch.softmax(logits, dim=1)
             preds = post_pred(probs)
 
             target = post_label(labels_eval.unsqueeze(1))
             dice_metric(y_pred=preds, y=target)
             steps += 1
+
+            if debug_mode and is_main and step < debug_step_limit:
+                partial = dice_metric.aggregate().detach().cpu().numpy()
+                print(f"[Val][Step {step:03d}] running dice mean={partial.mean():.4f}", flush=True)
 
     dice = dice_metric.aggregate().to(device)
     dice_metric.reset()

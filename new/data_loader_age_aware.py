@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Dict, List, Optional, Sequence, Tuple
 
+import nibabel as nib
 import numpy as np
 import torch
-from monai.data import CacheDataset, DataLoader, Dataset
+from monai.data import CacheDataset, DataLoader, Dataset, MetaTensor
 from monai.transforms import (CenterSpatialCropd, Compose, EnsureChannelFirstd,
                               EnsureTyped, LoadImaged, MapTransform, Orientationd,
-                              RandAdjustContrastd, RandBiasFieldd, RandFlipd, RandGaussianNoised,
-                              RandGaussianSmoothd, RandHistogramShiftd, RandRotated, RandScaleIntensityd,
-                              RandShiftIntensityd, RandSpatialCropd, RandZoomd, Spacingd,
-                              SpatialPadd)
-from torch.utils.data import DistributedSampler
+                              RandAdjustContrastd, RandBiasFieldd, RandCropByLabelClassesd,
+                              RandGaussianNoised, RandGaussianSmoothd, RandHistogramShiftd,
+                              RandRotated, RandScaleIntensityd, RandShiftIntensityd, RandZoomd,
+                              Spacingd, SpatialPadd, Randomizable)
+from torch.utils.data import DistributedSampler, WeightedRandomSampler
+
+from age_aware_modules import prepare_class_ratios
 
 
 class ExtractAged(MapTransform):
@@ -57,9 +61,9 @@ class PercentileNormalizationd(MapTransform):
         d = dict(data)
         for key in self.key_iterator(d):
             image = d[key]
-            if isinstance(image, torch.Tensor):
+            if isinstance(image, (torch.Tensor, MetaTensor)):
                 array = image.cpu().numpy()
-                meta = None
+                meta = image.meta if isinstance(image, MetaTensor) else None
             else:
                 array = np.asarray(image)
                 meta = None
@@ -76,7 +80,10 @@ class PercentileNormalizationd(MapTransform):
                 norm = (clipped - lo) / (hi - lo)
             norm[~mask] = 0
             tensor = torch.as_tensor(norm, dtype=torch.float32)
-            d[key] = tensor if meta is None else type(image)(tensor, meta=meta)
+            if meta is not None:
+                d[key] = MetaTensor(tensor, meta=meta)
+            else:
+                d[key] = tensor
         return d
 
 
@@ -90,9 +97,9 @@ class RemapLabelsd(MapTransform):
         d = dict(data)
         for key in self.key_iterator(d):
             label = d[key]
-            if isinstance(label, torch.Tensor):
+            if isinstance(label, (torch.Tensor, MetaTensor)):
                 array = label.cpu().numpy()
-                meta = None
+                meta = label.meta if isinstance(label, MetaTensor) else None
             else:
                 array = np.asarray(label)
                 meta = None
@@ -101,7 +108,64 @@ class RemapLabelsd(MapTransform):
             mask = array > 0
             remapped[mask] = array[mask] - 1
             tensor = torch.as_tensor(remapped, dtype=torch.float32)
-            d[key] = tensor if meta is None else type(label)(tensor, meta=meta)
+            if meta is not None:
+                d[key] = MetaTensor(tensor, meta=meta)
+            else:
+                d[key] = tensor
+        return d
+
+
+class RandFlipLateralityd(Randomizable, MapTransform):
+    """Flip volumes along an axis and swap laterality label pairs when required."""
+
+    def __init__(self, keys: Sequence[str], spatial_axis: int, prob: float = 0.5,
+                 swap_label_pairs: Optional[Sequence[Tuple[int, int]]] = None):
+        super().__init__(keys)
+        self.spatial_axis = spatial_axis
+        self.prob = float(prob)
+        self.swap_label_pairs = list(swap_label_pairs or [])
+
+    def randomize(self, data=None):
+        self._do_transform = self.R.rand() < self.prob
+
+    def _swap_labels(self, array: torch.Tensor) -> torch.Tensor:
+        if not self.swap_label_pairs:
+            return array
+        result = array.clone()
+        for a, b in self.swap_label_pairs:
+            mask_a = result == a
+            mask_b = result == b
+            tmp = torch.zeros_like(result)
+            tmp[mask_a] = b
+            tmp[mask_b] = a
+            result = torch.where(mask_a | mask_b, tmp, result)
+        return result
+
+    def __call__(self, data: Dict) -> Dict:
+        d = dict(data)
+        self.randomize()
+        if not self._do_transform:
+            return d
+
+        for key in self.key_iterator(d):
+            arr = d[key]
+            meta = None
+            if isinstance(arr, MetaTensor):
+                meta = arr.meta
+                tensor = arr.as_tensor()
+            else:
+                tensor = torch.as_tensor(arr)
+
+            axis = 1 + self.spatial_axis if tensor.ndim == 4 else self.spatial_axis
+            flipped = torch.flip(tensor, dims=[axis])
+
+            if key == "label" and self.spatial_axis == 0:
+                flipped = self._swap_labels(flipped)
+
+            if meta is not None:
+                d[key] = MetaTensor(flipped, meta=meta)
+            else:
+                d[key] = flipped
         return d
 
 
@@ -128,14 +192,31 @@ def _process_items(items: List[Dict]) -> List[Dict]:
     return processed
 
 
-def _augmentation_transforms(args) -> Compose:
+def _load_lr_pairs(args) -> List[Tuple[int, int]]:
+    pairs: List[Tuple[int, int]] = []
+    json_path = getattr(args, "laterality_pairs_json", None)
+    if json_path and os.path.exists(json_path):
+        with open(json_path, "r") as f:
+            payload = json.load(f)
+        for item in payload:
+            a, b = item
+            if args.foreground_only:
+                a -= 1
+                b -= 1
+            pairs.append((int(a), int(b)))
+    return pairs
+
+
+def _augmentation_transforms(args,
+                             *,
+                             laterality_pairs: Optional[Sequence[Tuple[int, int]]] = None) -> Compose:
     spatial_size = (args.roi_x, args.roi_y, args.roi_z)
     aug = [
-        RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=0),
-        RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=1),
-        RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=2),
-        RandRotated(keys=["image", "label"], range_x=0.1, range_y=0.1, range_z=0.1, prob=0.3, mode=["bilinear", "nearest"]),
-        RandZoomd(keys=["image", "label"], prob=0.2, min_zoom=0.9, max_zoom=1.1, mode=["trilinear", "nearest"]),
+        RandFlipLateralityd(keys=["image", "label"], spatial_axis=0, prob=0.5, swap_label_pairs=laterality_pairs),
+        RandFlipLateralityd(keys=["image", "label"], spatial_axis=1, prob=0.5, swap_label_pairs=[]),
+        RandFlipLateralityd(keys=["image", "label"], spatial_axis=2, prob=0.5, swap_label_pairs=[]),
+        RandRotated(keys=["image", "label"], range_x=0.3, range_y=0.3, range_z=0.3, prob=0.35, mode=["bilinear", "nearest"]),
+        RandZoomd(keys=["image", "label"], prob=0.25, min_zoom=0.85, max_zoom=1.15, mode=["trilinear", "nearest"]),
         RandGaussianNoised(keys=["image"], prob=0.15, mean=0.0, std=0.01),
         RandGaussianSmoothd(keys=["image"], prob=0.1, sigma_x=(0.5, 1.0)),
         RandBiasFieldd(keys=["image"], prob=0.1),
@@ -143,13 +224,15 @@ def _augmentation_transforms(args) -> Compose:
         RandShiftIntensityd(keys=["image"], offsets=0.1, prob=0.5),
         RandAdjustContrastd(keys=["image"], gamma=(0.7, 1.3), prob=0.3),
         RandHistogramShiftd(keys=["image"], prob=0.1),
-        RandSpatialCropd(keys=["image", "label"], roi_size=spatial_size, random_center=True, random_size=False),
-        EnsureTyped(keys=["image", "label", "age"], track_meta=False),
     ]
     return Compose(aug)
 
 
-def _base_transforms(args, mode: str) -> Compose:
+def _base_transforms(args,
+                     mode: str,
+                     *,
+                     class_crop_ratios: Optional[Sequence[float]] = None,
+                     laterality_pairs: Optional[Sequence[Tuple[int, int]]] = None) -> Compose:
     transforms = [
         LoadImaged(keys=["image", "label"]),
         EnsureChannelFirstd(keys=["image", "label"]),
@@ -165,14 +248,98 @@ def _base_transforms(args, mode: str) -> Compose:
     if args.foreground_only:
         transforms.append(RemapLabelsd(keys=["label"]))
     spatial_size = (args.roi_x, args.roi_y, args.roi_z)
-    transforms.extend([
-        SpatialPadd(keys=["image", "label"], spatial_size=spatial_size, method="end"),
-        CenterSpatialCropd(keys=["image", "label"], roi_size=spatial_size),
-        EnsureTyped(keys=["image", "label", "age"], track_meta=False),
-    ])
+    transforms.append(SpatialPadd(keys=["image", "label"], spatial_size=spatial_size, method="end"))
+
+    if mode == "train" and getattr(args, "use_label_crop", True):
+        ratios = class_crop_ratios or [1.0] * args.out_channels
+        transforms.append(
+            RandCropByLabelClassesd(
+                keys=["image", "label"],
+                label_key="label",
+                spatial_size=spatial_size,
+                ratios=ratios,
+                num_classes=args.out_channels,
+                num_samples=max(1, int(getattr(args, "label_crop_samples", 1))),
+                image_key="image",
+                image_threshold=0,
+                allow_smaller=True,
+            )
+        )
+    else:
+        transforms.append(CenterSpatialCropd(keys=["image", "label"], roi_size=spatial_size))
+
+    transforms.append(EnsureTyped(keys=["image", "label", "age"], track_meta=False))
+
     if mode == "train":
-        transforms.append(_augmentation_transforms(args))
+        transforms.append(_augmentation_transforms(args, laterality_pairs=laterality_pairs))
+        transforms.append(EnsureTyped(keys=["image", "label", "age"], track_meta=False))
     return Compose(transforms)
+
+
+def _load_class_ratios(args, *, is_main: bool) -> Optional[List[float]]:
+    prior_path = getattr(args, "class_prior_json", None)
+    if not prior_path or not os.path.exists(prior_path):
+        if is_main:
+            print("⚠️  No class prior JSON provided; RandCropByLabelClassesd will use uniform ratios")
+        return None
+    with open(prior_path, "r") as f:
+        prior_data = json.load(f)
+    ratios = prepare_class_ratios(
+        prior_data,
+        expected_num_classes=args.out_channels,
+        foreground_only=args.foreground_only,
+        is_main=is_main,
+        context="Target class prior",
+    )
+    ratios = ratios.astype(np.float64)
+    if ratios.sum() <= 0:
+        return None
+    ratios = ratios / ratios.sum()
+    return ratios.tolist()
+
+
+def _compute_sample_weights(items: List[Dict],
+                             args,
+                             *,
+                             class_ratios: Optional[Sequence[float]] = None,
+                             is_main: bool = False) -> Optional[torch.Tensor]:
+    if not getattr(args, "enable_weighted_sampling", False):
+        return None
+    if not class_ratios:
+        if is_main:
+            print("⚠️  Weighted sampling requested but no class ratios available; skipping")
+        return None
+
+    inv = 1.0 / (np.asarray(class_ratios, dtype=np.float64) + 1e-6)
+    weights = []
+    for item in items:
+        label_path = item.get("label")
+        if not label_path or not os.path.exists(label_path):
+            weights.append(1.0)
+            continue
+        try:
+            label_obj = nib.load(label_path)
+            label = np.asarray(label_obj.dataobj).astype(np.int16)
+        except Exception:
+            weights.append(1.0)
+            continue
+        label = label.astype(np.int32)
+        if args.foreground_only:
+            label = np.where(label > 0, label - 1, -1)
+        unique = np.unique(label)
+        unique = unique[(unique >= 0) & (unique < inv.shape[0])]
+        if unique.size == 0:
+            weights.append(1.0)
+        else:
+            weights.append(float(inv[unique].mean()))
+    weights = np.asarray(weights, dtype=np.float64)
+    if weights.sum() <= 0:
+        return None
+    weights = weights / weights.sum() * len(weights)
+    if is_main:
+        print("✅ Weighted sampling enabled for target dataset")
+        print(f"   Weight range: [{weights.min():.3f}, {weights.max():.3f}]")
+    return torch.as_tensor(weights, dtype=torch.double)
 
 
 def get_target_dataloaders(args,
@@ -184,8 +351,22 @@ def get_target_dataloaders(args,
     train_items = _process_items(train_items)
     val_items = _process_items(val_items)
 
-    train_transform = _base_transforms(args, mode="train")
-    val_transform = _base_transforms(args, mode="val")
+    is_main = (not is_distributed) or rank == 0
+    class_ratios = _load_class_ratios(args, is_main=is_main)
+    laterality_pairs = _load_lr_pairs(args)
+
+    train_transform = _base_transforms(
+        args,
+        mode="train",
+        class_crop_ratios=class_ratios,
+        laterality_pairs=laterality_pairs,
+    )
+    val_transform = _base_transforms(
+        args,
+        mode="val",
+        class_crop_ratios=None,
+        laterality_pairs=None,
+    )
 
     use_cache = args.cache_rate > 0
     DatasetCls = CacheDataset if use_cache else Dataset
@@ -200,11 +381,19 @@ def get_target_dataloaders(args,
     train_dataset = DatasetCls(train_items, transform=train_transform, **dataset_kwargs)
     val_dataset = Dataset(val_items, transform=val_transform)
 
+    sample_weights = _compute_sample_weights(train_items, args, class_ratios=class_ratios, is_main=is_main)
+
     if is_distributed:
         train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True, drop_last=True)
         val_sampler = DistributedSampler(val_dataset, num_replicas=world_size, rank=rank, shuffle=False, drop_last=False)
+        if sample_weights is not None and is_main:
+            print("⚠️  Weighted sampling is incompatible with DistributedSampler; falling back to distributed shuffling")
+        sample_weights = None
     else:
-        train_sampler = None
+        if sample_weights is not None:
+            train_sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
+        else:
+            train_sampler = None
         val_sampler = None
 
     train_loader = DataLoader(
