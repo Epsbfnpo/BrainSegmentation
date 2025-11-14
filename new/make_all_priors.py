@@ -147,7 +147,8 @@ def compute_sdf(label: np.ndarray, cls: int, band: float) -> Optional[np.ndarray
 # -----------------------------------------------------------------------------
 
 def worker_basic(sample: Dict[str, object], age_bin: int) -> Dict[str, object]:
-    label = nib.load(sample["label"]).get_fdata(dtype=np.int16)
+    img = nib.load(sample["label"])
+    label = np.asarray(img.dataobj, dtype=np.int16)
     lbl_fg = remap_foreground_only(label)
     fractions = voxel_fraction_per_class(lbl_fg)
     adj = adjacency_counts(lbl_fg)
@@ -162,7 +163,8 @@ def worker_sdf(chunk: Sequence[Dict[str, object]], temp_dir: str, template_shape
 
     for sample in chunk:
         age_bin = age_to_bin(sample["age"], bin_width)
-        label = nib.load(sample["label"]).get_fdata(dtype=np.int16)
+        img = nib.load(sample["label"])
+        label = np.asarray(img.dataobj, dtype=np.int16)
         lbl_fg = remap_foreground_only(label)
         lbl_ds = resample_label_nn(lbl_fg, template_shape)
         present = np.unique(lbl_ds)
