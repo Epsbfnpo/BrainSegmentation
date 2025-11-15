@@ -8,7 +8,7 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
-from monai.losses import DiceLoss, FocalLoss
+from monai.losses import DiceLoss
 from monai.metrics import DiceMetric
 from monai.transforms import AsDiscrete
 from monai.inferers import sliding_window_inference
@@ -90,6 +90,7 @@ class CombinedSegmentationLoss(nn.Module):
         self.foreground_only = foreground_only
         self.loss_config = loss_config
         self.class_weights = class_weights
+        self.focal_gamma = float(focal_gamma)
 
         if loss_config == "dice_ce":
             self.dice_weight = 0.6
@@ -116,13 +117,8 @@ class CombinedSegmentationLoss(nn.Module):
         if self.ce_weight > 0:
             self.ce_loss = nn.CrossEntropyLoss(weight=class_weights, ignore_index=-1)
         if self.focal_weight > 0:
-            self.focal_loss = FocalLoss(
-                include_background=not foreground_only,
-                to_onehot_y=False,
-                gamma=focal_gamma,
-                weight=class_weights,
-                reduction="mean",
-            )
+            if class_weights is not None and class_weights.ndim != 1:
+                raise ValueError("class_weights must be a 1D tensor when using focal loss")
 
     def forward(self, logits: torch.Tensor, labels: torch.Tensor) -> Dict[str, torch.Tensor]:
         if labels.ndim == 5 and labels.shape[1] == 1:
@@ -132,6 +128,11 @@ class CombinedSegmentationLoss(nn.Module):
 
         labels_no_ignore = labels.clone()
         labels_no_ignore[labels_no_ignore < 0] = 0
+        valid_mask: Optional[torch.Tensor]
+        if labels.ndim >= 4:
+            valid_mask = (labels >= 0).float()
+        else:
+            valid_mask = None
 
         if labels_no_ignore.ndim == 4:
             labels_for_dice = labels_no_ignore.unsqueeze(1)
@@ -153,7 +154,7 @@ class CombinedSegmentationLoss(nn.Module):
         result["dice"] = dice
 
         if self.focal_weight > 0:
-            focal = self.focal_loss(logits, labels_no_ignore.long())
+            focal = self._compute_focal_loss(logits, labels_no_ignore.long(), valid_mask)
         else:
             focal = torch.zeros(1, device=logits.device)
         result["focal"] = focal
@@ -161,6 +162,49 @@ class CombinedSegmentationLoss(nn.Module):
         total = self.dice_weight * dice + self.ce_weight * ce + self.focal_weight * focal
         result["total"] = total
         return result
+
+    def _compute_focal_loss(self,
+                             logits: torch.Tensor,
+                             target: torch.Tensor,
+                             valid_mask: Optional[torch.Tensor]) -> torch.Tensor:
+        num_classes = logits.shape[1]
+        if num_classes != self.num_classes:
+            raise ValueError(
+                f"Logits channel dimension ({num_classes}) does not match configured num_classes ({self.num_classes})"
+            )
+
+        # Convert targets to one-hot representation to align with the class dimension of the logits.
+        target = target.clamp(min=0).long()
+        one_hot = F.one_hot(target, num_classes=num_classes)
+        # Move the class axis to position 1 to match the logits layout (N, C, ...).
+        if one_hot.ndim > 2:
+            permute_order = (0, one_hot.ndim - 1, *range(1, one_hot.ndim - 1))
+            one_hot = one_hot.permute(permute_order)
+        else:
+            one_hot = one_hot.unsqueeze(1)
+        one_hot = one_hot.to(dtype=logits.dtype, device=logits.device)
+
+        log_probs = F.log_softmax(logits, dim=1)
+        probs = log_probs.exp()
+
+        pt = (probs * one_hot).sum(dim=1)
+        focal_factor = (1.0 - pt).clamp_min(0.0) ** self.focal_gamma
+        loss = -focal_factor * (log_probs * one_hot).sum(dim=1)
+
+        if self.class_weights is not None:
+            view_shape = (1, -1) + (1,) * (loss.ndim - 1)
+            class_w = self.class_weights.view(view_shape).to(logits.device)
+            class_w = (class_w * one_hot).sum(dim=1)
+            loss = loss * class_w
+
+        if valid_mask is not None:
+            valid_mask = valid_mask.to(device=loss.device, dtype=loss.dtype)
+            loss = loss * valid_mask
+            denom = valid_mask.sum().clamp_min(1.0)
+        else:
+            denom = loss.new_tensor(loss.numel(), dtype=loss.dtype)
+
+        return loss.sum() / denom
 
 
 def train_epoch(model: nn.Module,
