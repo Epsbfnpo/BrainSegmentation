@@ -45,6 +45,8 @@ EVAL_MULTI_SCALE=${EVAL_MULTI_SCALE:-0}
 EVAL_SCALES=${EVAL_SCALES:-"1.0"}
 PRECHECK_PRIORS=${PRECHECK_PRIORS:-1}
 LATERALITY_PAIRS=${LATERALITY_PAIRS:-}
+EPOCH_TIME_BUFFER=${EPOCH_TIME_BUFFER:-600}
+SLURM_TIME_BUFFER=${SLURM_TIME_BUFFER:-300}
 
 # ---------- Derived paths ----------
 VOLUME_STATS="${TARGET_PRIOR_ROOT}/volume_stats.json"
@@ -67,6 +69,19 @@ if [ "${PRECHECK_PRIORS}" -ne 0 ]; then
 fi
 
 mkdir -p "${RESULTS_DIR}"
+
+RESUME_FILE="${RESULTS_DIR}/resume_from.txt"
+if [ -z "${PRETRAINED_CHECKPOINT}" ] && [ -f "${RESUME_FILE}" ]; then
+    RESUME_CANDIDATE="$(cat "${RESUME_FILE}")"
+    if [ -n "${RESUME_CANDIDATE}" ] && [ -f "${RESUME_CANDIDATE}" ]; then
+        PRETRAINED_CHECKPOINT="${RESUME_CANDIDATE}"
+        RESUME_FROM="${RESUME_CANDIDATE}"
+    fi
+fi
+
+if [ -z "${RESUME_FROM:-}" ] && [ -n "${PRETRAINED_CHECKPOINT}" ] && [[ "${PRETRAINED_CHECKPOINT}" == *checkpoint*pt ]]; then
+    RESUME_FROM="${PRETRAINED_CHECKPOINT}"
+fi
 
 CMD=(
     torchrun --nproc_per_node="${NUM_GPUS}"
@@ -101,6 +116,8 @@ CMD=(
     --age_reliability_min "${AGE_RELIABILITY_MIN}"
     --age_reliability_pow "${AGE_RELIABILITY_POW}"
     --prior_dir "${TARGET_PRIOR_ROOT}"
+    --epoch_time_buffer "${EPOCH_TIME_BUFFER}"
+    --slurm_time_buffer "${SLURM_TIME_BUFFER}"
 )
 
 if [ "${PRECHECK_PRIORS}" -ne 0 ]; then
@@ -117,7 +134,9 @@ if [ -f "${STRUCTURAL_RULES}" ]; then
     CMD+=(--structural_rules "${STRUCTURAL_RULES}")
 fi
 
-if [ -n "${PRETRAINED_CHECKPOINT}" ]; then
+if [ -n "${RESUME_FROM:-}" ]; then
+    CMD+=(--resume "${RESUME_FROM}")
+elif [ -n "${PRETRAINED_CHECKPOINT}" ]; then
     CMD+=(--pretrained_checkpoint "${PRETRAINED_CHECKPOINT}")
 fi
 

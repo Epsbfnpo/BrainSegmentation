@@ -25,6 +25,66 @@ from trainer_age_aware import (CombinedSegmentationLoss, ExponentialMovingAverag
                                train_epoch, validate_epoch)
 
 
+def parse_slurm_timelimit(raw: Optional[str]) -> Optional[float]:
+    """Parse SLURM time limit strings into seconds."""
+    if not raw:
+        return None
+    raw = raw.strip()
+    if not raw:
+        return None
+    days = 0
+    time_part = raw
+    if "-" in raw:
+        day_str, time_part = raw.split("-", 1)
+        try:
+            days = int(day_str)
+        except ValueError:
+            return None
+    parts = time_part.split(":")
+    try:
+        if len(parts) == 3:
+            hours, minutes, seconds = (int(parts[0]), int(parts[1]), int(parts[2]))
+        elif len(parts) == 2:
+            hours, minutes, seconds = 0, int(parts[0]), int(parts[1])
+        elif len(parts) == 1:
+            # Interpret single integer as minutes
+            hours, minutes, seconds = 0, int(parts[0]), 0
+        else:
+            return None
+    except ValueError:
+        return None
+    total_minutes = (days * 24 * 60) + (hours * 60) + minutes
+    return float(total_minutes * 60 + seconds)
+
+
+def compute_job_deadline(buffer_seconds: float) -> Optional[float]:
+    """Return UNIX timestamp when training should finish (buffer already subtracted)."""
+    end_time_env = os.environ.get("SLURM_JOB_END_TIME")
+    if end_time_env:
+        try:
+            end_time = float(end_time_env)
+            return end_time - buffer_seconds
+        except ValueError:
+            pass
+    start_env = os.environ.get("SLURM_JOB_START_TIME")
+    limit_env = os.environ.get("SLURM_JOB_TIME_LIMIT") or os.environ.get("SLURM_TIMELIMIT")
+    if start_env and limit_env:
+        try:
+            start_time = float(start_env)
+        except ValueError:
+            start_time = None
+        time_limit = parse_slurm_timelimit(limit_env)
+        if start_time is not None and time_limit is not None:
+            return start_time + time_limit - buffer_seconds
+    return None
+
+
+def record_resume_checkpoint(results_dir: Path, checkpoint_path: Path) -> None:
+    resume_file = results_dir / "resume_from.txt"
+    checkpoint_path = checkpoint_path.resolve()
+    resume_file.write_text(str(checkpoint_path), encoding="utf-8")
+
+
 def init_distributed(args) -> bool:
     if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
         args.rank = int(os.environ["RANK"])
@@ -225,6 +285,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_keep_ckpt", type=int, default=5)
     parser.add_argument("--resume", type=str, default=None, help="Resume from checkpoint path")
     parser.add_argument("--log_interval", type=int, default=20)
+    parser.add_argument("--epoch_time_buffer", type=float, default=600.0,
+                        help="Minimum seconds required to start a new epoch")
+    parser.add_argument("--slurm_time_buffer", type=float, default=300.0,
+                        help="Seconds to reserve before job termination when estimating deadline")
     parser.add_argument("--debug_mode", action="store_true", default=False)
     parser.add_argument("--debug_step_limit", type=int, default=2)
     parser.add_argument("--debug_val_limit", type=int, default=1)
@@ -252,6 +316,11 @@ def main():
 
     signal_state = {"triggered": False}
     register_signal_handlers(signal_state, is_main=is_main)
+
+    job_deadline = compute_job_deadline(float(args.slurm_time_buffer))
+    if job_deadline is not None and is_main:
+        remaining = job_deadline - time.time()
+        print(f"⏱️  Detected SLURM deadline in {max(0.0, remaining):.1f} seconds (buffer applied)")
 
     device = torch.device(f"cuda:{args.local_rank}" if torch.cuda.is_available() else "cpu")
     if not torch.cuda.is_available():
@@ -367,6 +436,9 @@ def main():
     global_step = 0
     start_epoch = 1
     checkpoint_history: deque[Path] = deque()
+    last_checkpoint_path: Optional[Path] = None
+    last_completed_epoch = 0
+    time_limit_exhausted = False
 
     if args.resume:
         resume_path = Path(args.resume)
@@ -392,6 +464,19 @@ def main():
         print(f"📝 Logging to: {log_dir}")
 
     for epoch in range(start_epoch, args.epochs + 1):
+        if job_deadline is not None:
+            time_remaining = job_deadline - time.time()
+            if time_remaining < float(args.epoch_time_buffer):
+                if is_main:
+                    print(
+                        f"⏳ Remaining time {max(0.0, time_remaining):.1f}s is below buffer "
+                        f"({args.epoch_time_buffer}s); stopping before epoch {epoch:03d}",
+                        flush=True,
+                    )
+                time_limit_exhausted = True
+                break
+            elif is_main and epoch == start_epoch:
+                print(f"🔁 Starting epoch loop with ~{time_remaining:.1f}s available", flush=True)
         if distributed and hasattr(train_loader.sampler, "set_epoch"):
             train_loader.sampler.set_epoch(epoch)
 
@@ -422,6 +507,7 @@ def main():
         current_lr = optimizer.param_groups[0]["lr"]
         train_metrics["lr"] = current_lr
         duration = time.time() - start_time
+        last_completed_epoch = epoch
 
         if is_main:
             print(
@@ -498,6 +584,8 @@ def main():
                         best_dice=best_dice,
                         ema_state=ema_helper.state_dict() if ema_helper is not None else None,
                     )
+                    record_resume_checkpoint(results_dir, best_path)
+                    last_checkpoint_path = best_path
                     print(f"  ✅ New best checkpoint saved to {best_path}")
 
         if is_main and args.save_interval > 0 and epoch % args.save_interval == 0:
@@ -513,6 +601,8 @@ def main():
                 ema_state=ema_helper.state_dict() if ema_helper is not None else None,
             )
             checkpoint_history.append(ckpt_path)
+            record_resume_checkpoint(results_dir, ckpt_path)
+            last_checkpoint_path = ckpt_path
             while len(checkpoint_history) > args.max_keep_ckpt:
                 old = checkpoint_history.popleft()
                 if old.exists():
@@ -533,13 +623,38 @@ def main():
             )
             print(f"  💾 Signal-triggered checkpoint saved to {emergency_path}")
             checkpoint_history.append(emergency_path)
+            record_resume_checkpoint(results_dir, emergency_path)
+            last_checkpoint_path = emergency_path
             signal_state["triggered"] = False
 
     if writer is not None:
         writer.close()
 
+    if time_limit_exhausted and is_main:
+        if last_checkpoint_path is None or not last_checkpoint_path.exists():
+            fallback_path = results_dir / f"checkpoint_autoresume_epoch{last_completed_epoch:03d}.pt"
+            save_checkpoint(
+                fallback_path,
+                model=model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                epoch=last_completed_epoch,
+                global_step=global_step,
+                best_dice=best_dice,
+                ema_state=ema_helper.state_dict() if ema_helper is not None else None,
+            )
+            record_resume_checkpoint(results_dir, fallback_path)
+            last_checkpoint_path = fallback_path
+        else:
+            record_resume_checkpoint(results_dir, last_checkpoint_path)
+        print("⛔ Time buffer reached; exiting gracefully for resubmission")
+
+    if distributed:
+        dist.barrier()
     cleanup_distributed()
+
+    return 2 if time_limit_exhausted else 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

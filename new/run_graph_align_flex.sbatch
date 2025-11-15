@@ -30,11 +30,27 @@ cd /datasets/work/hb-nhmrc-dhcp/work/liu275/BrainSegmentation
 source /datasets/work/hb-nhmrc-dhcp/work/liu275/miniconda3/bin/activate
 conda activate brainseg
 
+REPO_ROOT="/datasets/work/hb-nhmrc-dhcp/work/liu275/BrainSegmentation"
+RESULTS_DIR=${RESULTS_DIR:-${REPO_ROOT}/results/target_only}
+export RESULTS_DIR
+RESUBMIT_SENTINEL="${RESULTS_DIR}/.resubmitted"
+SCRIPT_PATH="${REPO_ROOT}/new/run_graph_align_flex.sbatch"
+
 bash new/run_training_graphalign.sh
 STATUS=$?
 
 echo "=============================================================="
 echo "Job $SLURM_JOB_ID ended at $(date) with exit status $STATUS"
 echo "=============================================================="
+
+if [ "$STATUS" -eq 2 ]; then
+    if [ ! -f "$RESUBMIT_SENTINEL" ]; then
+        echo "⏱️  Time limit reached; scheduling a single resubmission"
+        touch "$RESUBMIT_SENTINEL"
+        sbatch --export=ALL,RESUBMITTED=1 "$SCRIPT_PATH"
+    else
+        echo "Resubmission already performed; not submitting again"
+    fi
+fi
 
 exit $STATUS
