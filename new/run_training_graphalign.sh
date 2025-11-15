@@ -140,9 +140,13 @@ if [ -n "${LATERALITY_PAIRS}" ]; then
     CMD+=(--laterality_pairs_json "${LATERALITY_PAIRS}")
 fi
 
-if python - <<PY >/dev/null 2>&1; then
+if python - <<PY >/dev/null 2>&1
 import sys
-sys.exit(0 if float("${EMA_DECAY}") > 0 else 1)
+try:
+    v = float("${EMA_DECAY:-0}")
+    sys.exit(0 if v > 0 else 1)
+except Exception:
+    sys.exit(1)
 PY
 then
     CMD+=(--ema_decay "${EMA_DECAY}")

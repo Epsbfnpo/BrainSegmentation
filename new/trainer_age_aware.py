@@ -112,7 +112,6 @@ class CombinedSegmentationLoss(nn.Module):
                 softmax=True,
                 include_background=not foreground_only,
                 squared_pred=True,
-                ignore_index=-1,
             )
         if self.ce_weight > 0:
             self.ce_loss = nn.CrossEntropyLoss(weight=class_weights, ignore_index=-1)
@@ -123,7 +122,6 @@ class CombinedSegmentationLoss(nn.Module):
                 gamma=focal_gamma,
                 weight=class_weights,
                 reduction="mean",
-                ignore_index=-1,
             )
 
     def forward(self, logits: torch.Tensor, labels: torch.Tensor) -> Dict[str, torch.Tensor]:
@@ -132,6 +130,9 @@ class CombinedSegmentationLoss(nn.Module):
 
         result: Dict[str, torch.Tensor] = {}
 
+        labels_no_ignore = labels.clone()
+        labels_no_ignore[labels_no_ignore < 0] = 0
+
         if self.ce_weight > 0:
             ce = self.ce_loss(logits, labels.long())
         else:
@@ -139,13 +140,13 @@ class CombinedSegmentationLoss(nn.Module):
         result["ce"] = ce
 
         if self.dice_weight > 0:
-            dice = self.dice_loss(logits, labels.long())
+            dice = self.dice_loss(logits, labels_no_ignore.long())
         else:
             dice = torch.zeros(1, device=logits.device)
         result["dice"] = dice
 
         if self.focal_weight > 0:
-            focal = self.focal_loss(logits, labels.long())
+            focal = self.focal_loss(logits, labels_no_ignore.long())
         else:
             focal = torch.zeros(1, device=logits.device)
         result["focal"] = focal

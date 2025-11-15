@@ -26,18 +26,20 @@ export NCCL_SOCKET_IFNAME=^docker0,lo
 export TORCH_ALLOW_TF32=1
 export CUBLAS_ALLOW_TF32=1
 
-cd /datasets/work/hb-nhmrc-dhcp/work/liu275/BrainSegmentation
+cd /datasets/work/hb-nhmrc-dhcp/work/liu275/new
 source /datasets/work/hb-nhmrc-dhcp/work/liu275/miniconda3/bin/activate
 conda activate brainseg
 
-REPO_ROOT="/datasets/work/hb-nhmrc-dhcp/work/liu275/BrainSegmentation"
+REPO_ROOT="/datasets/work/hb-nhmrc-dhcp/work/liu275/new"
 RESULTS_DIR=${RESULTS_DIR:-${REPO_ROOT}/results/target_only}
 export RESULTS_DIR
 RESUBMIT_SENTINEL="${RESULTS_DIR}/.resubmitted"
-SCRIPT_PATH="${REPO_ROOT}/new/run_graph_align_flex.sbatch"
+SCRIPT_PATH="${REPO_ROOT}/run_graph_align_flex.sbatch"
 
-bash new/run_training_graphalign.sh
+set +e
+bash ./run_training_graphalign.sh
 STATUS=$?
+set -e
 
 echo "=============================================================="
 echo "Job $SLURM_JOB_ID ended at $(date) with exit status $STATUS"
