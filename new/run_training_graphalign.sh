@@ -55,7 +55,7 @@ ADJACENCY_PRIOR="${TARGET_PRIOR_ROOT}/adjacency_prior.npz"
 RESTRICTED_MASK="${TARGET_PRIOR_ROOT}/R_mask.npy"
 STRUCTURAL_RULES="${TARGET_PRIOR_ROOT}/structural_rules.json"
 
-for required in "${TARGET_SPLIT_JSON}" "${VOLUME_STATS}" "${SDF_TEMPLATES}" "${ADJACENCY_PRIOR}" "${STRUCTURAL_RULES}"; do
+for required in "${TARGET_SPLIT_JSON}" "${VOLUME_STATS}" "${SDF_TEMPLATES}" "${ADJACENCY_PRIOR}"; do
     if [ ! -f "$required" ]; then
         echo "Missing required file: $required" >&2
         exit 1
@@ -128,10 +128,6 @@ fi
 
 if [ -f "${RESTRICTED_MASK}" ]; then
     CMD+=(--restricted_mask "${RESTRICTED_MASK}")
-fi
-
-if [ -f "${STRUCTURAL_RULES}" ]; then
-    CMD+=(--structural_rules "${STRUCTURAL_RULES}")
 fi
 
 if [ -n "${RESUME_FROM:-}" ]; then
