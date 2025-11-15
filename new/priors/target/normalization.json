@@ -1,0 +1,11 @@
+{
+  "adjacency_norm": "row",
+  "build_pred_norm": "row",
+  "symmetrize_pred": true,
+  "zero_diagonal_pred": true,
+  "laplacian": "unnorm",
+  "spectral_top_k": 20,
+  "age_bin_width": 1.0,
+  "rmask_policy": "row-topk",
+  "rmask_arg": 0.1
+}
