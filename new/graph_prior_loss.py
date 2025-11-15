@@ -1,3113 +1,591 @@
-#!/usr/bin/env python3
-"""
-Age-conditioned graph-based anatomical prior loss for brain segmentation
-Implements volume priors, shape priors, and weighted adjacency based on age
-"""
+from __future__ import annotations
 
+import json
+import os
+from typing import Dict, List, Optional, Sequence, Tuple
+
+import numpy as np
 import torch
-import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
-import json
-import numpy as np
-import os
-import math
-import re
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Optional, Dict, List, Tuple, Union
-from monai.data import MetaTensor
 
 
-_DEFAULT_VOLUME_STD_FLOOR = 0.02
+def _huber(x: torch.Tensor, delta: float = 1.0) -> torch.Tensor:
+    abs_x = x.abs()
+    quadratic = torch.minimum(abs_x, torch.tensor(delta, device=x.device, dtype=x.dtype))
+    linear = abs_x - quadratic
+    return 0.5 * quadratic ** 2 + delta * linear
 
 
-def _resolve_dtype(dtype: Optional[str]) -> torch.dtype:
-    """Map a string dtype specifier to a torch.dtype with sensible defaults."""
+def _row_normalise(mat: torch.Tensor) -> torch.Tensor:
+    mat = mat.clone()
+    mat = mat - torch.diag_embed(torch.diagonal(mat, dim1=-2, dim2=-1))
+    rowsum = mat.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+    return mat / rowsum
 
-    if dtype is None:
-        return torch.float32
 
-    normalized = str(dtype).lower()
-    if normalized in {"fp16", "float16", "half"}:
-        return torch.float16
-    if normalized in {"bf16", "bfloat16"}:
-        return torch.bfloat16
-    if normalized in {"float", "float32", "fp32"}:
-        return torch.float32
-
-    raise ValueError(
-        f"Unsupported shape template dtype '{dtype}'. Supported values: float32, float16, bfloat16."
-    )
-
-
-def _derive_shape_template_cache_path(
-    template_path: str,
-    target_shape: Optional[Tuple[int, int, int]],
-    dtype: torch.dtype,
-) -> str:
-    """Create a deterministic cache path for processed shape templates."""
-
-    base = f"{template_path}.processed"
-    if target_shape is not None:
-        base += f".roi{int(target_shape[0])}x{int(target_shape[1])}x{int(target_shape[2])}"
-
-    if dtype == torch.float16:
-        base += ".fp16"
-    elif dtype == torch.bfloat16:
-        base += ".bf16"
-    else:
-        base += ".fp32"
-
-    return base + ".pt"
-
-
-def _parse_age_key(key: object) -> float:
-    """Convert an age-bin key from the template file to a float value."""
-
-    if isinstance(key, (int, float)):
-        return float(key)
-
-    if isinstance(key, str):
-        if key == "unknown_age":
-            return -1.0
-
-        match = re.match(r"age_([0-9]+(?:\.[0-9]+)?)w", key)
-        if match:
-            return float(match.group(1))
-
-    raise ValueError(f"Unrecognised age-bin key in shape templates: {key!r}")
-
-
-def _resolve_shape_template_workers(workers: Optional[int]) -> int:
-    """Derive a sensible worker count for shape template preprocessing."""
-
-    if workers is None:
-        workers = 0
-
-    try:
-        workers = int(workers)
-    except (TypeError, ValueError):
-        workers = 0
-
-    if workers <= 0:
-        cpu_count = os.cpu_count() or 1
-        auto = max(1, int(math.floor(cpu_count * 0.8)))
-        return auto
-
-    return max(1, workers)
-
-
-def _to_tensor(x):
-    """Convert MetaTensor to regular torch.Tensor if needed"""
-    if x is None:
-        return None
-    if isinstance(x, MetaTensor):
-        return x.as_tensor()
-    return x
-
-def soft_adjacency_from_probs(probs: torch.Tensor,
-                              kernel_size: int = 3,
-                              stride: int = 1,
-                              temperature: float = 1.0,
-                              restricted_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-    """Compute soft adjacency matrix from probability maps with optional restrictions."""
-
-    probs = _to_tensor(probs)
-
-    if kernel_size > 1:
-        probs_pooled = F.avg_pool3d(
-            probs,
-            kernel_size=kernel_size,
-            stride=stride,
-            padding=kernel_size // 2,
-            count_include_pad=False,
-        )
-    else:
-        probs_pooled = probs
-
-    B, C, X_p, Y_p, Z_p = probs_pooled.shape
-    probs_flat = probs_pooled.reshape(B, C, -1)
-    probs_norm = probs_flat / (probs_flat.sum(dim=2, keepdim=True) + 1e-8)
-
-    A_batch = torch.bmm(probs_norm, probs_norm.transpose(1, 2))
-
-    if temperature != 1.0:
-        A_batch = torch.pow(A_batch + 1e-8, 1.0 / temperature)
-
-    eye = torch.eye(C, device=probs.device).unsqueeze(0)
-    A_batch = A_batch * (1 - eye)
-
-    if restricted_mask is not None:
-        restricted_mask = _to_tensor(restricted_mask)
-        if restricted_mask.dim() == 2:
-            restricted_mask = restricted_mask.unsqueeze(0)
-        A_batch = A_batch * restricted_mask
-
-    row_sums = A_batch.sum(dim=2, keepdim=True).clamp(min=1e-8)
-    A_batch = A_batch / row_sums
-
-    return A_batch.mean(dim=0)
-
-
-def _parse_age_key(raw_key: Union[str, int, float]) -> Optional[float]:
-    """Parse various age bucket keys into a float value."""
-
-    if isinstance(raw_key, (int, float)):
-        return float(raw_key)
-
-    if not isinstance(raw_key, str):
-        return None
-
-    token = raw_key.strip().lower()
-    if not token:
-        return None
-
-    if token in {"unknown", "unknown_age", "nan"}:
-        return -1.0
-
-    match = re.search(r"-?\d+(?:\.\d+)?", token)
-    if match is None:
-        return None
-
-    try:
-        return float(match.group(0))
-    except ValueError:
-        return None
-
-
-def _coerce_shape_template_payload(payload: Any) -> Tuple[Dict[float, torch.Tensor], Dict[str, Any]]:
-    """Convert torch.load payloads into an age→template dictionary."""
-
-    metadata: Dict[str, Any] = {}
-    if payload is None:
-        return {}, metadata
-
-    mapping: Optional[Dict] = None
-    if isinstance(payload, dict):
-        if 'mean' in payload and isinstance(payload['mean'], dict):
-            mapping = payload['mean']
-            metadata['has_std'] = bool(payload.get('std'))
-            if 'num_classes' in payload:
-                metadata['num_classes'] = int(payload['num_classes'])
-        else:
-            mapping = payload
-
-    if mapping is None:
-        return {}, metadata
-
-    templates: Dict[float, torch.Tensor] = {}
-    ignored_keys: List[str] = []
-
-    for raw_key, value in mapping.items():
-        age_key = _parse_age_key(raw_key)
-        if age_key is None:
-            ignored_keys.append(str(raw_key))
-            continue
-
-        if isinstance(value, torch.Tensor):
-            tensor = value.detach().cpu().float()
-        else:
-            tensor = torch.as_tensor(value, dtype=torch.float32)
-
-        templates[age_key] = tensor
-
-    if not templates:
-        metadata['ignored_keys'] = ignored_keys
-        return {}, metadata
-
-    ages_sorted = sorted(templates.keys())
-    metadata['ages'] = ages_sorted
-    first_template = templates[ages_sorted[0]]
-    metadata['spatial_shape'] = tuple(first_template.shape[1:])
-    metadata['num_classes_in_template'] = first_template.shape[0]
-    if ignored_keys:
-        metadata['ignored_keys'] = ignored_keys
-
-    return templates, metadata
-
-def compute_laplacian(A: torch.Tensor, normalized: bool = True) -> torch.Tensor:
-    """Compute (optionally normalized) graph Laplacian from adjacency matrix."""
-
-    A = _to_tensor(A)
-    A_sym = 0.5 * (A + A.T)
-    D = torch.diag(A_sym.sum(dim=1))
-    L = D - A_sym
-
-    if normalized:
-        d_sqrt_inv = torch.diag(1.0 / torch.sqrt(torch.diag(D).clamp(min=1e-8)))
-        L = d_sqrt_inv @ L @ d_sqrt_inv
-
-    return L
-
-def spectral_alignment_loss(L_pred: torch.Tensor,
-                            L_prior: torch.Tensor,
-                            top_k: int = 20,
-                            align_vectors: bool = True,
-                            eigenvalue_weighted: bool = False) -> torch.Tensor:
-    """Align Laplacian spectra (and optionally eigenvectors) between two graphs."""
-
-    L_pred = _to_tensor(L_pred)
-    L_prior = _to_tensor(L_prior)
-
-    L_pred_sym = 0.5 * (L_pred + L_pred.T)
-    L_prior_sym = 0.5 * (L_prior + L_prior.T)
-
-    evals_pred, evecs_pred = torch.linalg.eigh(L_pred_sym.float())
-    evals_prior, evecs_prior = torch.linalg.eigh(L_prior_sym.float())
-
-    evals_pred = evals_pred.to(L_pred.dtype)
-    evals_prior = evals_prior.to(L_prior.dtype)
-    evecs_pred = evecs_pred.to(L_pred.dtype)
-    evecs_prior = evecs_prior.to(L_prior.dtype)
-
-    k = min(top_k, evals_pred.shape[0] - 1)
-
-    loss_evals = F.mse_loss(evals_pred[1:k + 1], evals_prior[1:k + 1])
-
-    if not align_vectors or k <= 0:
-        return loss_evals
-
-    U_pred = evecs_pred[:, 1:k + 1]
-    U_prior = evecs_prior[:, 1:k + 1]
-
-    dots = (U_pred * U_prior).sum(dim=0)
-    signs = torch.where(dots < 0, -torch.ones_like(dots), torch.ones_like(dots))
-    U_pred = U_pred * signs.unsqueeze(0)
-
-    if eigenvalue_weighted:
-        w = evals_prior[1:k + 1].abs()
-        w = w / (w.sum() + 1e-8)
-        loss_subspace = 0.0
-        for i in range(k):
-            cos_sim = torch.dot(U_pred[:, i], U_prior[:, i])
-            loss_subspace += w[i] * (1.0 - cos_sim ** 2)
-    else:
-        P_pred = U_pred @ U_pred.T
-        P_prior = U_prior @ U_prior.T
-        loss_subspace = F.mse_loss(P_pred, P_prior)
-
-    return loss_evals + 0.5 * loss_subspace
-
-def edge_consistency_loss_with_mismatch(A_pred: torch.Tensor,
-                                        A_prior: torch.Tensor,
-                                        required_edges: Optional[List[Tuple[int, int]]] = None,
-                                        forbidden_edges: Optional[List[Tuple[int, int]]] = None,
-                                        margin: float = 0.1,
-                                        class_weights: Optional[torch.Tensor] = None,
-                                        qap_mismatch_g: float = 1.5,
-                                        restricted_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-    """Edge-level alignment with mismatch-aware penalties and optional masks."""
-
-    A_pred = _to_tensor(A_pred)
-    A_prior = _to_tensor(A_prior)
-
-    if restricted_mask is not None:
-        restricted_mask = _to_tensor(restricted_mask)
-        A_pred = A_pred * restricted_mask
-        A_prior = A_prior * restricted_mask
-
-    if class_weights is not None:
-        w = class_weights.view(-1, 1)
-        W = torch.sqrt(w @ w.T)
-        W = W / W.mean()
-    else:
-        W = torch.ones_like(A_pred)
-
-    loss_mse = torch.mean(W * (A_pred - A_prior) ** 2)
-
-    if restricted_mask is not None:
-        R = restricted_mask
-    else:
-        R = torch.ones_like(A_pred)
-
-    M = (A_pred * A_prior) * R
-    N = ((1 - A_pred) * (1 - A_prior)) * R
-    X = ((1 - A_prior) * A_pred + A_prior * (1 - A_pred)) * R
-    loss_qap = qap_mismatch_g * X.mean() - M.mean()
-    loss_base = loss_mse + 0.1 * loss_qap
-
-    loss_required = torch.tensor(0.0, device=A_pred.device)
-    th_required = 0.02
-    if required_edges:
-        for i, j in required_edges:
-            if i < A_pred.shape[0] and j < A_pred.shape[1]:
-                loss_required = loss_required + torch.pow(F.relu(th_required - A_pred[i, j]), 2)
-
-    loss_forbidden = torch.tensor(0.0, device=A_pred.device)
-    th_forbidden = 5e-4
-    if forbidden_edges:
-        for i, j in forbidden_edges:
-            if i < A_pred.shape[0] and j < A_pred.shape[1]:
-                loss_forbidden = loss_forbidden + torch.pow(F.relu(A_pred[i, j] - th_forbidden), 2)
-
-    num_constraints = len(required_edges or []) + len(forbidden_edges or [])
-    if num_constraints > 0:
-        constraint_weight = 0.1
-        loss_constraints = constraint_weight * (loss_required + loss_forbidden) / num_constraints
-    else:
-        loss_constraints = torch.tensor(0.0, device=A_pred.device)
-
-    return loss_base + loss_constraints
-
-def compute_restricted_mask(num_classes: int,
-                            required_edges: List[Tuple[int, int]],
-                            forbidden_edges: List[Tuple[int, int]],
-                            lr_pairs: List[Tuple[int, int]],
-                            device: torch.device) -> torch.Tensor:
-    """Construct binary mask describing which adjacencies are valid."""
-
-    R = torch.ones(num_classes, num_classes, device=device)
-    R.fill_diagonal_(0)
-
-    for i, j in forbidden_edges:
-        if i < num_classes and j < num_classes:
-            R[i, j] = 0
-            R[j, i] = 0
-
-    for i, j in required_edges:
-        if i < num_classes and j < num_classes:
-            R[i, j] = 1
-            R[j, i] = 1
-
-    for left, right in lr_pairs:
-        if left < num_classes and right < num_classes:
-            R[left, right] = 1
-            R[right, left] = 1
-
-    return R
-
-
-def compute_sdt(mask: torch.Tensor, temperature: float = 4.0) -> torch.Tensor:
-    """Differentiable surrogate for a signed distance transform.
-
-    Instead of running a hard-thresholded distance transform (which would
-    detach the computation graph), we rely on the logit of the soft mask as a
-    smooth proxy for the signed distance. The temperature parameter controls
-    the slope around the interface so that the dynamic range roughly matches
-    pre-computed template SDTs.
-    """
-
-    mask = _to_tensor(mask)
-    eps = 1e-4
-    clamped = mask.clamp(min=eps, max=1.0 - eps)
-    signed = -torch.log(clamped) + torch.log1p(-clamped)  # = -logit(mask)
-
-    if temperature is not None and temperature > 0:
-        signed = signed / temperature
-
-    return signed
-
-
-def compute_weighted_adjacency(probs: torch.Tensor, age: torch.Tensor,
-                               age_weights: Optional[Dict] = None,
-                               temperature: float = 1.0) -> torch.Tensor:
-    """
-    Compute weighted adjacency matrix based on age
-
-    Args:
-        probs: (B, C, X, Y, Z) probability maps
-        age: (B, 1) age tensor
-        age_weights: Dictionary mapping age ranges to weight matrices
-        temperature: Temperature for sharpening
-
-    Returns:
-        A_weighted: (B, C, C) weighted adjacency matrix
-    """
-    B, C, X, Y, Z = probs.shape
-
-    # Flatten spatial dimensions
-    probs_flat = probs.reshape(B, C, -1)
-
-    # Compute co-occurrence matrix
-    A_batch = torch.bmm(probs_flat, probs_flat.transpose(1, 2))  # (B, C, C)
-
-    # Apply temperature
-    if temperature != 1.0:
-        A_batch = torch.pow(A_batch + 1e-8, 1.0 / temperature)
-
-    # Zero diagonal
-    eye = torch.eye(C, device=probs.device).unsqueeze(0)
-    A_batch = A_batch * (1 - eye)
-
-    # Apply age-dependent weights if provided
-    if age_weights is not None:
-        for b in range(B):
-            age_val = age[b].item()
-            # Find appropriate weight matrix for this age
-            weight_matrix = get_age_weight_matrix(age_val, age_weights, C, probs.device)
-            A_batch[b] = A_batch[b] * weight_matrix
-
-    # Row-normalize per-sample  (B, C, C)
-    row_sums = A_batch.sum(dim=2, keepdim=True).clamp(min=1e-8)
-    A_batch = A_batch / row_sums
-
-    # 返回每个样本的邻接矩阵 (B, C, C)
-    return A_batch
-
-
-def get_age_weight_matrix(age: float, age_weights: Dict,
-                          num_classes: int, device: torch.device) -> torch.Tensor:
-    """
-    Get weight matrix for a specific age through interpolation
-
-    Args:
-        age: Age value
-        age_weights: Dict with age as key and weight matrix as value
-        num_classes: Number of classes
-        device: Device
-
-    Returns:
-        weight_matrix: (C, C) interpolated weight matrix
-    """
-    if not age_weights:
-        return torch.ones(num_classes, num_classes, device=device)
-
-    # Get sorted ages
-    ages = sorted(list(age_weights.keys()))
-
-    # Find bracketing ages
-    if age <= ages[0]:
-        return torch.tensor(age_weights[ages[0]], device=device)
-    if age >= ages[-1]:
-        return torch.tensor(age_weights[ages[-1]], device=device)
-
-    # Linear interpolation
-    for i in range(len(ages) - 1):
-        if ages[i] <= age <= ages[i + 1]:
-            alpha = (age - ages[i]) / (ages[i + 1] - ages[i])
-            w1 = torch.tensor(age_weights[ages[i]], device=device)
-            w2 = torch.tensor(age_weights[ages[i + 1]], device=device)
-            return (1 - alpha) * w1 + alpha * w2
-
-    return torch.ones(num_classes, num_classes, device=device)
-
-
-def _detect_background_index(volume_stats: Dict, num_classes: int) -> Optional[int]:
-    """Infer which channel in the prior corresponds to background.
-
-    We treat a channel as background if either (1) the statistics provide one
-    more entry than the model predicts classes, or (2) a single channel
-    dominates the distribution (mean > 0.5 and the remainder < 0.5)."""
-
-    for stats in volume_stats.values():
-        means = np.asarray(stats.get('means', []), dtype=np.float64)
-        if means.size == 0:
-            continue
-
-        candidate_idx = int(np.argmax(means))
-        candidate_val = float(means[candidate_idx])
-        remainder = float(means.sum() - candidate_val)
-
-        if means.size > num_classes and candidate_val >= remainder:
-            return min(candidate_idx, num_classes - 1)
-        if candidate_val > 0.5 and remainder < 0.5:
-            return min(candidate_idx, num_classes - 1)
-
-    return None
-
-
-def _align_volume_stats(volume_stats: Dict, num_classes: int,
-                        std_floor: float = _DEFAULT_VOLUME_STD_FLOOR) -> Tuple[Dict, Optional[int], np.ndarray]:
-    """Align raw volume statistics to match the model's foreground classes."""
-
-    if not volume_stats:
-        return {}, None, np.ones(num_classes, dtype=np.float32)
-
-    background_idx = _detect_background_index(volume_stats, num_classes)
-    aligned: Dict[float, Dict[str, List[float]]] = {}
-
-    valid_mask = np.ones(num_classes, dtype=np.float32)
-
-    min_std = std_floor if std_floor is not None else 0.0
-    if min_std <= 0:
-        min_std = 1e-6
-
-    for age_key, stats in volume_stats.items():
-        means = np.asarray(stats.get('means', []), dtype=np.float64)
-        stds = np.asarray(stats.get('stds', []), dtype=np.float64)
-
-        if stds.shape[0] != means.shape[0]:
-            if stds.shape[0] > means.shape[0]:
-                stds = stds[: means.shape[0]]
-            else:
-                stds = np.pad(stds, (0, means.shape[0] - stds.shape[0]), constant_values=1.0)
-
-        if background_idx is not None and 0 <= background_idx < means.shape[0]:
-            means = np.delete(means, background_idx)
-            stds = np.delete(stds, background_idx)
-
-        if means.size == 0:
-            fg_means = np.zeros(num_classes, dtype=np.float64)
-            fg_stds = np.ones(num_classes, dtype=np.float64)
-            valid_mask.fill(0.0)
-        else:
-            if means.size > num_classes:
-                fg_means = means[:num_classes]
-                fg_stds = stds[:num_classes]
-            else:
-                pad = num_classes - means.size
-                fg_means = np.pad(means, (0, pad), constant_values=0.0)
-                fg_stds = np.pad(stds, (0, pad), constant_values=1.0)
-                if pad > 0:
-                    valid_mask[means.size:] = 0.0
-
-        total = fg_means.sum()
-        if total > 1e-6:
-            fg_means = fg_means / total
-            fg_stds = fg_stds / total
-
-        fg_stds = np.maximum(fg_stds, min_std)
-
-        fg_stds = np.maximum(fg_stds, min_std)
-
-        fg_stds = np.maximum(fg_stds, min_std)
-
-        fg_stds = np.maximum(fg_stds, min_std)
-
-        fg_stds = np.maximum(fg_stds, min_std)
-
-        fg_stds = np.maximum(fg_stds, min_std)
-
-        fg_stds = np.maximum(fg_stds, min_std)
-
-        fg_stds = np.maximum(fg_stds, min_std)
-
-        fg_stds = np.maximum(fg_stds, min_std)
-
-        fg_stds = np.maximum(fg_stds, min_std)
-
-        fg_stds = np.maximum(fg_stds, min_std)
-
-        aligned[float(age_key)] = {
-            'means': fg_means.astype(np.float32).tolist(),
-            'stds': fg_stds.astype(np.float32).tolist(),
-        }
-
-    return aligned, background_idx, valid_mask
-
-
-def _align_shape_channels(template: torch.Tensor, target_channels: int) -> torch.Tensor:
-    """Match template channel dimension to the network output channels."""
-
-    if template.dim() != 4:
-        return template
-
-    aligned = template
-
-    if aligned.shape[0] > target_channels:
-        flat = aligned.view(aligned.shape[0], -1).abs().sum(dim=1)
-        while aligned.shape[0] > target_channels:
-            drop_idx = int(torch.argmax(flat).item())
-            aligned = torch.cat([aligned[:drop_idx], aligned[drop_idx + 1:]], dim=0)
-            flat = aligned.view(aligned.shape[0], -1).abs().sum(dim=1)
-    elif aligned.shape[0] < target_channels:
-        pad = target_channels - aligned.shape[0]
-        if pad > 0:
-            zeros = torch.zeros((pad, *aligned.shape[1:]), device=aligned.device, dtype=aligned.dtype)
-            aligned = torch.cat([aligned, zeros], dim=0)
-
-    return aligned
-
-
-def volume_consistency_loss(probs: torch.Tensor, age: torch.Tensor,
-                            volume_stats: Dict, num_classes: int,
-                            valid_mask: Optional[torch.Tensor] = None,
-                            std_floor: float = _DEFAULT_VOLUME_STD_FLOOR) -> torch.Tensor:
-    """
-    Compute volume consistency loss based on age-specific statistics
-
-    Args:
-        probs: (B, C, X, Y, Z) probability maps
-        age: (B, 1) age tensor
-        volume_stats: Dictionary with age-specific volume statistics
-        num_classes: Number of classes
-
-    Returns:
-        loss: Volume consistency loss
-    """
-    B = probs.shape[0]
-
-    # Compute predicted volumes
-    predicted_volumes = probs.sum(dim=(2, 3, 4))  # (B, C)
-    # 将预测量归一化为“体积分数”，和先验统计（分数）一致
-    sum_all = predicted_volumes.sum(dim=1, keepdim=True).clamp(min=1e-6)
-    predicted_volumes = predicted_volumes / sum_all
-    # Get expected volumes for each age
-    expected_volumes = torch.zeros(B, num_classes, device=probs.device)
-    expected_stds = torch.ones(B, num_classes, device=probs.device)
-
-    for b in range(B):
-        age_val = age[b].item()
-        volumes, stds = get_expected_volumes(
-            age_val,
-            volume_stats,
-            num_classes,
-            std_floor=std_floor,
-        )
-        expected_volumes[b] = torch.tensor(volumes, device=probs.device)
-        expected_stds[b] = torch.tensor(stds, device=probs.device)
-
-    # Normalize by expected std
-    min_std = std_floor if std_floor is not None else 0.0
-    if min_std <= 0:
-        min_std = 1e-6
-    expected_stds = torch.clamp(expected_stds, min=min_std)
-    normalized_diff = (predicted_volumes - expected_volumes) / expected_stds
-
-    if valid_mask is not None:
-        mask = valid_mask.view(1, -1).to(device=probs.device, dtype=probs.dtype)
-        normalized_diff = normalized_diff * mask
-        denom = mask.sum().clamp(min=1.0)
-    else:
-        denom = torch.tensor(normalized_diff.numel(), device=probs.device, dtype=probs.dtype)
-
-    zero_target = torch.zeros_like(normalized_diff)
-    loss = F.smooth_l1_loss(normalized_diff, zero_target, reduction='sum') / denom
-
-    return loss
-
-
-def get_expected_volumes(age: float, volume_stats: Dict,
-                         num_classes: int,
-                         std_floor: float = _DEFAULT_VOLUME_STD_FLOOR) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Get expected volume statistics for a given age
-
-    Args:
-        age: Age value
-        volume_stats: Dictionary with age-specific statistics
-        num_classes: Number of classes
-
-    Returns:
-        means: Expected volume means
-        stds: Expected volume stds
-    """
-    min_std = std_floor if std_floor is not None else 0.0
-    if min_std <= 0:
-        min_std = 1e-6
-
-    if not volume_stats:
-        means = np.ones(num_classes)
-        stds = np.maximum(np.ones(num_classes), min_std)
-        return means, stds
-
-    # Find closest age or interpolate
-    ages = sorted(list(volume_stats.keys()))
-
-    if age <= ages[0]:
-        stats = volume_stats[ages[0]]
-        means = np.array(stats['means'])
-        stds = np.maximum(np.array(stats['stds']), min_std)
-        return means, stds
-
-    if age >= ages[-1]:
-        stats = volume_stats[ages[-1]]
-        means = np.array(stats['means'])
-        stds = np.maximum(np.array(stats['stds']), min_std)
-        return means, stds
-
-    # Linear interpolation
-    for i in range(len(ages) - 1):
-        if ages[i] <= age <= ages[i + 1]:
-            alpha = (age - ages[i]) / (ages[i + 1] - ages[i])
-            means1 = np.array(volume_stats[ages[i]]['means'])
-            stds1 = np.array(volume_stats[ages[i]]['stds'])
-            means2 = np.array(volume_stats[ages[i + 1]]['means'])
-            stds2 = np.array(volume_stats[ages[i + 1]]['stds'])
-
-            means = (1 - alpha) * means1 + alpha * means2
-            stds = (1 - alpha) * stds1 + alpha * stds2
-            stds = np.maximum(stds, min_std)
-            return means, stds
-
-    means = np.ones(num_classes)
-    stds = np.maximum(np.ones(num_classes), min_std)
-    return means, stds
-
-
-def shape_consistency_loss(probs: torch.Tensor,
-                           age: torch.Tensor,
-                           shape_templates: Optional[Dict] = None,
-                           temperature: float = 4.0,
-                           normalize_templates: bool = True) -> torch.Tensor:
-    """
-    Compute shape consistency loss using signed distance transforms
-
-    Args:
-        probs: (B, C, X, Y, Z) probability maps
-        age: (B, 1) age tensor
-        shape_templates: Dictionary with age-specific shape templates
-
-    Returns:
-        loss: Shape consistency loss
-    """
-    if shape_templates is None:
-        return torch.tensor(0.0, device=probs.device)
-
-    # Compute differentiable SDT surrogate for predictions
-    sdt_pred = compute_sdt(probs, temperature=temperature)
-
-    if normalize_templates:
-        pred_norm = sdt_pred / sdt_pred.detach().abs().amax(dim=(2, 3, 4), keepdim=True).clamp(min=1e-6)
-    else:
-        pred_norm = sdt_pred
-
-    # Get expected SDT for each age
-    B = probs.shape[0]
-    loss = torch.zeros(1, device=probs.device, dtype=probs.dtype)
-    valid = 0
-
-    for b in range(B):
-        age_val = age[b].item()
-        sdt_expected = get_shape_template(age_val, shape_templates, probs.shape[1:], probs.device)
-
-        if sdt_expected is not None:
-            sdt_expected = sdt_expected.to(device=probs.device, dtype=probs.dtype)
-            if normalize_templates:
-                sdt_expected = sdt_expected / sdt_expected.abs().amax(dim=(1, 2, 3), keepdim=True).clamp(min=1e-6)
-
-            loss = loss + F.l1_loss(pred_norm[b], sdt_expected)
-            valid += 1
-
-    if valid == 0:
-        return torch.zeros(1, device=probs.device, dtype=probs.dtype)
-
-    return loss / valid
-
-
-def get_shape_template(age: float, shape_templates: Dict,
-                       shape: Tuple, device: torch.device) -> Optional[torch.Tensor]:
-    """
-    Get shape template for a specific age
-
-    Args:
-        age: Age value
-        shape_templates: Dictionary with age-specific templates
-        shape: Expected shape (C, X, Y, Z)
-        device: Device
-
-    Returns:
-        template: Shape template tensor or None
-    """
-    if not shape_templates:
-        return None
-
-    # Find closest age
-    ages = sorted(list(shape_templates.keys()))
-    closest_age = min(ages, key=lambda x: abs(x - age))
-
-    template = shape_templates[closest_age]
-
-    # Convert to tensor and resize if needed
-    if isinstance(template, np.ndarray):
-        template = torch.from_numpy(template).to(device)
-    else:
-        template = template.to(device)
-
-    template = _align_shape_channels(template, shape[0])
-
-    # Ensure correct spatial shape
-    if template.shape[1:] != shape[1:]:
-        template = F.interpolate(
-            template.unsqueeze(0),
-            size=shape[1:],
-            mode='trilinear',
-            align_corners=False
-        ).squeeze(0)
-
-    return template
+def _laplacian(adj: torch.Tensor) -> torch.Tensor:
+    adj = 0.5 * (adj + adj.transpose(-1, -2))
+    deg = torch.diag_embed(adj.sum(dim=-1))
+    return deg - adj
 
 
 class AgeConditionedGraphPriorLoss(nn.Module):
-    """Unified age-conditioned prior with dual-branch graph alignment support."""
-
     def __init__(self,
+                 *,
+                 num_classes: int,
                  volume_stats_path: Optional[str] = None,
-                 shape_templates_path: Optional[str] = None,
-                 weighted_adj_path: Optional[str] = None,
-                 age_weights_path: Optional[str] = None,
-                 prior_adj_path: Optional[str] = None,
-                 required_json: Optional[str] = None,
-                 forbidden_json: Optional[str] = None,
-                 lr_pairs_json: Optional[str] = None,
-                 src_prior_adj_path: Optional[str] = None,
-                 src_required_json: Optional[str] = None,
-                 src_forbidden_json: Optional[str] = None,
+                 sdf_templates_path: Optional[str] = None,
+                 adjacency_prior_path: Optional[str] = None,
+                 r_mask_path: Optional[str] = None,
+                 structural_rules_path: Optional[str] = None,
+                 lr_pairs_path: Optional[str] = None,
+                 lr_pairs: Optional[Sequence[Tuple[int, int]]] = None,
                  lambda_volume: float = 0.2,
-                 lambda_shape: float = 0.0,
-                 lambda_weighted_adj: float = 0.15,
-                 lambda_topo: float = 0.02,
-                 lambda_sym: float = 0.05,
-                 lambda_spec: float = 0.1,
+                 lambda_shape: float = 0.2,
                  lambda_edge: float = 0.1,
-                 lambda_spec_src: Optional[float] = None,
-                 lambda_edge_src: Optional[float] = None,
-                 lambda_spec_tgt: Optional[float] = None,
-                 lambda_edge_tgt: Optional[float] = None,
-                 top_k: int = 20,
-                 temperature: float = 1.0,
-                 warmup_epochs: Optional[int] = 10,
-                 pool_kernel: int = 3,
-                 pool_stride: int = 2,
-                 graph_align_mode: str = 'joint',
-                 class_weights: Optional[torch.Tensor] = None,
-                 align_U_weighted: bool = False,
-                 qap_mismatch_g: float = 1.5,
-                 use_restricted_mask: bool = False,
-                 restricted_mask_path: Optional[str] = None,
-                 lambda_dyn: float = 0.0,
-                 dyn_top_k: int = 12,
+                 lambda_spec: float = 0.05,
+                 lambda_required: float = 0.05,
+                 lambda_forbidden: float = 0.05,
+                 lambda_symmetry: float = 0.02,
+                 sdf_temperature: float = 4.0,
+                 huber_delta: float = 1.0,
+                 spectral_top_k: int = 20,
+                 warmup_epochs: int = 10,
+                 required_margin: float = 0.2,
+                 forbidden_margin: float = 5e-4,
+                 lambda_dyn: float = 0.2,
                  dyn_start_epoch: int = 50,
-                 dyn_ramp_epochs: int = 50,
-                 prior_warmup_epochs: Optional[int] = None,
-                 prior_temperature: Optional[float] = None,
-                 shape_template_target_shape: Optional[Tuple[int, int, int]] = None,
-                 shape_template_dtype: Optional[str] = None,
-                 shape_templates_cache_path: Optional[str] = None,
-                 shape_template_require_cache: bool = False,
-                 volume_std_floor: float = _DEFAULT_VOLUME_STD_FLOOR,
-                 debug_mode: bool = False,
-                 debug_max_batches: int = 2,
-                 **extra_kwargs):
+                 dyn_ramp_epochs: int = 40,
+                 dyn_mismatch_ref: float = 0.08,
+                 dyn_max_scale: float = 3.0,
+                 age_reliability_min: float = 0.3,
+                 age_reliability_pow: float = 0.5,
+                 debug: bool = False,
+                 debug_max_batches: int = 2):
         super().__init__()
-
-        # Age-aware coefficients
-        self.lambda_volume = lambda_volume
-        self.lambda_shape = lambda_shape
-        self.lambda_weighted_adj = lambda_weighted_adj
-        self.lambda_topo = lambda_topo
-        self.lambda_sym = lambda_sym
-        self.weighted_adj_presence_threshold = float(
-            extra_kwargs.pop('weighted_adj_presence_threshold', 1e-3)
-        )
-        self.weighted_adj_presence_slope = float(
-            extra_kwargs.pop('weighted_adj_presence_slope', 40.0)
-        )
-        self.shape_temperature = float(extra_kwargs.pop('shape_temperature', 4.0))
-        self.normalize_shape_templates = bool(
-            extra_kwargs.pop('normalize_shape_templates', True)
-        )
-        self.volume_std_floor = float(volume_std_floor)
-        requested_workers = extra_kwargs.pop('shape_template_workers', 0)
-        self.shape_template_workers = _resolve_shape_template_workers(requested_workers)
-        self._shape_template_workers_auto = requested_workers <= 0
-        self.shape_template_progress = bool(extra_kwargs.pop('shape_template_progress', True))
-        self.shape_templates_cache_path = shape_templates_cache_path
-        self.shape_template_require_cache = bool(shape_template_require_cache)
-
-        # Graph alignment coefficients
-        self.graph_align_mode = graph_align_mode
-        self.align_U_weighted = align_U_weighted
-        self.qap_mismatch_g = qap_mismatch_g
-        self.lambda_spec_src = lambda_spec_src if lambda_spec_src is not None else (lambda_spec if graph_align_mode in ['src_only', 'joint'] else 0.0)
-        self.lambda_edge_src = lambda_edge_src if lambda_edge_src is not None else (lambda_edge if graph_align_mode in ['src_only', 'joint'] else 0.0)
-        self.lambda_spec_tgt = lambda_spec_tgt if lambda_spec_tgt is not None else (lambda_spec if graph_align_mode in ['tgt_only', 'joint'] else 0.0)
-        self.lambda_edge_tgt = lambda_edge_tgt if lambda_edge_tgt is not None else (lambda_edge if graph_align_mode in ['tgt_only', 'joint'] else 0.0)
-
-        self.top_k = top_k
-        self.temperature = temperature
-        self.pool_kernel = pool_kernel
-        self.pool_stride = pool_stride
-
-        # Warmup scheduling for prior terms (age-conditioned + graph branches)
-        self.graph_warmup_epochs = warmup_epochs if warmup_epochs is not None else 0
-        self.age_warmup_epochs = (
-            prior_warmup_epochs if prior_warmup_epochs is not None else self.graph_warmup_epochs
-        )
+        self.num_classes = num_classes
+        self._base_lambda_volume = float(lambda_volume)
+        self._base_lambda_shape = float(lambda_shape)
+        self._base_lambda_edge = float(lambda_edge)
+        self._base_lambda_spec = float(lambda_spec)
+        self.lambda_required = float(lambda_required)
+        self.lambda_forbidden = float(lambda_forbidden)
+        self.lambda_symmetry = float(lambda_symmetry)
+        self.sdf_temperature = sdf_temperature
+        self.huber_delta = huber_delta
+        self.spectral_top_k = spectral_top_k
+        self.warmup_epochs = max(0, int(warmup_epochs))
         self.current_epoch = 0
+        self.total_epochs: Optional[int] = None
+        self.debug_mode = debug
+        self.debug_max_batches = max(0, int(debug_max_batches))
+        self._debug_counter = 0
+        self._last_metrics: Dict[str, float] = {}
+        self._adj_count_max = 0.0
+        self.required_margin = float(required_margin)
+        self.forbidden_margin = float(forbidden_margin)
+        self.lambda_dyn = float(lambda_dyn)
+        self.dyn_start_epoch = int(dyn_start_epoch)
+        self.dyn_ramp_epochs = max(1, int(dyn_ramp_epochs))
+        self.dyn_mismatch_ref = max(1e-6, float(dyn_mismatch_ref))
+        self.dyn_max_scale = max(1.0, float(dyn_max_scale))
+        self.age_reliability_min = float(age_reliability_min)
+        self.age_reliability_pow = float(age_reliability_pow)
+        self._last_dyn_scale = 1.0
 
-        # Dynamic spectral branch configuration
-        self.lambda_dyn = lambda_dyn
-        self.dyn_top_k = dyn_top_k
-        self.dyn_start_epoch = dyn_start_epoch
-        self.dyn_ramp_epochs = dyn_ramp_epochs
+        self.volume_bins: Optional[torch.Tensor] = None
+        self.volume_means: Optional[torch.Tensor] = None
+        self.volume_stds: Optional[torch.Tensor] = None
+        self.volume_bin_width: Optional[float] = None
 
-        # Separate temperature for weighted adjacency if provided
-        self.prior_temperature = prior_temperature if prior_temperature is not None else temperature
+        self.sdf_age_values: Optional[torch.Tensor] = None
+        self.sdf_templates: Optional[Dict[float, torch.Tensor]] = None
+        self.sdf_band: Optional[float] = None
 
-        self.debug_mode = bool(debug_mode)
-        self.debug_max_batches = max(1, int(debug_max_batches)) if self.debug_mode else 0
-        self._debug_batch_count = 0
+        self.adj_age_values: Optional[torch.Tensor] = None
+        self.adj_templates: Optional[torch.Tensor] = None
+        self.adj_bin_width: Optional[float] = None
 
-        # Track whether the loaded priors align with the foreground-only label space
-        self._prior_alignment_ok = True
-        self._alignment_warning_logged = False
-
-        # ========================= Age-aware priors =========================
-        self.volume_stats = None
-        if volume_stats_path and os.path.exists(volume_stats_path):
-            with open(volume_stats_path, 'r') as f:
-                tmp_vs = json.load(f)
-                self.volume_stats = {float(k): v for k, v in tmp_vs.items()}
-            print(f"✓ Loaded volume statistics from {volume_stats_path}")
-
-        self._volume_stats_aligned_to: Optional[int] = None
-        self.volume_background_idx: Optional[int] = None
-        self._volume_alignment_logged = False
-        self.register_buffer('volume_valid_mask', torch.empty(0), persistent=False)
-
-        self.shape_templates = None
-        if shape_templates_path and os.path.exists(shape_templates_path):
-            self.shape_templates = self._load_and_prepare_shape_templates(
-                shape_templates_path,
-                target_shape=shape_template_target_shape,
-                dtype_spec=shape_template_dtype,
-                num_workers=self.shape_template_workers,
-                show_progress=self.shape_template_progress,
-                workers_is_auto=self._shape_template_workers_auto,
-                cache_override=self.shape_templates_cache_path,
-                require_cache=self.shape_template_require_cache,
-            )
-
-        self.age_weights = None
-        if age_weights_path and os.path.exists(age_weights_path):
-            with open(age_weights_path, 'r') as f:
-                tmp_aw = json.load(f)
-                self.age_weights = {float(k): v for k, v in tmp_aw.items()}
-            print(f"✓ Loaded age-dependent weights from {age_weights_path}")
-
-        if weighted_adj_path and os.path.exists(weighted_adj_path):
-            A_weighted = np.load(weighted_adj_path).astype(np.float32)
-            row_sums = np.clip(A_weighted.sum(axis=1, keepdims=True), 1e-8, None)
-            A_weighted = A_weighted / row_sums
-            self.register_buffer('A_weighted_prior', torch.from_numpy(A_weighted))
-            print(f"✓ Loaded weighted adjacency prior from {weighted_adj_path}")
-            if self.lambda_weighted_adj > 0:
-                if (not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0:
-                    print(
-                        "  Weighted adjacency active rows require "
-                        f"≥{self.weighted_adj_presence_threshold:.4f} volume fraction"
-                    )
-        else:
-            self.register_buffer('A_weighted_prior', torch.empty(0))
-            if lambda_weighted_adj > 0:
-                is_main = (not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0
-                if is_main:
-                    print("⚠️  Weighted adjacency prior not provided – disabling λ_weighted_adj term.")
-                self.lambda_weighted_adj = 0.0
-
-        # ========================= Graph priors =========================
+        self.adj_counts: Optional[torch.Tensor] = None
+        self.adj_freq: Optional[torch.Tensor] = None
+        self.required_edges: List[Tuple[int, int]] = []
+        self.forbidden_edges: List[Tuple[int, int]] = []
         self.lr_pairs: List[Tuple[int, int]] = []
-        if lr_pairs_json and os.path.exists(lr_pairs_json):
-            with open(lr_pairs_json, 'r') as f:
-                pairs_raw = json.load(f)
-                self.lr_pairs = [(int(a) - 1, int(b) - 1) for a, b in pairs_raw if int(a) > 0 and int(b) > 0]
 
-        self.tgt_required_edges: List[Tuple[int, int]] = []
-        if required_json and os.path.exists(required_json):
-            with open(required_json, 'r') as f:
-                data = json.load(f)
-                self.tgt_required_edges = [(int(i), int(j)) for i, j in data.get('required', [])]
-
-        self.tgt_forbidden_edges: List[Tuple[int, int]] = []
-        if forbidden_json and os.path.exists(forbidden_json):
-            with open(forbidden_json, 'r') as f:
-                data = json.load(f)
-                self.tgt_forbidden_edges = [(int(i), int(j)) for i, j in data.get('forbidden', [])]
-
-        # Alias for topology regularizer
-        self.required_edges = self.tgt_required_edges
-        self.forbidden_edges = self.tgt_forbidden_edges
-
-        if prior_adj_path and os.path.exists(prior_adj_path):
-            A_tgt = torch.from_numpy(np.load(prior_adj_path)).float()
-            row_sums = A_tgt.sum(dim=1, keepdim=True).clamp(min=1e-8)
-            A_tgt = A_tgt / row_sums
-            self.register_buffer('A_tgt', A_tgt)
-            self.register_buffer('L_tgt', compute_laplacian(A_tgt, normalized=True))
-            self.has_target_prior = True
+        if volume_stats_path:
+            self._load_volume_stats(volume_stats_path)
+        if sdf_templates_path:
+            self._load_sdf_templates(sdf_templates_path)
+        if adjacency_prior_path:
+            self._load_adjacency_prior(adjacency_prior_path)
+        if r_mask_path and os.path.exists(r_mask_path):
+            mask = torch.from_numpy(np.load(r_mask_path)).float()
         else:
-            self.register_buffer('A_tgt', torch.empty(0))
-            self.register_buffer('L_tgt', torch.empty(0))
-            self.has_target_prior = False
-
-        self.src_required_edges: List[Tuple[int, int]] = []
-        self.src_forbidden_edges: List[Tuple[int, int]] = []
-        if src_required_json and os.path.exists(src_required_json):
-            with open(src_required_json, 'r') as f:
-                data = json.load(f)
-                self.src_required_edges = [(int(i), int(j)) for i, j in data.get('required', [])]
-
-        if src_forbidden_json and os.path.exists(src_forbidden_json):
-            with open(src_forbidden_json, 'r') as f:
-                data = json.load(f)
-                self.src_forbidden_edges = [(int(i), int(j)) for i, j in data.get('forbidden', [])]
-
-        if src_prior_adj_path and os.path.exists(src_prior_adj_path) and graph_align_mode in ['src_only', 'joint']:
-            A_src = torch.from_numpy(np.load(src_prior_adj_path)).float()
-            row_sums = A_src.sum(dim=1, keepdim=True).clamp(min=1e-8)
-            A_src = A_src / row_sums
-            self.register_buffer('A_src', A_src)
-            self.register_buffer('L_src', compute_laplacian(A_src, normalized=True))
-            self.has_source_prior = True
-        else:
-            self.register_buffer('A_src', torch.empty(0))
-            self.register_buffer('L_src', torch.empty(0))
-            self.has_source_prior = False
-
-        # Class weights for edge reweighting
-        if class_weights is not None:
-            class_weights = _to_tensor(class_weights).float()
-            self.register_buffer('class_weights', class_weights)
-        else:
-            self.class_weights = None
-
-        # Keep track of number of classes if known
-        self.num_classes = None
-        if self.has_target_prior:
-            self.num_classes = self.A_tgt.shape[0]
-        elif self.has_source_prior:
-            self.num_classes = self.A_src.shape[0]
-        elif self.A_weighted_prior.numel() > 0:
-            self.num_classes = self.A_weighted_prior.shape[0]
-
-        # Restricted mask (load or derive)
-        mask_tensor = torch.empty(0)
-        if use_restricted_mask:
-            if restricted_mask_path and os.path.exists(restricted_mask_path):
-                mask_tensor = torch.from_numpy(np.load(restricted_mask_path)).float()
-            elif self.num_classes is not None:
-                mask_tensor = compute_restricted_mask(
-                    self.num_classes,
-                    self.tgt_required_edges + self.src_required_edges,
-                    self.tgt_forbidden_edges + self.src_forbidden_edges,
-                    self.lr_pairs,
-                    device=torch.device('cpu'),
-                ).float()
-        self.use_restricted_mask = use_restricted_mask and mask_tensor.numel() > 0
-        self.register_buffer('R_mask', mask_tensor if mask_tensor.numel() > 0 else torch.empty(0))
-
-    def _process_shape_template_payload(
-        self,
-        payload: object,
-        target_shape: Optional[Tuple[int, int, int]],
-        dtype: torch.dtype,
-        num_workers: int = 1,
-        show_progress: bool = False,
-        workers_is_auto: bool = False,
-    ) -> Dict[float, torch.Tensor]:
-        """Convert raw template payload to a compact dictionary keyed by age."""
-
-        if isinstance(payload, dict) and 'mean' in payload:
-            templates = payload['mean']
-        elif isinstance(payload, dict):
-            templates = payload
-        else:
-            raise TypeError(
-                "Shape template payload must be a dict containing 'mean' entries or age bins."
-            )
-
-        processed: Dict[float, torch.Tensor] = {}
-        target_shape_tuple: Optional[Tuple[int, int, int]] = None
-        if target_shape is not None:
-            target_shape_tuple = tuple(int(v) for v in target_shape)
-
-        items = list(templates.items())
-        total = len(items)
-
-        if total == 0:
-            if show_progress:
-                print("🧩 Building age-aware shape templates (0 age bins)", flush=True)
-            return processed
-
-        start_time = time.time()
-        last_progress_print = 0.0
-        progress_step = max(1, total // 20)
-
-        def emit_progress(done: int, *, final: bool = False, force: bool = False):
-            nonlocal last_progress_print
-
-            if not show_progress:
-                return
-
-            now = time.time()
-            if not force and not final:
-                if done % progress_step != 0 and (now - last_progress_print) < 5.0:
-                    return
-
-            percent = (done / total) * 100.0
-            elapsed = now - start_time
-            print(
-                f"    ↳ progress {done}/{total} ({percent:5.1f}%) elapsed {elapsed:6.1f}s",
-                flush=True,
-            )
-            last_progress_print = now
-
-            if final and done != total:
-                final_elapsed = now - start_time
-                print(
-                    f"    ↳ progress {total}/{total} (100.0%) elapsed {final_elapsed:6.1f}s",
-                    flush=True,
-                )
-
-        def process_single(item):
-            raw_key, tensor = item
-            age_value = _parse_age_key(raw_key)
-
-            tmpl = _to_tensor(tensor)
-            if not isinstance(tmpl, torch.Tensor):
-                raise TypeError(f"Template for age bin {raw_key!r} is not convertible to torch.Tensor")
-
-            tmpl = tmpl.detach().to(torch.float32, copy=True)
-
-            if target_shape_tuple is not None and tuple(int(v) for v in tmpl.shape[1:]) != target_shape_tuple:
-                tmpl = F.interpolate(
-                    tmpl.unsqueeze(0),
-                    size=target_shape_tuple,
-                    mode='trilinear',
-                    align_corners=False,
-                ).squeeze(0)
-
-            tmpl = tmpl.to(dtype).contiguous()
-            return age_value, tmpl
-
-        resolved_workers = max(1, num_workers)
-
-        if show_progress:
-            shape_desc = (
-                f"{target_shape_tuple[0]}x{target_shape_tuple[1]}x{target_shape_tuple[2]}"
-                if target_shape_tuple is not None
-                else "native"
-            )
-            if workers_is_auto:
-                worker_desc = f"auto≈{resolved_workers}"
-            else:
-                worker_desc = str(resolved_workers)
-            print(
-                f"🧩 Building age-aware shape templates ({total} age bins, dtype={dtype}, target={shape_desc}, "
-                f"CPU workers={worker_desc})",
-                flush=True,
-            )
-
-        emit_progress(0, force=True)
-
-        if resolved_workers > 1:
-            with ThreadPoolExecutor(max_workers=resolved_workers) as executor:
-                futures = {
-                    executor.submit(process_single, item): idx
-                    for idx, item in enumerate(items, 1)
-                }
-                for count, future in enumerate(as_completed(futures), 1):
-                    age_value, tmpl = future.result()
-                    processed[age_value] = tmpl
-                    emit_progress(count)
-        else:
-            for idx, item in enumerate(items, 1):
-                age_value, tmpl = process_single(item)
-                processed[age_value] = tmpl
-                emit_progress(idx)
-
-        emit_progress(total, final=True, force=True)
-
-        return processed
-
-    def _load_and_prepare_shape_templates(
-        self,
-        template_path: str,
-        target_shape: Optional[Tuple[int, int, int]],
-        dtype_spec: Optional[str],
-        cache_override: Optional[str] = None,
-        require_cache: bool = False,
-        *,
-        num_workers: Optional[int] = None,
-        show_progress: bool = False,
-        workers_is_auto: bool = False,
-        **kwargs,
-    ) -> Dict[float, torch.Tensor]:
-        """Load heavy shape templates once, compress, and cache for subsequent ranks."""
-
-        if kwargs and ((not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0):
-            extra = ', '.join(sorted(kwargs.keys()))
-            print(f"⚠️  Ignoring unsupported shape template options: {extra}")
-
-        dtype = _resolve_dtype(dtype_spec)
-        derived_cache = _derive_shape_template_cache_path(template_path, target_shape, dtype)
-
-        if num_workers is None:
-            num_workers = 1
-
-        cache_override = os.path.abspath(cache_override) if cache_override else None
-        derived_cache = os.path.abspath(derived_cache)
-
-        is_dist = dist.is_available() and dist.is_initialized()
-        rank = dist.get_rank() if is_dist else 0
-        world_size = dist.get_world_size() if is_dist else 1
-        is_main = (rank == 0)
-
-        def load_cache(path: str) -> Dict[float, torch.Tensor]:
-            if is_main:
-                print(f"✓ Loaded cached shape templates from {path}")
-            if is_dist:
-                dist.barrier()
-            return torch.load(path, map_location='cpu')
-
-        if cache_override and os.path.exists(cache_override):
-            return load_cache(cache_override)
-
-        if os.path.exists(derived_cache):
-            return load_cache(derived_cache)
-
-        if cache_override and require_cache:
-            raise FileNotFoundError(
-                f"Required shape template cache not found: {cache_override}. "
-                "Please run preprocess_shape_templates.py before launching training."
-            )
-
-        cache_path = cache_override or derived_cache
-
-        if os.path.exists(cache_path):
-            return load_cache(cache_path)
-
-        if is_dist and not is_main:
-            # Wait for rank 0 to finish preprocessing and writing the cache.
-            dist.barrier()
-            if os.path.exists(cache_path):
-                return torch.load(cache_path, map_location='cpu')
-
-        # Rank 0 (or single-process) performs the heavy lifting.
-        payload = torch.load(template_path, map_location='cpu')
-        start_time = time.time()
-        processed = self._process_shape_template_payload(
-            payload,
-            target_shape,
-            dtype,
-            num_workers=num_workers,
-            show_progress=show_progress,
-            workers_is_auto=workers_is_auto,
-        )
-        del payload
-
-        os.makedirs(os.path.dirname(cache_path) or '.', exist_ok=True)
-        torch.save(processed, cache_path)
-
-        if is_main:
-            first_template = next(iter(processed.values())) if processed else None
-            print(f"✓ Loaded shape templates from {template_path}")
-            print(f"  ↳ Cached processed templates at {cache_path}")
-            if first_template is not None:
-                spatial_shape = tuple(int(v) for v in first_template.shape[1:])
-                print(
-                    f"  ↳ Template dtype {first_template.dtype}, spatial shape {spatial_shape}, classes {first_template.shape[0]}"
-                )
-                duration = time.time() - start_time
-                print(f"  ↳ Preprocessing time: {duration:.1f}s using CPU workers")
-
-        if is_dist and world_size > 1:
-            dist.barrier()
-
-        return processed
-
-    def _process_shape_template_payload(
-        self,
-        payload: object,
-        target_shape: Optional[Tuple[int, int, int]],
-        dtype: torch.dtype,
-        num_workers: int = 1,
-        show_progress: bool = False,
-        workers_is_auto: bool = False,
-    ) -> Dict[float, torch.Tensor]:
-        """Convert raw template payload to a compact dictionary keyed by age."""
-
-        if isinstance(payload, dict) and 'mean' in payload:
-            templates = payload['mean']
-        elif isinstance(payload, dict):
-            templates = payload
-        else:
-            raise TypeError(
-                "Shape template payload must be a dict containing 'mean' entries or age bins."
-            )
-
-        processed: Dict[float, torch.Tensor] = {}
-        target_shape_tuple: Optional[Tuple[int, int, int]] = None
-        if target_shape is not None:
-            target_shape_tuple = tuple(int(v) for v in target_shape)
-
-        items = list(templates.items())
-        total = len(items)
-
-        if total == 0:
-            if show_progress:
-                print("🧩 Building age-aware shape templates (0 age bins)", flush=True)
-            return processed
-
-        start_time = time.time()
-        last_progress_print = 0.0
-        progress_step = max(1, total // 20)
-
-        def emit_progress(done: int, *, final: bool = False, force: bool = False):
-            nonlocal last_progress_print
-
-            if not show_progress:
-                return
-
-            now = time.time()
-            if not force and not final:
-                if done % progress_step != 0 and (now - last_progress_print) < 5.0:
-                    return
-
-            percent = (done / total) * 100.0
-            elapsed = now - start_time
-            print(
-                f"    ↳ progress {done}/{total} ({percent:5.1f}%) elapsed {elapsed:6.1f}s",
-                flush=True,
-            )
-            last_progress_print = now
-
-            if final and done != total:
-                final_elapsed = now - start_time
-                print(
-                    f"    ↳ progress {total}/{total} (100.0%) elapsed {final_elapsed:6.1f}s",
-                    flush=True,
-                )
-
-        def process_single(item):
-            raw_key, tensor = item
-            age_value = _parse_age_key(raw_key)
-
-            tmpl = _to_tensor(tensor)
-            if not isinstance(tmpl, torch.Tensor):
-                raise TypeError(f"Template for age bin {raw_key!r} is not convertible to torch.Tensor")
-
-            tmpl = tmpl.detach().to(torch.float32, copy=True)
-
-            if target_shape_tuple is not None and tuple(int(v) for v in tmpl.shape[1:]) != target_shape_tuple:
-                tmpl = F.interpolate(
-                    tmpl.unsqueeze(0),
-                    size=target_shape_tuple,
-                    mode='trilinear',
-                    align_corners=False,
-                ).squeeze(0)
-
-            tmpl = tmpl.to(dtype).contiguous()
-            return age_value, tmpl
-
-        resolved_workers = max(1, num_workers)
-
-        if show_progress:
-            shape_desc = (
-                f"{target_shape_tuple[0]}x{target_shape_tuple[1]}x{target_shape_tuple[2]}"
-                if target_shape_tuple is not None
-                else "native"
-            )
-            if workers_is_auto:
-                worker_desc = f"auto≈{resolved_workers}"
-            else:
-                worker_desc = str(resolved_workers)
-            print(
-                f"🧩 Building age-aware shape templates ({total} age bins, dtype={dtype}, target={shape_desc}, "
-                f"CPU workers={worker_desc})",
-                flush=True,
-            )
-
-        emit_progress(0, force=True)
-
-        if resolved_workers > 1:
-            with ThreadPoolExecutor(max_workers=resolved_workers) as executor:
-                futures = {
-                    executor.submit(process_single, item): idx
-                    for idx, item in enumerate(items, 1)
-                }
-                for count, future in enumerate(as_completed(futures), 1):
-                    age_value, tmpl = future.result()
-                    processed[age_value] = tmpl
-                    emit_progress(count)
-        else:
-            for idx, item in enumerate(items, 1):
-                age_value, tmpl = process_single(item)
-                processed[age_value] = tmpl
-                emit_progress(idx)
-
-        emit_progress(total, final=True, force=True)
-
-        return processed
-
-    def _load_and_prepare_shape_templates(
-        self,
-        template_path: str,
-        target_shape: Optional[Tuple[int, int, int]],
-        dtype_spec: Optional[str],
-        *positional_args,
-        **kwargs,
-    ) -> Dict[float, torch.Tensor]:
-        """Load heavy shape templates once, compress, and cache for subsequent ranks."""
-
-        # Support both the new keyword-based API and any legacy positional usage by
-        # normalising all optional arguments up-front. This prevents unexpected
-        # ``TypeError`` exceptions when older helper scripts import the updated
-        # module (or vice versa).
-        num_workers: Optional[int] = None
-        show_progress: bool = False
-        workers_is_auto: bool = False
-        cache_override: Optional[str] = None
-        require_cache: bool = False
-
-        if positional_args:
-            # Historically the fourth positional argument was ``cache_override`` –
-            # accept that form for robustness.
-            cache_override = positional_args[0]
-            if len(positional_args) > 1:
-                require_cache = bool(positional_args[1])
-
-        if 'num_workers' in kwargs:
-            num_workers = kwargs.pop('num_workers')
-        if 'show_progress' in kwargs:
-            show_progress = bool(kwargs.pop('show_progress'))
-        if 'workers_is_auto' in kwargs:
-            workers_is_auto = bool(kwargs.pop('workers_is_auto'))
-        if 'cache_override' in kwargs:
-            cache_override = kwargs.pop('cache_override')
-        if 'require_cache' in kwargs:
-            require_cache = bool(kwargs.pop('require_cache'))
-
-        unused_keys_msg: Optional[str] = None
-        if kwargs:
-            # Swallow unused options silently but keep a hook for debugging.
-            unused_keys_msg = ', '.join(sorted(kwargs.keys()))
-
-        dtype = _resolve_dtype(dtype_spec)
-        derived_cache = _derive_shape_template_cache_path(template_path, target_shape, dtype)
-
-        if num_workers is None:
-            num_workers = 1
-
-        cache_override = os.path.abspath(cache_override) if cache_override else None
-        derived_cache = os.path.abspath(derived_cache)
-
-        is_dist = dist.is_available() and dist.is_initialized()
-        rank = dist.get_rank() if is_dist else 0
-        world_size = dist.get_world_size() if is_dist else 1
-        is_main = (rank == 0)
-
-        if unused_keys_msg and is_main:
-            print(f"⚠️  Ignoring unsupported shape template options: {unused_keys_msg}")
-
-        def load_cache(path: str) -> Dict[float, torch.Tensor]:
-            if is_main:
-                print(f"✓ Loaded cached shape templates from {path}")
-            if is_dist:
-                dist.barrier()
-            return torch.load(path, map_location='cpu')
-
-        if cache_override and os.path.exists(cache_override):
-            return load_cache(cache_override)
-
-        if os.path.exists(derived_cache):
-            return load_cache(derived_cache)
-
-        if cache_override and require_cache:
-            raise FileNotFoundError(
-                f"Required shape template cache not found: {cache_override}. "
-                "Please run preprocess_shape_templates.py before launching training."
-            )
-
-        cache_path = cache_override or derived_cache
-
-        if os.path.exists(cache_path):
-            return load_cache(cache_path)
-
-        if is_dist and not is_main:
-            # Wait for rank 0 to finish preprocessing and writing the cache.
-            dist.barrier()
-            if os.path.exists(cache_path):
-                return torch.load(cache_path, map_location='cpu')
-
-        # Rank 0 (or single-process) performs the heavy lifting.
-        payload = torch.load(template_path, map_location='cpu')
-        start_time = time.time()
-        processed = self._process_shape_template_payload(
-            payload,
-            target_shape,
-            dtype,
-            num_workers=num_workers,
-            show_progress=show_progress,
-            workers_is_auto=workers_is_auto,
-        )
-        del payload
-
-        os.makedirs(os.path.dirname(cache_path) or '.', exist_ok=True)
-        torch.save(processed, cache_path)
-
-        if is_main:
-            first_template = next(iter(processed.values())) if processed else None
-            print(f"✓ Loaded shape templates from {template_path}")
-            print(f"  ↳ Cached processed templates at {cache_path}")
-            if first_template is not None:
-                spatial_shape = tuple(int(v) for v in first_template.shape[1:])
-                print(
-                    f"  ↳ Template dtype {first_template.dtype}, spatial shape {spatial_shape}, classes {first_template.shape[0]}"
-                )
-                duration = time.time() - start_time
-                print(f"  ↳ Preprocessing time: {duration:.1f}s using CPU workers")
-
-        if is_dist and world_size > 1:
-            dist.barrier()
-
-        return processed
-
-    def _process_shape_template_payload(
-        self,
-        payload: object,
-        target_shape: Optional[Tuple[int, int, int]],
-        dtype: torch.dtype,
-        num_workers: int = 1,
-        show_progress: bool = False,
-        workers_is_auto: bool = False,
-    ) -> Dict[float, torch.Tensor]:
-        """Convert raw template payload to a compact dictionary keyed by age."""
-
-        if isinstance(payload, dict) and 'mean' in payload:
-            templates = payload['mean']
-        elif isinstance(payload, dict):
-            templates = payload
-        else:
-            raise TypeError(
-                "Shape template payload must be a dict containing 'mean' entries or age bins."
-            )
-
-        processed: Dict[float, torch.Tensor] = {}
-        target_shape_tuple: Optional[Tuple[int, int, int]] = None
-        if target_shape is not None:
-            target_shape_tuple = tuple(int(v) for v in target_shape)
-
-        items = list(templates.items())
-        total = len(items)
-
-        if total == 0:
-            if show_progress:
-                print("🧩 Building age-aware shape templates (0 age bins)", flush=True)
-            return processed
-
-        start_time = time.time()
-        last_progress_print = 0.0
-        progress_step = max(1, total // 20)
-
-        def emit_progress(done: int, *, final: bool = False, force: bool = False):
-            nonlocal last_progress_print
-
-            if not show_progress:
-                return
-
-            now = time.time()
-            if not force and not final:
-                if done % progress_step != 0 and (now - last_progress_print) < 5.0:
-                    return
-
-            percent = (done / total) * 100.0
-            elapsed = now - start_time
-            print(
-                f"    ↳ progress {done}/{total} ({percent:5.1f}%) elapsed {elapsed:6.1f}s",
-                flush=True,
-            )
-            last_progress_print = now
-
-            if final and done != total:
-                final_elapsed = now - start_time
-                print(
-                    f"    ↳ progress {total}/{total} (100.0%) elapsed {final_elapsed:6.1f}s",
-                    flush=True,
-                )
-
-        def process_single(item):
-            raw_key, tensor = item
-            age_value = _parse_age_key(raw_key)
-
-            tmpl = _to_tensor(tensor)
-            if not isinstance(tmpl, torch.Tensor):
-                raise TypeError(f"Template for age bin {raw_key!r} is not convertible to torch.Tensor")
-
-            tmpl = tmpl.detach().to(torch.float32, copy=True)
-
-            if target_shape_tuple is not None and tuple(int(v) for v in tmpl.shape[1:]) != target_shape_tuple:
-                tmpl = F.interpolate(
-                    tmpl.unsqueeze(0),
-                    size=target_shape_tuple,
-                    mode='trilinear',
-                    align_corners=False,
-                ).squeeze(0)
-
-            tmpl = tmpl.to(dtype).contiguous()
-            return age_value, tmpl
-
-        resolved_workers = max(1, num_workers)
-
-        if show_progress:
-            shape_desc = (
-                f"{target_shape_tuple[0]}x{target_shape_tuple[1]}x{target_shape_tuple[2]}"
-                if target_shape_tuple is not None
-                else "native"
-            )
-            if workers_is_auto:
-                worker_desc = f"auto≈{resolved_workers}"
-            else:
-                worker_desc = str(resolved_workers)
-            print(
-                f"🧩 Building age-aware shape templates ({total} age bins, dtype={dtype}, target={shape_desc}, "
-                f"CPU workers={worker_desc})",
-                flush=True,
-            )
-
-        emit_progress(0, force=True)
-
-        if resolved_workers > 1:
-            with ThreadPoolExecutor(max_workers=resolved_workers) as executor:
-                futures = {
-                    executor.submit(process_single, item): idx
-                    for idx, item in enumerate(items, 1)
-                }
-                for count, future in enumerate(as_completed(futures), 1):
-                    age_value, tmpl = future.result()
-                    processed[age_value] = tmpl
-                    emit_progress(count)
-        else:
-            for idx, item in enumerate(items, 1):
-                age_value, tmpl = process_single(item)
-                processed[age_value] = tmpl
-                emit_progress(idx)
-
-        emit_progress(total, final=True, force=True)
-
-        return processed
-
-    def _load_and_prepare_shape_templates(
-        self,
-        template_path: str,
-        target_shape: Optional[Tuple[int, int, int]],
-        dtype_spec: Optional[str],
-        num_workers: Optional[int] = None,
-        show_progress: bool = False,
-        workers_is_auto: bool = False,
-        cache_override: Optional[str] = None,
-        require_cache: bool = False,
-        **_ignored: object,
-    ) -> Dict[float, torch.Tensor]:
-        """Load heavy shape templates once, compress, and cache for subsequent ranks."""
-
-        dtype = _resolve_dtype(dtype_spec)
-        derived_cache = _derive_shape_template_cache_path(template_path, target_shape, dtype)
-
-        if num_workers is None:
-            num_workers = 1
-
-        cache_override = os.path.abspath(cache_override) if cache_override else None
-        derived_cache = os.path.abspath(derived_cache)
-
-        def load_cache(path: str) -> Dict[float, torch.Tensor]:
-            if is_main:
-                print(f"✓ Loaded cached shape templates from {path}")
-            if is_dist:
-                dist.barrier()
-            return torch.load(path, map_location='cpu')
-
-        if cache_override and os.path.exists(cache_override):
-            return load_cache(cache_override)
-
-        if os.path.exists(derived_cache):
-            return load_cache(derived_cache)
-
-        if cache_override and require_cache:
-            raise FileNotFoundError(
-                f"Required shape template cache not found: {cache_override}. "
-                "Please run preprocess_shape_templates.py before launching training."
-            )
-
-        cache_path = cache_override or derived_cache
-
-        is_dist = dist.is_available() and dist.is_initialized()
-        rank = dist.get_rank() if is_dist else 0
-        world_size = dist.get_world_size() if is_dist else 1
-        is_main = (rank == 0)
-
-        if os.path.exists(cache_path):
-            return load_cache(cache_path)
-
-        if is_dist and not is_main:
-            # Wait for rank 0 to finish preprocessing and writing the cache.
-            dist.barrier()
-            if os.path.exists(cache_path):
-                return torch.load(cache_path, map_location='cpu')
-
-        # Rank 0 (or single-process) performs the heavy lifting.
-        payload = torch.load(template_path, map_location='cpu')
-        start_time = time.time()
-        processed = self._process_shape_template_payload(
-            payload,
-            target_shape,
-            dtype,
-            num_workers=num_workers,
-            show_progress=show_progress,
-            workers_is_auto=workers_is_auto,
-        )
-        del payload
-
-        os.makedirs(os.path.dirname(cache_path) or '.', exist_ok=True)
-        torch.save(processed, cache_path)
-
-        if is_main:
-            first_template = next(iter(processed.values())) if processed else None
-            print(f"✓ Loaded shape templates from {template_path}")
-            print(f"  ↳ Cached processed templates at {cache_path}")
-            if first_template is not None:
-                spatial_shape = tuple(int(v) for v in first_template.shape[1:])
-                print(
-                    f"  ↳ Template dtype {first_template.dtype}, spatial shape {spatial_shape}, classes {first_template.shape[0]}"
-                )
-                duration = time.time() - start_time
-                print(f"  ↳ Preprocessing time: {duration:.1f}s using CPU workers")
-
-        if is_dist and world_size > 1:
-            dist.barrier()
-
-        return processed
-
-    def _process_shape_template_payload(
-        self,
-        payload: object,
-        target_shape: Optional[Tuple[int, int, int]],
-        dtype: torch.dtype,
-        num_workers: int = 1,
-        show_progress: bool = False,
-        workers_is_auto: bool = False,
-    ) -> Dict[float, torch.Tensor]:
-        """Convert raw template payload to a compact dictionary keyed by age."""
-
-        if isinstance(payload, dict) and 'mean' in payload:
-            templates = payload['mean']
-        elif isinstance(payload, dict):
-            templates = payload
-        else:
-            raise TypeError(
-                "Shape template payload must be a dict containing 'mean' entries or age bins."
-            )
-
-        processed: Dict[float, torch.Tensor] = {}
-        target_shape_tuple: Optional[Tuple[int, int, int]] = None
-        if target_shape is not None:
-            target_shape_tuple = tuple(int(v) for v in target_shape)
-
-        items = list(templates.items())
-        total = len(items)
-
-        if total == 0:
-            if show_progress:
-                print("🧩 Building age-aware shape templates (0 age bins)", flush=True)
-            return processed
-
-        start_time = time.time()
-        last_progress_print = 0.0
-        progress_step = max(1, total // 20)
-
-        def emit_progress(done: int, *, final: bool = False, force: bool = False):
-            nonlocal last_progress_print
-
-            if not show_progress:
-                return
-
-            now = time.time()
-            if not force and not final:
-                if done % progress_step != 0 and (now - last_progress_print) < 5.0:
-                    return
-
-            percent = (done / total) * 100.0
-            elapsed = now - start_time
-            print(
-                f"    ↳ progress {done}/{total} ({percent:5.1f}%) elapsed {elapsed:6.1f}s",
-                flush=True,
-            )
-            last_progress_print = now
-
-            if final and done != total:
-                final_elapsed = now - start_time
-                print(
-                    f"    ↳ progress {total}/{total} (100.0%) elapsed {final_elapsed:6.1f}s",
-                    flush=True,
-                )
-
-        def process_single(item):
-            raw_key, tensor = item
-            age_value = _parse_age_key(raw_key)
-
-            tmpl = _to_tensor(tensor)
-            if not isinstance(tmpl, torch.Tensor):
-                raise TypeError(f"Template for age bin {raw_key!r} is not convertible to torch.Tensor")
-
-            tmpl = tmpl.detach().to(torch.float32, copy=True)
-
-            if target_shape_tuple is not None and tuple(int(v) for v in tmpl.shape[1:]) != target_shape_tuple:
-                tmpl = F.interpolate(
-                    tmpl.unsqueeze(0),
-                    size=target_shape_tuple,
-                    mode='trilinear',
-                    align_corners=False,
-                ).squeeze(0)
-
-            tmpl = tmpl.to(dtype).contiguous()
-            return age_value, tmpl
-
-        resolved_workers = max(1, num_workers)
-
-        if show_progress:
-            shape_desc = (
-                f"{target_shape_tuple[0]}x{target_shape_tuple[1]}x{target_shape_tuple[2]}"
-                if target_shape_tuple is not None
-                else "native"
-            )
-            if workers_is_auto:
-                worker_desc = f"auto≈{resolved_workers}"
-            else:
-                worker_desc = str(resolved_workers)
-            print(
-                f"🧩 Building age-aware shape templates ({total} age bins, dtype={dtype}, target={shape_desc}, "
-                f"CPU workers={worker_desc})",
-                flush=True,
-            )
-
-        emit_progress(0, force=True)
-
-        if resolved_workers > 1:
-            with ThreadPoolExecutor(max_workers=resolved_workers) as executor:
-                futures = {
-                    executor.submit(process_single, item): idx
-                    for idx, item in enumerate(items, 1)
-                }
-                for count, future in enumerate(as_completed(futures), 1):
-                    age_value, tmpl = future.result()
-                    processed[age_value] = tmpl
-                    emit_progress(count)
-        else:
-            for idx, item in enumerate(items, 1):
-                age_value, tmpl = process_single(item)
-                processed[age_value] = tmpl
-                emit_progress(idx)
-
-        emit_progress(total, final=True, force=True)
-
-        return processed
-
-    def _load_and_prepare_shape_templates(
-        self,
-        template_path: str,
-        target_shape: Optional[Tuple[int, int, int]],
-        dtype_spec: Optional[str],
-        num_workers: int = 1,
-        show_progress: bool = False,
-        workers_is_auto: bool = False,
-        cache_override: Optional[str] = None,
-        require_cache: bool = False,
-    ) -> Dict[float, torch.Tensor]:
-        """Load heavy shape templates once, compress, and cache for subsequent ranks."""
-
-        dtype = _resolve_dtype(dtype_spec)
-        derived_cache = _derive_shape_template_cache_path(template_path, target_shape, dtype)
-
-        cache_override = os.path.abspath(cache_override) if cache_override else None
-        derived_cache = os.path.abspath(derived_cache)
-
-        def load_cache(path: str) -> Dict[float, torch.Tensor]:
-            if is_main:
-                print(f"✓ Loaded cached shape templates from {path}")
-            if is_dist:
-                dist.barrier()
-            return torch.load(path, map_location='cpu')
-
-        if cache_override and os.path.exists(cache_override):
-            return load_cache(cache_override)
-
-        if os.path.exists(derived_cache):
-            return load_cache(derived_cache)
-
-        if cache_override and require_cache:
-            raise FileNotFoundError(
-                f"Required shape template cache not found: {cache_override}. "
-                "Please run preprocess_shape_templates.py before launching training."
-            )
-
-        cache_path = cache_override or derived_cache
-
-        is_dist = dist.is_available() and dist.is_initialized()
-        rank = dist.get_rank() if is_dist else 0
-        world_size = dist.get_world_size() if is_dist else 1
-        is_main = (rank == 0)
-
-        if os.path.exists(cache_path):
-            return load_cache(cache_path)
-
-        if is_dist and not is_main:
-            # Wait for rank 0 to finish preprocessing and writing the cache.
-            dist.barrier()
-            if os.path.exists(cache_path):
-                return torch.load(cache_path, map_location='cpu')
-
-        # Rank 0 (or single-process) performs the heavy lifting.
-        payload = torch.load(template_path, map_location='cpu')
-        start_time = time.time()
-        processed = self._process_shape_template_payload(
-            payload,
-            target_shape,
-            dtype,
-            num_workers=num_workers,
-            show_progress=show_progress,
-            workers_is_auto=workers_is_auto,
-        )
-        del payload
-
-        os.makedirs(os.path.dirname(cache_path) or '.', exist_ok=True)
-        torch.save(processed, cache_path)
-
-        if is_main:
-            first_template = next(iter(processed.values())) if processed else None
-            print(f"✓ Loaded shape templates from {template_path}")
-            print(f"  ↳ Cached processed templates at {cache_path}")
-            if first_template is not None:
-                spatial_shape = tuple(int(v) for v in first_template.shape[1:])
-                print(
-                    f"  ↳ Template dtype {first_template.dtype}, spatial shape {spatial_shape}, classes {first_template.shape[0]}"
-                )
-                duration = time.time() - start_time
-                print(f"  ↳ Preprocessing time: {duration:.1f}s using CPU workers")
-
-        if is_dist and world_size > 1:
-            dist.barrier()
-
-        return processed
-
-    def _process_shape_template_payload(
-        self,
-        payload: object,
-        target_shape: Optional[Tuple[int, int, int]],
-        dtype: torch.dtype,
-        num_workers: int = 1,
-        show_progress: bool = False,
-        workers_is_auto: bool = False,
-    ) -> Dict[float, torch.Tensor]:
-        """Convert raw template payload to a compact dictionary keyed by age."""
-
-        if isinstance(payload, dict) and 'mean' in payload:
-            templates = payload['mean']
-        elif isinstance(payload, dict):
-            templates = payload
-        else:
-            raise TypeError(
-                "Shape template payload must be a dict containing 'mean' entries or age bins."
-            )
-
-        processed: Dict[float, torch.Tensor] = {}
-        target_shape_tuple: Optional[Tuple[int, int, int]] = None
-        if target_shape is not None:
-            target_shape_tuple = tuple(int(v) for v in target_shape)
-
-        items = list(templates.items())
-        total = len(items)
-
-        if total == 0:
-            if show_progress:
-                print("🧩 Building age-aware shape templates (0 age bins)", flush=True)
-            return processed
-
-        start_time = time.time()
-        last_progress_print = 0.0
-        progress_step = max(1, total // 20)
-
-        def emit_progress(done: int, *, final: bool = False, force: bool = False):
-            nonlocal last_progress_print
-
-            if not show_progress:
-                return
-
-            now = time.time()
-            if not force and not final:
-                if done % progress_step != 0 and (now - last_progress_print) < 5.0:
-                    return
-
-            percent = (done / total) * 100.0
-            elapsed = now - start_time
-            print(
-                f"    ↳ progress {done}/{total} ({percent:5.1f}%) elapsed {elapsed:6.1f}s",
-                flush=True,
-            )
-            last_progress_print = now
-
-            if final and done != total:
-                final_elapsed = now - start_time
-                print(
-                    f"    ↳ progress {total}/{total} (100.0%) elapsed {final_elapsed:6.1f}s",
-                    flush=True,
-                )
-
-        def process_single(item):
-            raw_key, tensor = item
-            age_value = _parse_age_key(raw_key)
-
-            tmpl = _to_tensor(tensor)
-            if not isinstance(tmpl, torch.Tensor):
-                raise TypeError(f"Template for age bin {raw_key!r} is not convertible to torch.Tensor")
-
-            tmpl = tmpl.detach().to(torch.float32, copy=True)
-
-            if target_shape_tuple is not None and tuple(int(v) for v in tmpl.shape[1:]) != target_shape_tuple:
-                tmpl = F.interpolate(
-                    tmpl.unsqueeze(0),
-                    size=target_shape_tuple,
-                    mode='trilinear',
-                    align_corners=False,
-                ).squeeze(0)
-
-            tmpl = tmpl.to(dtype).contiguous()
-            return age_value, tmpl
-
-        resolved_workers = max(1, num_workers)
-
-        if show_progress:
-            shape_desc = (
-                f"{target_shape_tuple[0]}x{target_shape_tuple[1]}x{target_shape_tuple[2]}"
-                if target_shape_tuple is not None
-                else "native"
-            )
-            if workers_is_auto:
-                worker_desc = f"auto≈{resolved_workers}"
-            else:
-                worker_desc = str(resolved_workers)
-            print(
-                f"🧩 Building age-aware shape templates ({total} age bins, dtype={dtype}, target={shape_desc}, "
-                f"CPU workers={worker_desc})",
-                flush=True,
-            )
-
-        emit_progress(0, force=True)
-
-        if resolved_workers > 1:
-            with ThreadPoolExecutor(max_workers=resolved_workers) as executor:
-                futures = {
-                    executor.submit(process_single, item): idx
-                    for idx, item in enumerate(items, 1)
-                }
-                for count, future in enumerate(as_completed(futures), 1):
-                    age_value, tmpl = future.result()
-                    processed[age_value] = tmpl
-                    emit_progress(count)
-        else:
-            for idx, item in enumerate(items, 1):
-                age_value, tmpl = process_single(item)
-                processed[age_value] = tmpl
-                emit_progress(idx)
-
-        emit_progress(total, final=True, force=True)
-
-        return processed
-
-    def _load_and_prepare_shape_templates(
-        self,
-        template_path: str,
-        target_shape: Optional[Tuple[int, int, int]],
-        dtype_spec: Optional[str],
-        num_workers: int = 1,
-        show_progress: bool = False,
-        workers_is_auto: bool = False,
-        cache_override: Optional[str] = None,
-        require_cache: bool = False,
-    ) -> Dict[float, torch.Tensor]:
-        """Load heavy shape templates once, compress, and cache for subsequent ranks."""
-
-        dtype = _resolve_dtype(dtype_spec)
-        derived_cache = _derive_shape_template_cache_path(template_path, target_shape, dtype)
-
-        cache_override = os.path.abspath(cache_override) if cache_override else None
-        derived_cache = os.path.abspath(derived_cache)
-
-        def load_cache(path: str) -> Dict[float, torch.Tensor]:
-            if is_main:
-                print(f"✓ Loaded cached shape templates from {path}")
-            if is_dist:
-                dist.barrier()
-            return torch.load(path, map_location='cpu')
-
-        if cache_override and os.path.exists(cache_override):
-            return load_cache(cache_override)
-
-        if os.path.exists(derived_cache):
-            return load_cache(derived_cache)
-
-        if cache_override and require_cache:
-            raise FileNotFoundError(
-                f"Required shape template cache not found: {cache_override}. "
-                "Please run preprocess_shape_templates.py before launching training."
-            )
-
-        cache_path = cache_override or derived_cache
-
-        is_dist = dist.is_available() and dist.is_initialized()
-        rank = dist.get_rank() if is_dist else 0
-        world_size = dist.get_world_size() if is_dist else 1
-        is_main = (rank == 0)
-
-        if os.path.exists(cache_path):
-            return load_cache(cache_path)
-
-        if is_dist and not is_main:
-            # Wait for rank 0 to finish preprocessing and writing the cache.
-            dist.barrier()
-            if os.path.exists(cache_path):
-                return torch.load(cache_path, map_location='cpu')
-
-        # Rank 0 (or single-process) performs the heavy lifting.
-        payload = torch.load(template_path, map_location='cpu')
-        start_time = time.time()
-        processed = self._process_shape_template_payload(
-            payload,
-            target_shape,
-            dtype,
-            num_workers=num_workers,
-            show_progress=show_progress,
-            workers_is_auto=workers_is_auto,
-        )
-        del payload
-
-        os.makedirs(os.path.dirname(cache_path) or '.', exist_ok=True)
-        torch.save(processed, cache_path)
-
-        if is_main:
-            first_template = next(iter(processed.values())) if processed else None
-            print(f"✓ Loaded shape templates from {template_path}")
-            print(f"  ↳ Cached processed templates at {cache_path}")
-            if first_template is not None:
-                spatial_shape = tuple(int(v) for v in first_template.shape[1:])
-                print(
-                    f"  ↳ Template dtype {first_template.dtype}, spatial shape {spatial_shape}, classes {first_template.shape[0]}"
-                )
-                duration = time.time() - start_time
-                print(f"  ↳ Preprocessing time: {duration:.1f}s using CPU workers")
-
-        if is_dist and world_size > 1:
-            dist.barrier()
-
-        return processed
-
-    def _process_shape_template_payload(
-        self,
-        payload: object,
-        target_shape: Optional[Tuple[int, int, int]],
-        dtype: torch.dtype,
-        num_workers: int = 1,
-        show_progress: bool = False,
-        workers_is_auto: bool = False,
-    ) -> Dict[float, torch.Tensor]:
-        """Convert raw template payload to a compact dictionary keyed by age."""
-
-        if isinstance(payload, dict) and 'mean' in payload:
-            templates = payload['mean']
-        elif isinstance(payload, dict):
-            templates = payload
-        else:
-            raise TypeError(
-                "Shape template payload must be a dict containing 'mean' entries or age bins."
-            )
-
-        processed: Dict[float, torch.Tensor] = {}
-        target_shape_tuple: Optional[Tuple[int, int, int]] = None
-        if target_shape is not None:
-            target_shape_tuple = tuple(int(v) for v in target_shape)
-
-        items = list(templates.items())
-        total = len(items)
-
-        if total == 0:
-            if show_progress:
-                print("🧩 Building age-aware shape templates (0 age bins)", flush=True)
-            return processed
-
-        start_time = time.time()
-        last_progress_print = 0.0
-        progress_step = max(1, total // 20)
-
-        def emit_progress(done: int, *, final: bool = False, force: bool = False):
-            nonlocal last_progress_print
-
-            if not show_progress:
-                return
-
-            now = time.time()
-            if not force and not final:
-                if done % progress_step != 0 and (now - last_progress_print) < 5.0:
-                    return
-
-            percent = (done / total) * 100.0
-            elapsed = now - start_time
-            print(
-                f"    ↳ progress {done}/{total} ({percent:5.1f}%) elapsed {elapsed:6.1f}s",
-                flush=True,
-            )
-            last_progress_print = now
-
-            if final and done != total:
-                final_elapsed = now - start_time
-                print(
-                    f"    ↳ progress {total}/{total} (100.0%) elapsed {final_elapsed:6.1f}s",
-                    flush=True,
-                )
-
-        def process_single(item):
-            raw_key, tensor = item
-            age_value = _parse_age_key(raw_key)
-
-            tmpl = _to_tensor(tensor)
-            if not isinstance(tmpl, torch.Tensor):
-                raise TypeError(f"Template for age bin {raw_key!r} is not convertible to torch.Tensor")
-
-            tmpl = tmpl.detach().to(torch.float32, copy=True)
-
-            if target_shape_tuple is not None and tuple(int(v) for v in tmpl.shape[1:]) != target_shape_tuple:
-                tmpl = F.interpolate(
-                    tmpl.unsqueeze(0),
-                    size=target_shape_tuple,
-                    mode='trilinear',
-                    align_corners=False,
-                ).squeeze(0)
-
-            tmpl = tmpl.to(dtype).contiguous()
-            return age_value, tmpl
-
-        resolved_workers = max(1, num_workers)
-
-        if show_progress:
-            shape_desc = (
-                f"{target_shape_tuple[0]}x{target_shape_tuple[1]}x{target_shape_tuple[2]}"
-                if target_shape_tuple is not None
-                else "native"
-            )
-            if workers_is_auto:
-                worker_desc = f"auto≈{resolved_workers}"
-            else:
-                worker_desc = str(resolved_workers)
-            print(
-                f"🧩 Building age-aware shape templates ({total} age bins, dtype={dtype}, target={shape_desc}, "
-                f"CPU workers={worker_desc})",
-                flush=True,
-            )
-
-        emit_progress(0, force=True)
-
-        if resolved_workers > 1:
-            with ThreadPoolExecutor(max_workers=resolved_workers) as executor:
-                futures = {
-                    executor.submit(process_single, item): idx
-                    for idx, item in enumerate(items, 1)
-                }
-                for count, future in enumerate(as_completed(futures), 1):
-                    age_value, tmpl = future.result()
-                    processed[age_value] = tmpl
-                    emit_progress(count)
-        else:
-            for idx, item in enumerate(items, 1):
-                age_value, tmpl = process_single(item)
-                processed[age_value] = tmpl
-                emit_progress(idx)
-
-        emit_progress(total, final=True, force=True)
-
-        return processed
-
-    def _load_and_prepare_shape_templates(
-        self,
-        template_path: str,
-        target_shape: Optional[Tuple[int, int, int]],
-        dtype_spec: Optional[str],
-        num_workers: int = 1,
-        show_progress: bool = False,
-        workers_is_auto: bool = False,
-    ) -> Dict[float, torch.Tensor]:
-        """Load heavy shape templates once, compress, and cache for subsequent ranks."""
-
-        dtype = _resolve_dtype(dtype_spec)
-        cache_path = _derive_shape_template_cache_path(template_path, target_shape, dtype)
-
-        is_dist = dist.is_available() and dist.is_initialized()
-        rank = dist.get_rank() if is_dist else 0
-        world_size = dist.get_world_size() if is_dist else 1
-        is_main = (rank == 0)
-
-        if os.path.exists(cache_path):
-            if is_main:
-                print(f"✓ Loaded cached shape templates from {cache_path}")
-            if is_dist:
-                dist.barrier()
-            return torch.load(cache_path, map_location='cpu')
-
-        if is_dist and not is_main:
-            # Wait for rank 0 to finish preprocessing and writing the cache.
-            dist.barrier()
-            if os.path.exists(cache_path):
-                return torch.load(cache_path, map_location='cpu')
-
-        # Rank 0 (or single-process) performs the heavy lifting.
-        payload = torch.load(template_path, map_location='cpu')
-        start_time = time.time()
-        processed = self._process_shape_template_payload(
-            payload,
-            target_shape,
-            dtype,
-            num_workers=num_workers,
-            show_progress=show_progress,
-            workers_is_auto=workers_is_auto,
-        )
-        del payload
-
-        os.makedirs(os.path.dirname(cache_path) or '.', exist_ok=True)
-        torch.save(processed, cache_path)
-
-        if is_main:
-            first_template = next(iter(processed.values())) if processed else None
-            print(f"✓ Loaded shape templates from {template_path}")
-            print(f"  ↳ Cached processed templates at {cache_path}")
-            if first_template is not None:
-                spatial_shape = tuple(int(v) for v in first_template.shape[1:])
-                print(
-                    f"  ↳ Template dtype {first_template.dtype}, spatial shape {spatial_shape}, classes {first_template.shape[0]}"
-                )
-                duration = time.time() - start_time
-                print(f"  ↳ Preprocessing time: {duration:.1f}s using CPU workers")
-
-        if is_dist and world_size > 1:
-            dist.barrier()
-
-        return processed
-
-    def _process_shape_template_payload(
-        self,
-        payload: object,
-        target_shape: Optional[Tuple[int, int, int]],
-        dtype: torch.dtype,
-        num_workers: int = 1,
-        show_progress: bool = False,
-        workers_is_auto: bool = False,
-    ) -> Dict[float, torch.Tensor]:
-        """Convert raw template payload to a compact dictionary keyed by age."""
-
-        if isinstance(payload, dict) and 'mean' in payload:
-            templates = payload['mean']
-        elif isinstance(payload, dict):
-            templates = payload
-        else:
-            raise TypeError(
-                "Shape template payload must be a dict containing 'mean' entries or age bins."
-            )
-
-        processed: Dict[float, torch.Tensor] = {}
-        target_shape_tuple: Optional[Tuple[int, int, int]] = None
-        if target_shape is not None:
-            target_shape_tuple = tuple(int(v) for v in target_shape)
-
-        items = list(templates.items())
-        total = len(items)
-
-        if total == 0:
-            if show_progress:
-                print("🧩 Building age-aware shape templates (0 age bins)", flush=True)
-            return processed
-
-        def emit_progress(done: int):
-            if not show_progress:
-                return
-            if done == 1 or done == total:
-                pass
-            else:
-                step = max(1, total // 20)
-                if done % step != 0:
-                    return
-            percent = (done / total) * 100.0
-            print(f"    ↳ processed {done}/{total} ({percent:5.1f}%)", flush=True)
-
-        def process_single(item):
-            raw_key, tensor = item
-            age_value = _parse_age_key(raw_key)
-
-            tmpl = _to_tensor(tensor)
-            if not isinstance(tmpl, torch.Tensor):
-                raise TypeError(f"Template for age bin {raw_key!r} is not convertible to torch.Tensor")
-
-            tmpl = tmpl.detach().to(torch.float32, copy=True)
-
-            if target_shape_tuple is not None and tuple(int(v) for v in tmpl.shape[1:]) != target_shape_tuple:
-                tmpl = F.interpolate(
-                    tmpl.unsqueeze(0),
-                    size=target_shape_tuple,
-                    mode='trilinear',
-                    align_corners=False,
-                ).squeeze(0)
-
-            tmpl = tmpl.to(dtype).contiguous()
-            return age_value, tmpl
-
-        resolved_workers = max(1, num_workers)
-
-        if show_progress:
-            shape_desc = (
-                f"{target_shape_tuple[0]}x{target_shape_tuple[1]}x{target_shape_tuple[2]}"
-                if target_shape_tuple is not None
-                else "native"
-            )
-            if workers_is_auto:
-                worker_desc = f"auto≈{resolved_workers}"
-            else:
-                worker_desc = str(resolved_workers)
-            print(
-                f"🧩 Building age-aware shape templates ({total} age bins, dtype={dtype}, target={shape_desc}, "
-                f"CPU workers={worker_desc})",
-                flush=True,
-            )
-
-        if resolved_workers > 1:
-            with ThreadPoolExecutor(max_workers=resolved_workers) as executor:
-                futures = {
-                    executor.submit(process_single, item): idx
-                    for idx, item in enumerate(items, 1)
-                }
-                for count, future in enumerate(as_completed(futures), 1):
-                    age_value, tmpl = future.result()
-                    processed[age_value] = tmpl
-                    emit_progress(count)
-        else:
-            for idx, item in enumerate(items, 1):
-                age_value, tmpl = process_single(item)
-                processed[age_value] = tmpl
-                emit_progress(idx)
-
-        return processed
-
-    def _load_and_prepare_shape_templates(
-        self,
-        template_path: str,
-        target_shape: Optional[Tuple[int, int, int]],
-        dtype_spec: Optional[str],
-        num_workers: int = 1,
-        show_progress: bool = False,
-        workers_is_auto: bool = False,
-    ) -> Dict[float, torch.Tensor]:
-        """Load heavy shape templates once, compress, and cache for subsequent ranks."""
-
-        dtype = _resolve_dtype(dtype_spec)
-        cache_path = _derive_shape_template_cache_path(template_path, target_shape, dtype)
-
-        is_dist = dist.is_available() and dist.is_initialized()
-        rank = dist.get_rank() if is_dist else 0
-        world_size = dist.get_world_size() if is_dist else 1
-        is_main = (rank == 0)
-
-        if os.path.exists(cache_path):
-            if is_main:
-                print(f"✓ Loaded cached shape templates from {cache_path}")
-            if is_dist:
-                dist.barrier()
-            return torch.load(cache_path, map_location='cpu')
-
-        if is_dist and not is_main:
-            # Wait for rank 0 to finish preprocessing and writing the cache.
-            dist.barrier()
-            if os.path.exists(cache_path):
-                return torch.load(cache_path, map_location='cpu')
-
-        # Rank 0 (or single-process) performs the heavy lifting.
-        payload = torch.load(template_path, map_location='cpu')
-        start_time = time.time()
-        processed = self._process_shape_template_payload(
-            payload,
-            target_shape,
-            dtype,
-            num_workers=num_workers,
-            show_progress=show_progress,
-            workers_is_auto=workers_is_auto,
-        )
-        del payload
-
-        os.makedirs(os.path.dirname(cache_path) or '.', exist_ok=True)
-        torch.save(processed, cache_path)
-
-        if is_main:
-            first_template = next(iter(processed.values())) if processed else None
-            print(f"✓ Loaded shape templates from {template_path}")
-            print(f"  ↳ Cached processed templates at {cache_path}")
-            if first_template is not None:
-                spatial_shape = tuple(int(v) for v in first_template.shape[1:])
-                print(
-                    f"  ↳ Template dtype {first_template.dtype}, spatial shape {spatial_shape}, classes {first_template.shape[0]}"
-                )
-                duration = time.time() - start_time
-                print(f"  ↳ Preprocessing time: {duration:.1f}s using CPU workers")
-
-        if is_dist and world_size > 1:
-            dist.barrier()
-
-        return processed
-
-    def _process_shape_template_payload(
-        self,
-        payload: object,
-        target_shape: Optional[Tuple[int, int, int]],
-        dtype: torch.dtype,
-    ) -> Dict[float, torch.Tensor]:
-        """Convert raw template payload to a compact dictionary keyed by age."""
-
-        if isinstance(payload, dict) and 'mean' in payload:
-            templates = payload['mean']
-        elif isinstance(payload, dict):
-            templates = payload
-        else:
-            raise TypeError(
-                "Shape template payload must be a dict containing 'mean' entries or age bins."
-            )
-
-        processed: Dict[float, torch.Tensor] = {}
-        target_shape_tuple: Optional[Tuple[int, int, int]] = None
-        if target_shape is not None:
-            target_shape_tuple = tuple(int(v) for v in target_shape)
-
-        for raw_key, tensor in templates.items():
-            age_value = _parse_age_key(raw_key)
-
-            tmpl = _to_tensor(tensor)
-            if not isinstance(tmpl, torch.Tensor):
-                raise TypeError(f"Template for age bin {raw_key!r} is not convertible to torch.Tensor")
-
-            tmpl = tmpl.detach().to(torch.float32, copy=True)
-
-            if target_shape_tuple is not None and tuple(int(v) for v in tmpl.shape[1:]) != target_shape_tuple:
-                tmpl = F.interpolate(
-                    tmpl.unsqueeze(0),
-                    size=target_shape_tuple,
-                    mode='trilinear',
-                    align_corners=False,
-                ).squeeze(0)
-
-            tmpl = tmpl.to(dtype).contiguous()
-            processed[age_value] = tmpl
-
-        return processed
-
-    def _load_and_prepare_shape_templates(
-        self,
-        template_path: str,
-        target_shape: Optional[Tuple[int, int, int]],
-        dtype_spec: Optional[str],
-    ) -> Dict[float, torch.Tensor]:
-        """Load heavy shape templates once, compress, and cache for subsequent ranks."""
-
-        dtype = _resolve_dtype(dtype_spec)
-        cache_path = _derive_shape_template_cache_path(template_path, target_shape, dtype)
-
-        is_dist = dist.is_available() and dist.is_initialized()
-        rank = dist.get_rank() if is_dist else 0
-        world_size = dist.get_world_size() if is_dist else 1
-        is_main = (rank == 0)
-
-        if os.path.exists(cache_path):
-            if is_main:
-                print(f"✓ Loaded cached shape templates from {cache_path}")
-            if is_dist:
-                dist.barrier()
-            return torch.load(cache_path, map_location='cpu')
-
-        if is_dist and not is_main:
-            # Wait for rank 0 to finish preprocessing and writing the cache.
-            dist.barrier()
-            if os.path.exists(cache_path):
-                return torch.load(cache_path, map_location='cpu')
-
-        # Rank 0 (or single-process) performs the heavy lifting.
-        payload = torch.load(template_path, map_location='cpu')
-        processed = self._process_shape_template_payload(payload, target_shape, dtype)
-        del payload
-
-        os.makedirs(os.path.dirname(cache_path) or '.', exist_ok=True)
-        torch.save(processed, cache_path)
-
-        if is_main:
-            first_template = next(iter(processed.values())) if processed else None
-            print(f"✓ Loaded shape templates from {template_path}")
-            print(f"  ↳ Cached processed templates at {cache_path}")
-            if first_template is not None:
-                spatial_shape = tuple(int(v) for v in first_template.shape[1:])
-                print(
-                    f"  ↳ Template dtype {first_template.dtype}, spatial shape {spatial_shape}, classes {first_template.shape[0]}"
-                )
-
-        if is_dist and world_size > 1:
-            dist.barrier()
-
-        return processed
-
-    def set_epoch(self, epoch: int):
-        self.current_epoch = epoch
+            mask = torch.empty(0)
+        self.register_buffer("r_mask", mask)
+        if structural_rules_path and os.path.exists(structural_rules_path):
+            self._load_structural_rules(structural_rules_path)
+        if lr_pairs is not None:
+            self.lr_pairs = [(int(a), int(b)) for a, b in lr_pairs]
+        elif lr_pairs_path and os.path.exists(lr_pairs_path):
+            self.lr_pairs = self._load_lr_pairs(lr_pairs_path)
+
+    # ------------------------------------------------------------------
+    # schedule helpers
+    # ------------------------------------------------------------------
+    def set_epoch(self, epoch: int) -> None:
+        """Update the internal epoch counter for warmup scheduling."""
+
+        self.current_epoch = int(epoch)
+
+    def configure_schedule(self, total_epochs: int) -> None:
+        self.total_epochs = int(total_epochs)
 
     def get_warmup_factor(self) -> float:
-        if self.graph_warmup_epochs and self.current_epoch < self.graph_warmup_epochs:
-            return self.current_epoch / max(1, self.graph_warmup_epochs)
-        return 1.0
+        if self.warmup_epochs <= 0:
+            return 1.0
+        return float(min(1.0, max(0.0, self.current_epoch / max(1, self.warmup_epochs))))
 
-    def get_age_warmup_factor(self) -> float:
-        if self.age_warmup_epochs and self.current_epoch < self.age_warmup_epochs:
-            return self.current_epoch / max(1, self.age_warmup_epochs)
-        return 1.0
+    def set_debug(self, enabled: bool, max_batches: Optional[int] = None) -> None:
+        self.debug_mode = bool(enabled)
+        if max_batches is not None:
+            self.debug_max_batches = max(0, int(max_batches))
+        if not self.debug_mode:
+            self._debug_counter = 0
 
-    def _ensure_volume_stats_alignment(self, num_classes: int):
-        if self.volume_stats is None:
-            return
+    def get_last_metrics(self) -> Dict[str, float]:
+        return dict(self._last_metrics)
 
-        if self._volume_stats_aligned_to == num_classes:
-            return
-
-        aligned, background_idx, mask_np = _align_volume_stats(
-            self.volume_stats,
-            num_classes,
-            std_floor=self.volume_std_floor,
-        )
-        if aligned:
-            self.volume_stats = aligned
-        self.volume_background_idx = background_idx
-
-        # If a dominant background channel is detected we disable prior terms to avoid
-        # enforcing incorrect constraints (old priors were generated before foreground
-        # remapping). Users should rebuild priors with the updated script.
-        # 无论是否检测到背景通道，都保持先验有效；若存在背景通道则仅剔除该通道
-        self._prior_alignment_ok = True
-
-        if mask_np is None or mask_np.size == 0:
-            mask_tensor = torch.ones(num_classes, dtype=torch.float32)
-        else:
-            mask_tensor = torch.from_numpy(mask_np.astype(np.float32))
-
-        if self.volume_valid_mask.numel() == 0 or self.volume_valid_mask.shape[0] != mask_tensor.shape[0]:
-            self.volume_valid_mask = mask_tensor
-        else:
-            self.volume_valid_mask.data = mask_tensor.to(self.volume_valid_mask.device)
-
-        self._volume_stats_aligned_to = num_classes
-
-        if (
-            background_idx is not None
-            and not self._volume_alignment_logged
-            and ((not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0)
-        ):
-            print(
-                f"[GraphPrior] Volume prior alignment: removed dominant channel {background_idx} from priors "
-                f"and matched statistics to {num_classes} model classes"
-            )
-            self._volume_alignment_logged = True
-
-
-    def forward(self,
-                logits: torch.Tensor,
-                labels: Optional[torch.Tensor] = None,
-                age: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-        logits = _to_tensor(logits)
-        labels = _to_tensor(labels)
-
-        if age is None:
-            age = torch.zeros(logits.shape[0], 1, device=logits.device, dtype=logits.dtype)
-        else:
-            age = _to_tensor(age)
-            if age.dim() == 1:
-                age = age.unsqueeze(1)
-            if age.shape[1] > 1:
-                age = age[:, :1]
-            age = age.to(device=logits.device, dtype=logits.dtype)
-
-        probs = F.softmax(logits, dim=1)
-        num_classes = probs.shape[1]
-
-        self._ensure_volume_stats_alignment(num_classes)
-
-        if not self._prior_alignment_ok:
-            if (not self._alignment_warning_logged
-                    and ((not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0)):
-                print("⚠️  Detected background-heavy priors. Skipping age-conditioned graph losses."
-                      " Please regenerate priors with the updated build_graph_priors.py.")
-                self._alignment_warning_logged = True
-
-            zero = torch.zeros(1, device=logits.device, dtype=logits.dtype)
-            zero_dict: Dict[str, torch.Tensor] = {
-                'volume_loss': zero,
-                'shape_loss': zero,
-                'weighted_adj_loss': zero,
-                'topo_loss': zero,
-                'graph_spec_src': zero,
-                'graph_edge_src': zero,
-                'graph_spec_tgt': zero,
-                'graph_edge_tgt': zero,
-                'graph_sym': zero,
-                'structural_violations': {'required_missing': 0, 'forbidden_present': 0},
-                'weighted_adj_active_classes': zero,
-                'warmup_factor': torch.tensor(self.get_warmup_factor(), device=logits.device, dtype=logits.dtype),
-                'age_warmup_factor': torch.tensor(self.get_age_warmup_factor(), device=logits.device, dtype=logits.dtype),
-            }
-            return zero, zero_dict
-
-        loss_dict: Dict[str, torch.Tensor] = {}
-        dtype = logits.dtype
-        device = logits.device
-
-        age_loss_sum = torch.zeros(1, device=device, dtype=dtype)
-        age_warmup = self.get_age_warmup_factor()
-
-        predicted_volumes = probs.sum(dim=(2, 3, 4))
-        total_volume = predicted_volumes.sum(dim=1, keepdim=True).clamp(min=1e-6)
-        volume_fractions = predicted_volumes / total_volume
-
-        debug_active = (
-            self.debug_mode
-            and (self._debug_batch_count < self.debug_max_batches)
-            and ((not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0)
-        )
-        if debug_active:
-            debug_prefix = f"[DEBUG][GraphPrior][batch {self._debug_batch_count + 1}]"
-            print(f"{debug_prefix} logits shape={tuple(logits.shape)}")
-            print(f"{debug_prefix} age range={float(age.min().item()):.2f}-{float(age.max().item()):.2f}")
-            print(f"{debug_prefix} graph warmup={self.get_warmup_factor():.3f}, age warmup={age_warmup:.3f}")
+    def diagnostics(self, probs: torch.Tensor, ages: torch.Tensor, *, apply_warmup: bool = False) -> Dict[str, float]:
+        original_warmup = self.warmup_epochs
+        if not apply_warmup:
+            self.warmup_epochs = 0
+        try:
             with torch.no_grad():
-                vf = volume_fractions.detach()[0]
-                top_mass = torch.topk(vf, k=min(5, vf.numel()))
-                print(
-                    f"{debug_prefix} volume fractions (sample0): "
-                    + ", ".join(
-                        f"c{idx}={vf[idx].item():.4f}" for idx in top_mass.indices.cpu().tolist()
-                    )
-                )
-                if self.volume_stats is not None:
-                    exp_mean, _ = get_expected_volumes(
-                        float(age[0].item()),
-                        self.volume_stats,
-                        num_classes,
-                        std_floor=self.volume_std_floor,
-                    )
-                    exp = torch.tensor(exp_mean, device=vf.device, dtype=vf.dtype)
-                    diff = vf - exp
-                    top_diff = torch.topk(diff.abs(), k=min(5, diff.numel()))
-                    print(
-                        f"{debug_prefix} volume diff vs prior: "
-                        + ", ".join(
-                            f"c{idx}={diff[idx].item():+.4f}" for idx in top_diff.indices.cpu().tolist()
-                        )
-                    )
+                _ = self.forward(probs, ages)
+        finally:
+            self.warmup_epochs = original_warmup
+        return self.get_last_metrics()
 
-        if self.lambda_volume > 0 and self.volume_stats is not None:
-            mask = None
-            if self.volume_valid_mask.numel() == num_classes:
-                mask = self.volume_valid_mask.to(device=probs.device, dtype=probs.dtype)
-            loss_volume = volume_consistency_loss(
-                probs,
-                age,
-                self.volume_stats,
-                num_classes,
-                valid_mask=mask,
-                std_floor=self.volume_std_floor,
-            )
-            loss_dict['volume_loss'] = loss_volume.detach()
-            age_loss_sum = age_loss_sum + age_warmup * self.lambda_volume * loss_volume
-            if debug_active:
-                scaled = age_warmup * self.lambda_volume * loss_volume.detach()
-                print(
-                    f"{debug_prefix} volume_loss raw={float(loss_volume.detach().item()):.6f}, "
-                    f"scaled={float(scaled.item()):.6f} (λ={self.lambda_volume:.3f}, warmup={age_warmup:.3f})"
-                )
+    # ------------------------------------------------------------------
+    # loading helpers
+    # ------------------------------------------------------------------
+    def _load_volume_stats(self, path: str) -> None:
+        with open(path, "r") as f:
+            data = json.load(f)
+        bins = []
+        means = []
+        stds = []
+        bin_width = None
+        for key, entry in data.items():
+            try:
+                age_bin = int(key)
+            except ValueError:
+                continue
+            if bin_width is None:
+                bin_width = float(entry.get("age_bin_width", 1.0))
+            bins.append(age_bin)
+            vec_mean = np.asarray(entry.get("means", []), dtype=np.float32)
+            vec_std = np.asarray(entry.get("stds", []), dtype=np.float32)
+            vec_mean = self._align_classes(vec_mean)
+            vec_std = self._align_classes(vec_std)
+            std_floor = 0.02
+            vec_std = np.clip(vec_std, std_floor, None)
+            means.append(vec_mean)
+            stds.append(vec_std)
+        if not bins:
+            return
+        order = np.argsort(bins)
+        self.volume_bins = torch.tensor(np.array(bins)[order], dtype=torch.float32)
+        self.volume_means = torch.tensor(np.stack(means, axis=0)[order], dtype=torch.float32)
+        self.volume_stds = torch.tensor(np.stack(stds, axis=0)[order], dtype=torch.float32)
+        self.volume_bin_width = bin_width or 1.0
 
-        if self.lambda_shape > 0 and self.shape_templates is not None:
-            loss_shape = shape_consistency_loss(
-                probs,
-                age,
-                self.shape_templates,
-                temperature=self.shape_temperature,
-                normalize_templates=self.normalize_shape_templates,
-            )
-            loss_dict['shape_loss'] = loss_shape.detach()
-            age_loss_sum = age_loss_sum + age_warmup * self.lambda_shape * loss_shape
-            if debug_active:
-                scaled = age_warmup * self.lambda_shape * loss_shape.detach()
-                print(
-                    f"{debug_prefix} shape_loss raw={float(loss_shape.detach().item()):.6f}, "
-                    f"scaled={float(scaled.item()):.6f} (λ={self.lambda_shape:.3f}, warmup={age_warmup:.3f})"
-                )
+    def _load_sdf_templates(self, path: str) -> None:
+        payload = np.load(path, allow_pickle=True)
+        ages = payload.get("ages")
+        if ages is None or ages.size == 0:
+            return
+        templates_np = payload["T_mean"].astype(np.float32)
+        meta = payload.get("meta", {})
+        self.sdf_band = float(meta.get("band", 8.0)) if isinstance(meta, dict) else 8.0
+        bin_width = float(meta.get("bin_width", 1.0)) if isinstance(meta, dict) else 1.0
+        age_values = ages.astype(np.float32) * bin_width
+        order = np.argsort(age_values)
+        age_values = age_values[order]
+        templates_list = []
+        for idx in order:
+            templates_list.append(torch.from_numpy(self._align_classes_5d(templates_np[idx])))
+        self.sdf_age_values = torch.tensor(age_values, dtype=torch.float32)
+        self.sdf_templates = torch.stack(templates_list, dim=0)
 
-        if self.lambda_weighted_adj > 0:
-            age_weight_dict = self.age_weights if self.age_weights is not None else None
-            A_pred_batch = compute_weighted_adjacency(
-                probs,
-                age,
-                age_weights=age_weight_dict,
-                temperature=self.prior_temperature,
-            )
-            if self.A_weighted_prior.numel() > 0:
-                B, C, _ = A_pred_batch.shape
-                loss_adj = torch.zeros(1, device=device, dtype=dtype)
-                valid_batch_count = 0
-                A_prior = self.A_weighted_prior.to(device=device, dtype=dtype)
-                volume_fractions_local = volume_fractions.to(device=device, dtype=dtype)
-                if self.weighted_adj_presence_slope > 0:
-                    presence_logits = (
-                            (volume_fractions_local - self.weighted_adj_presence_threshold)
-                            * self.weighted_adj_presence_slope
-                    )
-                    presence = torch.sigmoid(presence_logits)
-                else:
-                    presence = (volume_fractions_local > self.weighted_adj_presence_threshold).to(dtype=dtype)
-                eye = torch.eye(C, device=device, dtype=dtype)
-                active_counts: List[int] = []
-                for b in range(B):
-                    presence_b = presence[b]
-                    active_classes = int((presence_b.detach() > 0.5).sum().item())
-                    active_counts.append(active_classes)
-                    if active_classes <= 1:
-                        continue
-                    mask = torch.outer(presence_b, presence_b)
-                    mask = mask * (1 - eye)
-                    if mask.detach().sum() <= 0:
-                        continue
-                    if self.age_weights is not None:
-                        W = get_age_weight_matrix(age[b].item(), self.age_weights, C, device)
-                        W = W.to(device=device, dtype=dtype)
-                    else:
-                        W = torch.ones(C, C, device=device, dtype=dtype)
-                    vol_weight = torch.outer(volume_fractions_local[b], volume_fractions_local[b])
-                    weight_mask = W * mask * vol_weight
-                    denom = weight_mask.sum().clamp(min=1e-6)
-                    diff = (A_pred_batch[b] - A_prior) * mask
-                    loss_adj = loss_adj + (weight_mask * diff * diff).sum() / denom
-                    valid_batch_count += 1
-                if valid_batch_count > 0:
-                    loss_adj = loss_adj / valid_batch_count
-                if active_counts:
-                    avg_active = sum(active_counts) / len(active_counts)
-                    loss_dict['weighted_adj_active_classes'] = torch.tensor(
-                        avg_active,
-                        device=device,
-                        dtype=dtype,
-                    ).detach()
-            else:
-                loss_adj = torch.zeros(1, device=device, dtype=dtype)
+    def _load_adjacency_prior(self, path: str) -> None:
+        payload = np.load(path, allow_pickle=True)
+        ages = payload.get("ages")
+        if ages is None or ages.size == 0:
+            return
+        matrices = payload["A_prior"].astype(np.float32)
+        meta = payload.get("meta", {})
+        bin_width = float(meta.get("bin_width", 1.0)) if isinstance(meta, dict) else 1.0
+        self.adj_bin_width = bin_width
+        age_values = ages.astype(np.float32) * bin_width
+        order = np.argsort(age_values)
+        age_values = age_values[order]
+        matrices = matrices[order]
+        matrices = self._align_classes_3d(matrices)
+        self.adj_age_values = torch.tensor(age_values, dtype=torch.float32)
+        self.adj_templates = torch.tensor(matrices, dtype=torch.float32)
+        if "freq" in payload:
+            freq = payload["freq"].astype(np.float32)[order]
+            self.adj_freq = torch.tensor(self._align_classes_3d(freq), dtype=torch.float32)
+        if "counts" in payload:
+            counts = np.asarray(payload["counts"], dtype=np.float32)[order]
+            self.adj_counts = torch.tensor(counts, dtype=torch.float32)
+            self._adj_count_max = float(max(float(counts.max()), 0.0))
 
-            loss_dict['weighted_adj_loss'] = loss_adj.detach()
-            age_loss_sum = age_loss_sum + age_warmup * self.lambda_weighted_adj * loss_adj
-            if debug_active:
-                scaled = age_warmup * self.lambda_weighted_adj * loss_adj.detach()
-                print(
-                    f"{debug_prefix} weighted_adj raw={float(loss_adj.detach().item()):.6f}, "
-                    f"scaled={float(scaled.item()):.6f} (λ={self.lambda_weighted_adj:.3f}, warmup={age_warmup:.3f})"
-                )
-                if 'weighted_adj_active_classes' in loss_dict:
-                    print(
-                        f"{debug_prefix} active classes={float(loss_dict['weighted_adj_active_classes'].item()):.2f}"
-                    )
+    def _load_structural_rules(self, path: str) -> None:
+        with open(path, "r") as f:
+            payload = json.load(f)
+        required = payload.get("required", []) or []
+        forbidden = payload.get("forbidden", []) or []
+        self.required_edges = []
+        self.forbidden_edges = []
+        for pair in required:
+            if isinstance(pair, (list, tuple)) and len(pair) == 2:
+                i, j = int(pair[0]), int(pair[1])
+                if 0 <= i < self.num_classes and 0 <= j < self.num_classes and i != j:
+                    self.required_edges.append((i, j))
+        for pair in forbidden:
+            if isinstance(pair, (list, tuple)) and len(pair) == 2:
+                i, j = int(pair[0]), int(pair[1])
+                if 0 <= i < self.num_classes and 0 <= j < self.num_classes and i != j:
+                    self.forbidden_edges.append((i, j))
 
-        if self.lambda_topo > 0 and (self.required_edges or self.forbidden_edges):
-            if self.use_restricted_mask and self.R_mask.numel() > 0:
-                topo_mask = self.R_mask.to(device=device, dtype=dtype)
-            else:
-                topo_mask = None
-            A_simple = soft_adjacency_from_probs(
-                probs,
-                kernel_size=1,
-                stride=1,
-                temperature=1.0,
-                restricted_mask=topo_mask,
-            )
-            loss_topo = torch.zeros(1, device=device, dtype=dtype)
-            for i, j in self.required_edges:
-                if i < num_classes and j < num_classes:
-                    loss_topo = loss_topo + F.relu(0.01 - A_simple[i, j])
-            for i, j in self.forbidden_edges:
-                if i < num_classes and j < num_classes:
-                    loss_topo = loss_topo + F.relu(A_simple[i, j] - 0.001)
+    def _load_lr_pairs(self, path: str) -> List[Tuple[int, int]]:
+        with open(path, "r") as f:
+            payload = json.load(f)
+        pairs: List[Tuple[int, int]] = []
+        for pair in payload:
+            if isinstance(pair, (list, tuple)) and len(pair) == 2:
+                a, b = int(pair[0]), int(pair[1])
+                if a <= 0 or b <= 0:
+                    continue
+                a -= 1
+                b -= 1
+                if 0 <= a < self.num_classes and 0 <= b < self.num_classes:
+                    pairs.append((a, b))
+        return pairs
 
-            loss_dict['topo_loss'] = loss_topo.detach()
-            age_loss_sum = age_loss_sum + age_warmup * self.lambda_topo * loss_topo
-            if debug_active:
-                print(f"{debug_prefix} topo loss={float(loss_topo.detach().item()):.6f}")
+    def _align_classes(self, vector: np.ndarray) -> np.ndarray:
+        if vector.size == self.num_classes:
+            return vector
+        if vector.size > self.num_classes:
+            return vector[:self.num_classes]
+        padded = np.zeros((self.num_classes,), dtype=vector.dtype)
+        padded[:vector.size] = vector
+        return padded
 
-        # ========================= Graph alignment branch =========================
-        graph_branch_sum = torch.zeros(1, device=device, dtype=dtype)
-        loss_spec_src = torch.zeros(1, device=device, dtype=dtype)
-        loss_edge_src = torch.zeros(1, device=device, dtype=dtype)
-        loss_spec_tgt = torch.zeros(1, device=device, dtype=dtype)
-        loss_edge_tgt = torch.zeros(1, device=device, dtype=dtype)
-        loss_sym = torch.zeros(1, device=device, dtype=dtype)
+    def _align_classes_3d(self, array: np.ndarray) -> np.ndarray:
+        if array.shape[-1] == self.num_classes:
+            return array
+        trimmed = array[..., :self.num_classes]
+        trimmed = trimmed[:, :self.num_classes, :]
+        return trimmed
 
-        need_graph = (
-            self.lambda_spec_src > 0 or self.lambda_edge_src > 0 or
-            self.lambda_spec_tgt > 0 or self.lambda_edge_tgt > 0 or
-            (self.lambda_sym > 0 and len(self.lr_pairs) > 0)
-        )
+    def _align_classes_5d(self, array: np.ndarray) -> np.ndarray:
+        if array.shape[0] == self.num_classes:
+            return array
+        trimmed = array[:self.num_classes]
+        return trimmed
 
-        A_pred = None
-        if need_graph:
-            if self.use_restricted_mask and self.R_mask.numel() > 0:
-                restricted_mask = self.R_mask.to(device=device, dtype=dtype)
-            else:
-                restricted_mask = None
-            A_pred = soft_adjacency_from_probs(
-                probs,
-                kernel_size=self.pool_kernel,
-                stride=self.pool_stride,
-                temperature=self.temperature,
-                restricted_mask=restricted_mask,
-            )
-            L_pred = compute_laplacian(A_pred, normalized=True)
-
-            if self.has_source_prior and self.lambda_spec_src > 0:
-                loss_spec_src = spectral_alignment_loss(
-                    L_pred, self.L_src,
-                    top_k=self.top_k,
-                    align_vectors=True,
-                    eigenvalue_weighted=self.align_U_weighted,
-                )
-
-            if self.has_source_prior and self.lambda_edge_src > 0:
-                A_src = self.A_src
-                if self.use_restricted_mask and restricted_mask is not None:
-                    A_src = A_src * restricted_mask
-                loss_edge_src = edge_consistency_loss_with_mismatch(
-                    A_pred,
-                    A_src,
-                    required_edges=self.src_required_edges,
-                    forbidden_edges=self.src_forbidden_edges,
-                    class_weights=self.class_weights,
-                    qap_mismatch_g=self.qap_mismatch_g,
-                    restricted_mask=restricted_mask,
-                )
-
-            if self.has_target_prior and self.lambda_spec_tgt > 0:
-                loss_spec_tgt = spectral_alignment_loss(
-                    L_pred, self.L_tgt,
-                    top_k=self.top_k,
-                    align_vectors=True,
-                    eigenvalue_weighted=self.align_U_weighted,
-                )
-
-            if self.has_target_prior and self.lambda_edge_tgt > 0:
-                A_tgt = self.A_tgt
-                if self.use_restricted_mask and restricted_mask is not None:
-                    A_tgt = A_tgt * restricted_mask
-                loss_edge_tgt = edge_consistency_loss_with_mismatch(
-                    A_pred,
-                    A_tgt,
-                    required_edges=self.tgt_required_edges,
-                    forbidden_edges=self.tgt_forbidden_edges,
-                    class_weights=self.class_weights,
-                    qap_mismatch_g=self.qap_mismatch_g,
-                    restricted_mask=restricted_mask,
-                )
-
-            if self.lambda_sym > 0 and self.lr_pairs:
-                loss_sym = symmetry_consistency_loss(probs, self.lr_pairs)
-
-            graph_branch_sum = (
-                self.lambda_spec_src * loss_spec_src +
-                self.lambda_edge_src * loss_edge_src +
-                self.lambda_spec_tgt * loss_spec_tgt +
-                self.lambda_edge_tgt * loss_edge_tgt +
-                self.lambda_sym * loss_sym
-            )
-            if debug_active:
-                if A_pred is not None:
-                    with torch.no_grad():
-                        print(
-                            f"{debug_prefix} A_pred stats mean={A_pred.mean().item():.5f}, max={A_pred.max().item():.5f}, "
-                            f"min={A_pred.min().item():.5f}"
-                        )
-                print(
-                    f"{debug_prefix} graph losses spec_src={float(loss_spec_src.detach().item()):.6f}, "
-                    f"edge_src={float(loss_edge_src.detach().item()):.6f}, "
-                    f"spec_tgt={float(loss_spec_tgt.detach().item()):.6f}, "
-                    f"edge_tgt={float(loss_edge_tgt.detach().item()):.6f}, sym={float(loss_sym.detach().item()):.6f}"
-                )
-
-        warmup_factor = self.get_warmup_factor()
-        graph_total = warmup_factor * graph_branch_sum
-        if debug_active:
-            print(f"{debug_prefix} graph_total={float(graph_total.detach().item()):.6f} (warmup={warmup_factor:.3f})")
-
-        total_loss = age_loss_sum + graph_total
-
-        loss_dict['graph_total'] = graph_total.detach()
-        loss_dict['graph_loss'] = graph_total.detach()
-        loss_dict['graph_spec_src'] = loss_spec_src.detach()
-        loss_dict['graph_edge_src'] = loss_edge_src.detach()
-        loss_dict['graph_spec_tgt'] = loss_spec_tgt.detach()
-        loss_dict['graph_edge_tgt'] = loss_edge_tgt.detach()
-        loss_dict['graph_sym'] = loss_sym.detach()
-        loss_dict['sym_loss'] = loss_sym.detach()
-        loss_dict['graph_spec'] = (
-            (loss_spec_src * self.lambda_spec_src + loss_spec_tgt * self.lambda_spec_tgt)
-            / max(self.lambda_spec_src + self.lambda_spec_tgt, 1e-8)
-            if (self.lambda_spec_src + self.lambda_spec_tgt) > 0 else torch.zeros_like(loss_spec_src)
-        ).detach()
-        loss_dict['graph_edge'] = (
-            (loss_edge_src * self.lambda_edge_src + loss_edge_tgt * self.lambda_edge_tgt)
-            / max(self.lambda_edge_src + self.lambda_edge_tgt, 1e-8)
-            if (self.lambda_edge_src + self.lambda_edge_tgt) > 0 else torch.zeros_like(loss_edge_src)
-        ).detach()
-        loss_dict['warmup_factor'] = torch.tensor(warmup_factor, device=device)
-        loss_dict['age_warmup_factor'] = torch.tensor(age_warmup, device=device)
-
-        if A_pred is not None:
-            th_required = 0.02
-            th_forbidden = 5e-4
-            required_missing = 0
-            forbidden_present = 0
-
-            for i, j in (self.tgt_required_edges + self.src_required_edges):
-                if i < A_pred.shape[0] and j < A_pred.shape[1] and A_pred[i, j].item() < th_required:
-                    required_missing += 1
-
-            for i, j in (self.tgt_forbidden_edges + self.src_forbidden_edges):
-                if i < A_pred.shape[0] and j < A_pred.shape[1] and A_pred[i, j].item() > th_forbidden:
-                    forbidden_present += 1
-
-            loss_dict['structural_violations'] = {
-                'required_missing': required_missing,
-                'forbidden_present': forbidden_present,
-            }
-            struct_score = forbidden_present * 1.5 + required_missing
-            loss_dict['graph_struct'] = torch.tensor(struct_score, device=device, dtype=dtype)
-            loss_dict['A_pred'] = A_pred.detach()
+    # ------------------------------------------------------------------
+    # interpolation helpers
+    # ------------------------------------------------------------------
+    def _interp_volume(self, age: float, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]:
+        if self.volume_bins is None:
+            zero = torch.zeros(self.num_classes, device=device)
+            return zero, torch.ones(self.num_classes, device=device)
+        ages = self.volume_bins * (self.volume_bin_width or 1.0)
+        age_tensor = torch.tensor([age], device=ages.device)
+        idx = torch.searchsorted(ages, age_tensor)
+        idx = idx.clamp(max=ages.numel() - 1)
+        lo = torch.clamp(idx - 1, min=0)
+        hi = torch.clamp(idx, min=0)
+        if ages.numel() == 1:
+            mean = self.volume_means[0]
+            std = self.volume_stds[0]
         else:
-            loss_dict['structural_violations'] = {
-                'required_missing': 0,
-                'forbidden_present': 0,
-            }
-            loss_dict['graph_struct'] = torch.zeros(1, device=device, dtype=dtype)
+            age_lo = ages[lo]
+            age_hi = ages[hi]
+            denom = (age_hi - age_lo).clamp(min=1e-6)
+            t = (age_tensor - age_lo) / denom
+            mean = (1 - t) * self.volume_means[lo] + t * self.volume_means[hi]
+            std = (1 - t) * self.volume_stds[lo] + t * self.volume_stds[hi]
+        return mean.squeeze(0).to(device), std.squeeze(0).to(device)
 
-        if debug_active:
-            self._debug_batch_count += 1
+    def _interp_sdf(self, age: float, device: torch.device, target_shape: Tuple[int, int, int]) -> Optional[torch.Tensor]:
+        if not self.sdf_templates or self.sdf_age_values is None:
+            return None
+        ages = self.sdf_age_values
+        age_tensor = torch.tensor([age], device=ages.device)
+        idx = torch.searchsorted(ages, age_tensor)
+        idx = idx.clamp(max=ages.numel() - 1)
+        lo_idx = int(torch.clamp(idx - 1, min=0).item())
+        hi_idx = int(idx.item())
+        lo_age = float(ages[lo_idx])
+        hi_age = float(ages[hi_idx])
+        if hi_idx == lo_idx:
+            t = 0.0
+        else:
+            t = float((age - lo_age) / (hi_age - lo_age + 1e-6))
+        tmpl_lo = self.sdf_templates[lo_idx]
+        tmpl_hi = self.sdf_templates[hi_idx]
+        tmpl = (1 - t) * tmpl_lo + t * tmpl_hi
+        tmpl = tmpl.to(device=device)
+        if tmpl.shape[1:] != target_shape:
+            tmpl = F.interpolate(tmpl.unsqueeze(0), size=target_shape, mode="trilinear", align_corners=False).squeeze(0)
+        return tmpl
 
-        return total_loss, loss_dict
+    def _interp_adj(self, age: float, device: torch.device) -> Optional[torch.Tensor]:
+        if self.adj_templates is None or self.adj_age_values is None:
+            return None
+        ages = self.adj_age_values
+        age_tensor = torch.tensor([age], device=ages.device)
+        idx = torch.searchsorted(ages, age_tensor)
+        idx = idx.clamp(max=ages.numel() - 1)
+        lo_idx = int(torch.clamp(idx - 1, min=0).item())
+        hi_idx = int(idx.item())
+        if ages.numel() == 1:
+            prior = self.adj_templates[0]
+        else:
+            denom = (ages[hi_idx] - ages[lo_idx]).clamp(min=1e-6)
+            t = (age_tensor - ages[lo_idx]) / denom
+            prior = (1 - t) * self.adj_templates[lo_idx] + t * self.adj_templates[hi_idx]
+        return prior.to(device)
 
+    def _age_reliability(self, age: float) -> float:
+        if self.adj_age_values is None or self.adj_counts is None or self._adj_count_max <= 0:
+            return 1.0
+        ages = self.adj_age_values
+        counts = self.adj_counts
+        age_tensor = torch.tensor([age], device=ages.device)
+        idx = torch.searchsorted(ages, age_tensor)
+        idx = idx.clamp(max=ages.numel() - 1)
+        lo = torch.clamp(idx - 1, min=0)
+        hi = idx
+        if ages.numel() == 1:
+            weight = counts[0]
+        else:
+            age_lo = ages[lo]
+            age_hi = ages[hi]
+            denom = (age_hi - age_lo).clamp(min=1e-6)
+            t = (age_tensor - age_lo) / denom
+            weight = (1 - t) * counts[lo] + t * counts[hi]
+        weight = float(weight.squeeze(0).item())
+        rel = max(weight / (self._adj_count_max + 1e-6), self.age_reliability_min)
+        return float(rel ** self.age_reliability_pow)
 
-def symmetry_consistency_loss(probs: torch.Tensor,
-                              lr_pairs: List[Tuple[int, int]],
-                              flip_dim: int = 2) -> torch.Tensor:
-    """
-    Compute symmetry consistency loss for left-right paired structures
+    # ------------------------------------------------------------------
+    # forward
+    # ------------------------------------------------------------------
+    def forward(self, probs: torch.Tensor, ages: torch.Tensor) -> Dict[str, torch.Tensor]:
+        B, C, X, Y, Z = probs.shape
+        device = probs.device
+        dtype = probs.dtype
+        ages_list = ages.detach().cpu().tolist()
 
-    Args:
-        probs: (B, C, X, Y, Z) probability maps
-        lr_pairs: List of (left, right) class index pairs (0-based)
-        flip_dim: Spatial dimension for left-right flip (2 for X-axis in RAS)
+        warmup = self.get_warmup_factor()
 
-    Returns:
-        loss: Scalar loss value
-    """
-    if not lr_pairs:
-        return torch.tensor(0.0, device=probs.device)
+        zero = torch.tensor(0.0, device=device, dtype=dtype)
+        weighted_volume = zero.clone()
+        weighted_shape = zero.clone()
+        weighted_edge = zero.clone()
+        weighted_spec = zero.clone()
+        weighted_required = zero.clone()
+        weighted_forbidden = zero.clone()
+        weighted_symmetry = zero.clone()
 
-    # Flip probabilities along left-right axis
-    probs_flipped = torch.flip(probs, dims=[flip_dim])
+        volume_losses: List[torch.Tensor] = []
+        shape_losses: List[torch.Tensor] = []
+        edge_losses: List[torch.Tensor] = []
+        spectral_losses: List[torch.Tensor] = []
+        required_losses: List[torch.Tensor] = []
+        forbidden_losses: List[torch.Tensor] = []
+        symmetry_losses: List[torch.Tensor] = []
 
-    # Create swapped version
-    probs_swapped = probs_flipped.clone()
+        age_weights: List[float] = []
+        dyn_scales: List[float] = []
+        qap_mismatches: List[float] = []
+        adj_mae_vals: List[float] = []
+        spec_gap_vals: List[float] = []
+        symmetry_gap_vals: List[float] = []
+        required_missing_total = 0
+        forbidden_present_total = 0
 
-    # Swap left-right paired channels
-    for left, right in lr_pairs:
-        probs_swapped[:, left, ...] = probs_flipped[:, right, ...]
-        probs_swapped[:, right, ...] = probs_flipped[:, left, ...]
+        mask = self.r_mask.to(device) if self.r_mask.numel() > 0 else None
 
-    # Consistency loss: original should match swapped version
-    loss = F.l1_loss(probs, probs_swapped)
+        for b, age in enumerate(ages_list):
+            reliability = self._age_reliability(age)
+            age_weights.append(reliability)
+            lambda_factor = warmup * reliability
+            lambda_factor_tensor = torch.tensor(lambda_factor, device=device, dtype=dtype)
 
-    return loss
+            flat = probs[b].view(C, -1)
+            frac = flat.sum(dim=1)
+            frac = frac / frac.sum().clamp(min=1e-6)
+
+            if self.volume_bins is not None:
+                mean, std = self._interp_volume(age, device)
+                z = (frac - mean) / std.clamp(min=1e-3)
+                vol_loss = _huber(z, self.huber_delta).mean()
+                weighted_volume = weighted_volume + self._base_lambda_volume * lambda_factor_tensor * vol_loss
+                volume_losses.append(vol_loss)
+
+            if self._base_lambda_shape > 0 and self.sdf_templates is not None:
+                tmpl = self._interp_sdf(age, device, (X, Y, Z))
+                if tmpl is not None:
+                    clamped = probs[b].clamp(min=1e-4, max=1 - 1e-4)
+                    sdf_pred = -torch.log(clamped) + torch.log1p(-clamped)
+                    sdf_pred = sdf_pred / self.sdf_temperature
+                    diff = sdf_pred - tmpl
+                    if self.sdf_band is not None:
+                        band_mask = (tmpl.abs() <= self.sdf_band).float()
+                        diff = diff * band_mask
+                    shape_loss = _huber(diff, self.huber_delta).mean()
+                    weighted_shape = weighted_shape + self._base_lambda_shape * lambda_factor_tensor * shape_loss
+                    shape_losses.append(shape_loss)
+
+            prior = self._interp_adj(age, device) if self.adj_templates is not None else None
+            if prior is not None:
+                adj_pred = torch.matmul(flat, flat.t()) / flat.shape[1]
+                adj_pred = _row_normalise(adj_pred)
+                diff = adj_pred - prior
+                if mask is not None:
+                    diff = diff * mask
+                edge_loss = _huber(diff, self.huber_delta).mean()
+                weighted_edge = weighted_edge + self._base_lambda_edge * lambda_factor_tensor * edge_loss
+                edge_losses.append(edge_loss)
+
+                adj_mae = diff.abs().mean().detach().cpu().item()
+                adj_mae_vals.append(adj_mae)
+
+                dyn_scale = 1.0
+                if self.lambda_dyn > 0 and self.current_epoch >= self.dyn_start_epoch:
+                    progress = min(1.0, (self.current_epoch - self.dyn_start_epoch) / self.dyn_ramp_epochs)
+                    dyn_scale = 1.0 + self.lambda_dyn * progress * (adj_mae / self.dyn_mismatch_ref)
+                    dyn_scale = float(min(dyn_scale, self.dyn_max_scale))
+                dyn_scales.append(dyn_scale)
+                self._last_dyn_scale = dyn_scale
+                qap_mismatches.append(adj_mae)
+
+                if self._base_lambda_spec > 0:
+                    L_pred = _laplacian(adj_pred)
+                    L_prior = _laplacian(prior)
+                    top_k = max(1, min(self.spectral_top_k, C - 1))
+                    evals_pred, evecs_pred = torch.linalg.eigh(L_pred)
+                    evals_prior, evecs_prior = torch.linalg.eigh(L_prior)
+                    eval_loss = F.mse_loss(evals_pred[:top_k], evals_prior[:top_k])
+                    sub_pred = evecs_pred[:, :top_k]
+                    sub_prior = evecs_prior[:, :top_k]
+                    proj_pred = sub_pred @ sub_pred.t()
+                    proj_prior = sub_prior @ sub_prior.t()
+                    spec_loss = eval_loss + F.mse_loss(proj_pred, proj_prior)
+                    weighted_spec = weighted_spec + self._base_lambda_spec * lambda_factor_tensor * float(dyn_scale) * spec_loss
+                    spectral_losses.append(spec_loss)
+                    spec_gap_vals.append(float(spec_loss.detach().cpu().item()))
+
+                if self.required_edges:
+                    penalties = []
+                    for i, j in self.required_edges:
+                        val = adj_pred[i, j]
+                        penalties.append(_huber(F.relu(self.required_margin - val), self.huber_delta))
+                        if val.detach().item() < self.required_margin:
+                            required_missing_total += 1
+                    if penalties:
+                        req_loss = torch.stack(penalties).mean()
+                        weighted_required = weighted_required + self.lambda_required * lambda_factor_tensor * req_loss
+                        required_losses.append(req_loss)
+
+                if self.forbidden_edges:
+                    penalties = []
+                    for i, j in self.forbidden_edges:
+                        val = adj_pred[i, j]
+                        penalties.append(_huber(F.relu(val - self.forbidden_margin), self.huber_delta))
+                        if val.detach().item() > self.forbidden_margin:
+                            forbidden_present_total += 1
+                    if penalties:
+                        forb_loss = torch.stack(penalties).mean()
+                        weighted_forbidden = weighted_forbidden + self.lambda_forbidden * lambda_factor_tensor * forb_loss
+                        forbidden_losses.append(forb_loss)
+
+                if self.lr_pairs:
+                    pair_losses = []
+                    pair_gap = 0.0
+                    for left, right in self.lr_pairs:
+                        row_gap = torch.mean(torch.abs(adj_pred[left] - adj_pred[right]))
+                        col_gap = torch.mean(torch.abs(adj_pred[:, left] - adj_pred[:, right]))
+                        pair_losses.extend([row_gap, col_gap])
+                        pair_gap += float((row_gap + col_gap).detach().cpu().item() * 0.5)
+                    if pair_losses:
+                        sym_tensor = torch.stack(pair_losses)
+                        sym_loss = _huber(sym_tensor, self.huber_delta).mean()
+                        weighted_symmetry = weighted_symmetry + self.lambda_symmetry * lambda_factor_tensor * sym_loss
+                        symmetry_losses.append(sym_loss)
+                        symmetry_gap_vals.append(pair_gap / max(len(self.lr_pairs), 1))
+
+        denom = max(B, 1)
+        total = (weighted_volume + weighted_shape + weighted_edge + weighted_spec +
+                 weighted_required + weighted_forbidden + weighted_symmetry) / denom
+
+        volume_loss = torch.stack(volume_losses).mean() if volume_losses else zero
+        shape_loss = torch.stack(shape_losses).mean() if shape_losses else zero
+        edge_loss = torch.stack(edge_losses).mean() if edge_losses else zero
+        spectral_loss = torch.stack(spectral_losses).mean() if spectral_losses else zero
+        required_loss = torch.stack(required_losses).mean() if required_losses else zero
+        forbidden_loss = torch.stack(forbidden_losses).mean() if forbidden_losses else zero
+        symmetry_loss = torch.stack(symmetry_losses).mean() if symmetry_losses else zero
+
+        avg_age_weight = sum(age_weights) / max(len(age_weights), 1)
+        avg_dyn = sum(dyn_scales) / max(len(dyn_scales), 1) if dyn_scales else 1.0
+        avg_qap = sum(qap_mismatches) / max(len(qap_mismatches), 1) if qap_mismatches else 0.0
+        avg_adj_mae = sum(adj_mae_vals) / max(len(adj_mae_vals), 1) if adj_mae_vals else 0.0
+        avg_spec_gap = sum(spec_gap_vals) / max(len(spec_gap_vals), 1) if spec_gap_vals else 0.0
+        avg_sym_gap = sum(symmetry_gap_vals) / max(len(symmetry_gap_vals), 1) if symmetry_gap_vals else 0.0
+        required_missing_avg = required_missing_total / max(len(ages_list), 1)
+        forbidden_present_avg = forbidden_present_total / max(len(ages_list), 1)
+
+        metrics = {
+            "total": total,
+            "volume": volume_loss,
+            "shape": shape_loss,
+            "edge": edge_loss,
+            "spectral": spectral_loss,
+            "required": required_loss,
+            "forbidden": forbidden_loss,
+            "symmetry": symmetry_loss,
+            "warmup": torch.tensor(warmup, device=device, dtype=dtype),
+            "dyn_lambda": torch.tensor(avg_dyn, device=device, dtype=dtype),
+            "qap_mismatch": torch.tensor(avg_qap, device=device, dtype=dtype),
+            "age_weight": torch.tensor(avg_age_weight, device=device, dtype=dtype),
+            "adj_mae": torch.tensor(avg_adj_mae, device=device, dtype=dtype),
+            "spec_gap": torch.tensor(avg_spec_gap, device=device, dtype=dtype),
+            "symmetry_gap": torch.tensor(avg_sym_gap, device=device, dtype=dtype),
+            "required_missing": torch.tensor(required_missing_avg, device=device, dtype=dtype),
+            "forbidden_present": torch.tensor(forbidden_present_avg, device=device, dtype=dtype),
+        }
+
+        self._last_metrics = {k: float(v.detach().cpu().item()) for k, v in metrics.items() if isinstance(v, torch.Tensor)}
+
+        if self.debug_mode and self._debug_counter < self.debug_max_batches:
+            self._debug_counter += 1
+            debug_msg = (
+                f"[AgePrior] warmup={warmup:.3f} age_w={avg_age_weight:.3f} "
+                f"vol={metrics['volume'].item():.4f} shape={metrics['shape'].item():.4f} "
+                f"edge={metrics['edge'].item():.4f} spec={metrics['spectral'].item():.4f} "
+                f"req={metrics['required'].item():.4f} forb={metrics['forbidden'].item():.4f} "
+                f"sym={metrics['symmetry'].item():.4f} dyn={avg_dyn:.3f}"
+            )
+            print(debug_msg, flush=True)
+
+        return metrics
