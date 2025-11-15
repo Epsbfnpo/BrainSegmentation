@@ -1,48 +1,56 @@
 #!/bin/bash -l
-#SBATCH --job-name=causal
+#SBATCH --job-name=target-priors
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=64
-#SBATCH --mem=256G
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=128G
 #SBATCH --account=OD-210257
 #SBATCH --partition=gpu
 #SBATCH --gpus-per-node=4
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err
-#SBATCH --time=2:00:00         # 2 hours per job
-#SBATCH --signal=B:TERM@300    # Send SIGTERM 5 minutes before time limit
+#SBATCH --time=2:00:00
+#SBATCH --signal=B:TERM@300
+
+set -euo pipefail
 
 echo "=============================================================="
-echo "CROSS-DOMAIN GRAPH ALIGNMENT JOB"
+echo "TARGET-ONLY TRAINING JOB"
 echo "Job $SLURM_JOB_ID started at $(date)"
 echo "=============================================================="
 
-# Set environment variables
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-export NCCL_DEBUG=INFO
 export NCCL_SOCKET_IFNAME=^docker0,lo
 export TORCH_ALLOW_TF32=1
 export CUBLAS_ALLOW_TF32=1
 
-# Fixed path
-cd /datasets/work/hb-nhmrc-dhcp/work/liu275/causal
-
-# Activate environment
+cd /datasets/work/hb-nhmrc-dhcp/work/liu275/BrainSegmentation
 source /datasets/work/hb-nhmrc-dhcp/work/liu275/miniconda3/bin/activate
 conda activate brainseg
 
-# Run training with cross-domain alignment
-bash ./run_training_graphalign.sh
+REPO_ROOT="/datasets/work/hb-nhmrc-dhcp/work/liu275/BrainSegmentation"
+RESULTS_DIR=${RESULTS_DIR:-${REPO_ROOT}/results/target_only}
+export RESULTS_DIR
+RESUBMIT_SENTINEL="${RESULTS_DIR}/.resubmitted"
+SCRIPT_PATH="${REPO_ROOT}/new/run_graph_align_flex.sbatch"
 
-# Check exit status
-EXIT_STATUS=$?
+bash new/run_training_graphalign.sh
+STATUS=$?
 
 echo "=============================================================="
-echo "Job $SLURM_JOB_ID ended at $(date) with exit status $EXIT_STATUS"
+echo "Job $SLURM_JOB_ID ended at $(date) with exit status $STATUS"
 echo "=============================================================="
 
-# Auto-resubmission is handled inside run_training_graphalign.sh to avoid
-# double-submitting follow-up jobs that would otherwise clutter the queue.
+if [ "$STATUS" -eq 2 ]; then
+    if [ ! -f "$RESUBMIT_SENTINEL" ]; then
+        echo "⏱️  Time limit reached; scheduling a single resubmission"
+        touch "$RESUBMIT_SENTINEL"
+        sbatch --export=ALL,RESUBMITTED=1 "$SCRIPT_PATH"
+    else
+        echo "Resubmission already performed; not submitting again"
+    fi
+fi
 
+exit $STATUS
