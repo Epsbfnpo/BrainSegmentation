@@ -25,6 +25,8 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export NCCL_SOCKET_IFNAME=^docker0,lo
 export TORCH_ALLOW_TF32=1
 export CUBLAS_ALLOW_TF32=1
+export DISABLE_PRIOR=${DISABLE_PRIOR:-1}
+export USE_AMP=${USE_AMP:-0}
 
 cd /datasets/work/hb-nhmrc-dhcp/work/liu275/new
 source /datasets/work/hb-nhmrc-dhcp/work/liu275/miniconda3/bin/activate
@@ -43,6 +45,7 @@ set -e
 
 echo "=============================================================="
 echo "Job $SLURM_JOB_ID ended at $(date) with exit status $STATUS"
+echo "(DISABLE_PRIOR=${DISABLE_PRIOR} | USE_AMP=${USE_AMP})"
 echo "=============================================================="
 
 if [ "$STATUS" -eq 2 ]; then
