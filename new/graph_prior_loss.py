@@ -107,7 +107,6 @@ class AgeConditionedGraphPriorLoss(nn.Module):
         self.adj_templates: Optional[torch.Tensor] = None
         self.adj_bin_width: Optional[float] = None
 
-        self.r_mask: Optional[torch.Tensor] = None
         self.adj_counts: Optional[torch.Tensor] = None
         self.adj_freq: Optional[torch.Tensor] = None
         self.required_edges: List[Tuple[int, int]] = []
@@ -122,9 +121,9 @@ class AgeConditionedGraphPriorLoss(nn.Module):
             self._load_adjacency_prior(adjacency_prior_path)
         if r_mask_path and os.path.exists(r_mask_path):
             mask = torch.from_numpy(np.load(r_mask_path)).float()
-            self.register_buffer("r_mask", mask)
         else:
-            self.register_buffer("r_mask", torch.empty(0))
+            mask = torch.empty(0)
+        self.register_buffer("r_mask", mask)
         if structural_rules_path and os.path.exists(structural_rules_path):
             self._load_structural_rules(structural_rules_path)
         if lr_pairs is not None:
