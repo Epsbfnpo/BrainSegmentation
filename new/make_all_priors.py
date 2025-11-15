@@ -11,6 +11,7 @@ It produces the following files in <out_root>/target/:
   - adjacency_prior.npz
   - R_mask.npy
   - R_meta.json
+  - normalization.json
 
 The implementation follows the specification outlined in the project
 instructions.  All statistics are computed using labels that have been
@@ -143,6 +144,42 @@ def compute_sdf(label: np.ndarray, cls: int, band: float) -> Optional[np.ndarray
 
 
 # -----------------------------------------------------------------------------
+# normalization protocol emitter
+# -----------------------------------------------------------------------------
+
+def emit_normalization_json(
+    out_path: Path,
+    adjacency_norm: str,
+    age_bin_width: float,
+    rmask_policy: Optional[str],
+    rmask_arg: Optional[float],
+    *,
+    laplacian: str = "unnorm",
+    spectral_top_k: int = 20,
+    symmetrize_pred: bool = True,
+    zero_diagonal_pred: bool = True,
+) -> None:
+    """Write normalization.json that documents graph construction protocol."""
+
+    payload: Dict[str, object] = {
+        "adjacency_norm": str(adjacency_norm),
+        "build_pred_norm": str(adjacency_norm),
+        "symmetrize_pred": bool(symmetrize_pred),
+        "zero_diagonal_pred": bool(zero_diagonal_pred),
+        "laplacian": str(laplacian),
+        "spectral_top_k": int(spectral_top_k),
+        "age_bin_width": float(age_bin_width),
+    }
+    if rmask_policy is not None:
+        payload["rmask_policy"] = str(rmask_policy)
+    if rmask_arg is not None:
+        payload["rmask_arg"] = float(rmask_arg)
+
+    with open(out_path / "normalization.json", "w") as f:
+        json.dump(payload, f, indent=2)
+
+
+# -----------------------------------------------------------------------------
 # worker functions
 # -----------------------------------------------------------------------------
 
@@ -214,7 +251,8 @@ def generate_priors(split_json: str,
                     forbidden_quantile: float,
                     min_required_freq: float,
                     max_forbidden_freq: float,
-                    sdf_chunk_size: int) -> None:
+                    sdf_chunk_size: int,
+                    spectral_top_k: int) -> None:
     out_path = Path(out_dir)
     ensure_dir(out_path)
 
@@ -300,6 +338,9 @@ def generate_priors(split_json: str,
         meta={"norm": adjacency_norm, "bin_width": age_bin_width},
     )
 
+    rmask_policy_used: Optional[str] = None
+    rmask_arg_used: Optional[float] = None
+
     if F_freq.size > 0:
         aggregated = F_freq.max(axis=0)
         mask = np.zeros_like(aggregated, dtype=np.float32)
@@ -320,6 +361,8 @@ def generate_priors(split_json: str,
         np.save(out_path / "R_mask.npy", mask.astype(np.float32))
         with open(out_path / "R_meta.json", "w") as f:
             json.dump({"policy": rmask_policy, "arg": rmask_arg}, f, indent=2)
+        rmask_policy_used = rmask_policy
+        rmask_arg_used = rmask_arg
 
         freq_vals = aggregated[aggregated > 0]
         rule_payload = {
@@ -352,6 +395,18 @@ def generate_priors(split_json: str,
             rule_payload["issues"] = "no positive adjacency frequency; rules skipped"
         with open(out_path / "structural_rules.json", "w") as f:
             json.dump(rule_payload, f, indent=2)
+
+    emit_normalization_json(
+        out_path=out_path,
+        adjacency_norm=adjacency_norm,
+        age_bin_width=age_bin_width,
+        rmask_policy=rmask_policy_used,
+        rmask_arg=rmask_arg_used,
+        laplacian="unnorm",
+        spectral_top_k=spectral_top_k,
+        symmetrize_pred=True,
+        zero_diagonal_pred=True,
+    )
 
     if include_sdf:
         tmp_dir = Path(tempfile.mkdtemp(prefix="sdf_shards_"))
@@ -449,6 +504,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                         help="Minimum aggregated frequency for required edges")
     parser.add_argument("--max-forbidden-freq", type=float, default=0.005,
                         help="Maximum aggregated frequency for forbidden edges")
+    parser.add_argument("--spec-top-k", type=int, default=20,
+                        help="Record spectral top-K used for alignment")
     args = parser.parse_args(argv)
     return args
 
@@ -477,6 +534,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         min_required_freq=float(args.min_required_freq),
         max_forbidden_freq=float(args.max_forbidden_freq),
         sdf_chunk_size=int(args.sdf_chunk_size),
+        spectral_top_k=int(args.spec_top_k),
     )
 
 
