@@ -26,7 +26,7 @@ PRETRAINED_CHECKPOINT=${PRETRAINED_CHECKPOINT:-}
 OUT_CHANNELS=${OUT_CHANNELS:-87}
 DISABLE_PRIOR=${DISABLE_PRIOR:-0}
 USE_AMP=${USE_AMP:-1}
-PRIOR_PROFILE=${PRIOR_PROFILE:-volume_only}
+PRIOR_PROFILE=${PRIOR_PROFILE:-volume_shape}
 
 ROI_X=${ROI_X:-128}
 ROI_Y=${ROI_Y:-128}
@@ -52,6 +52,16 @@ case "${PRIOR_PROFILE}" in
     volume_only)
         LAMBDA_VOLUME=${LAMBDA_VOLUME:-0.2}
         LAMBDA_SHAPE=0.0
+        LAMBDA_EDGE=0.0
+        LAMBDA_SPEC=0.0
+        LAMBDA_REQUIRED=0.0
+        LAMBDA_FORBIDDEN=0.0
+        LAMBDA_SYM=0.0
+        LAMBDA_DYN=0.0
+        ;;
+    volume_shape)
+        LAMBDA_VOLUME=${LAMBDA_VOLUME:-0.2}
+        LAMBDA_SHAPE=${LAMBDA_SHAPE:-0.2}
         LAMBDA_EDGE=0.0
         LAMBDA_SPEC=0.0
         LAMBDA_REQUIRED=0.0
@@ -223,10 +233,6 @@ if [ "${DISABLE_PRIOR}" -eq 0 ] && [ "${PRECHECK_PRIORS}" -ne 0 ]; then
     CMD+=(--precheck_priors)
 elif [ "${DISABLE_PRIOR}" -eq 0 ]; then
     CMD+=(--skip_prior_check)
-fi
-
-if [ "${DISABLE_PRIOR}" -ne 0 ]; then
-    CMD+=(--disable_prior)
 fi
 
 if [ "${DISABLE_PRIOR}" -ne 0 ]; then

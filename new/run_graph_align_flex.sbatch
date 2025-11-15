@@ -27,7 +27,7 @@ export TORCH_ALLOW_TF32=1
 export CUBLAS_ALLOW_TF32=1
 export DISABLE_PRIOR=${DISABLE_PRIOR:-0}
 export USE_AMP=${USE_AMP:-0}
-export PRIOR_PROFILE=${PRIOR_PROFILE:-volume_only}
+export PRIOR_PROFILE=${PRIOR_PROFILE:-volume_shape}
 
 cd /datasets/work/hb-nhmrc-dhcp/work/liu275/new
 source /datasets/work/hb-nhmrc-dhcp/work/liu275/miniconda3/bin/activate
