@@ -458,7 +458,7 @@ class DiceMonitor:
                 spec_tgt = np.array(self.dice_history['graph_spec_tgt_losses'])
                 edge_tgt = np.array(self.dice_history['graph_edge_tgt_losses'])
 
-                f.write("SOURCE Domain Alignment (Primary):\n")
+                f.write("Target Prior Alignment (Primary):\n")
                 f.write(f"  Spectral loss: {np.mean(spec_src):.4f} (std: {np.std(spec_src):.4f})\n")
                 f.write(f"  Edge loss: {np.mean(edge_src):.4f} (std: {np.std(edge_src):.4f})\n")
                 f.write(f"  Combined: {np.mean(spec_src + edge_src):.4f}\n")
@@ -499,7 +499,7 @@ class DiceMonitor:
                 f.write("-" * 40 + "\n")
 
                 latest_src_errors = self.dice_history['adjacency_errors_src'][-1]
-                f.write("Source Domain Alignment:\n")
+                f.write("Prior Alignment Metrics:\n")
                 f.write(f"  Mean adjacency error: {latest_src_errors.get('mean_abs_error_src', 0):.4f}\n")
                 f.write(f"  Spectral distance: {latest_src_errors.get('spectral_distance_src', 0):.4f}\n")
 
@@ -560,7 +560,7 @@ class DiceMonitor:
                 if self.cross_domain_enabled and len(self.dice_history['graph_spec_src_losses']) > 5:
                     src_losses = np.array(self.dice_history['graph_spec_src_losses']) + np.array(self.dice_history['graph_edge_src_losses'])
                     dice_src_corr = np.corrcoef(dice_scores[:len(src_losses)], src_losses)[0, 1]
-                    f.write(f"Dice vs Source Alignment correlation: {dice_src_corr:.3f}\n")
+                    f.write(f"Dice vs Prior Alignment correlation: {dice_src_corr:.3f}\n")
                 elif self.graph_prior_enabled and len(self.dice_history['graph_losses']) > 5:
                     graph_losses = np.array(self.dice_history['graph_losses'])
                     dice_graph_corr = np.corrcoef(dice_scores, graph_losses)[0, 1]
@@ -628,7 +628,7 @@ class DiceMonitor:
             f.write(f"Best dice score: {np.max(dice_scores):.4f}\n\n")
 
             # Detailed source alignment
-            f.write("SOURCE DOMAIN ALIGNMENT (dHCP)\n")
+            f.write("PRIOR ALIGNMENT (Target)\n")
             f.write("-" * 40 + "\n")
             f.write(f"Spectral Alignment:\n")
             f.write(f"  Initial: {spec_src[0]:.4f}\n")
@@ -671,14 +671,14 @@ class DiceMonitor:
                 late_tgt = (spec_tgt[-window:] + edge_tgt[-window:]).mean()
                 tgt_improvement = (early_tgt - late_tgt) / early_tgt * 100
 
-                f.write(f"Source alignment improvement: {src_improvement:.1f}%\n")
+                f.write(f"Prior alignment improvement: {src_improvement:.1f}%\n")
                 f.write(f"Target alignment improvement: {tgt_improvement:.1f}%\n")
 
                 # Check if source is dominating
                 src_ratio = late_src / (late_tgt + 1e-8)
                 f.write(f"Current source/target ratio: {src_ratio:.2f}\n")
                 if src_ratio > 5:
-                    f.write("  ⚠️ Source alignment may be dominating\n")
+                    f.write("  ⚠️ Prior alignment may be dominating\n")
                 elif src_ratio < 0.2:
                     f.write("  ⚠️ Target regularization may be too strong\n")
                 else:
@@ -695,7 +695,7 @@ class DiceMonitor:
                         src_val_errors.append(err_dict['spectral_distance_src'])
 
                 if src_val_errors:
-                    f.write(f"Source spectral distance (validation):\n")
+                    f.write(f"Prior spectral distance (validation):\n")
                     f.write(f"  Initial: {src_val_errors[0]:.4f}\n")
                     f.write(f"  Current: {src_val_errors[-1]:.4f}\n")
                     f.write(f"  Best: {np.min(src_val_errors):.4f}\n")
@@ -709,7 +709,7 @@ class DiceMonitor:
                 recent_tgt = spec_tgt[-5:].mean() + edge_tgt[-5:].mean()
 
                 if recent_src > 0.5:
-                    f.write("• Source alignment loss is high - consider:\n")
+                    f.write("• Prior alignment loss is high - consider:\n")
                     f.write("  - Increasing warmup epochs\n")
                     f.write("  - Reducing lambda_spec_src and lambda_edge_src\n")
                     f.write("  - Checking if source/target domains are too different\n")
@@ -725,7 +725,7 @@ class DiceMonitor:
                     corr = np.corrcoef(dice_scores, src_total)[0, 1]
                     if corr > 0.7:
                         f.write(f"• High positive correlation ({corr:.2f}) between dice and source loss\n")
-                        f.write("  - Source alignment may be hindering segmentation\n")
+                        f.write("  - Prior alignment may be hindering segmentation\n")
                         f.write("  - Consider reducing source alignment weights\n")
 
         print(f"📊 Cross-domain report saved to: {self.crossdomain_report_path}")
@@ -765,7 +765,7 @@ class DiceMonitor:
                 if self.dice_history['graph_spec_src_losses']:
                     spec_src = np.array(self.dice_history['graph_spec_src_losses'])
                     edge_src = np.array(self.dice_history['graph_edge_src_losses'])
-                    f.write(f"\nSource alignment:\n")
+                    f.write(f"\nPrior alignment:\n")
                     f.write(f"  Spectral: {np.mean(spec_src[-10:]):.4f} (std: {np.std(spec_src[-10:]):.4f})\n")
                     f.write(f"  Edge: {np.mean(edge_src[-10:]):.4f} (std: {np.std(edge_src[-10:]):.4f})\n")
 
@@ -976,14 +976,14 @@ class DiceMonitor:
             spec_tgt = np.array(self.dice_history['graph_spec_tgt_losses'])
             edge_tgt = np.array(self.dice_history['graph_edge_tgt_losses'])
 
-            # Plot 4: Source domain alignment
+            # Plot 4: Prior alignment diagnostics
             ax4 = axes[3]
             ax4.plot(epochs[:len(spec_src)], spec_src, 'b-', label='Spectral', linewidth=2)
             ax4.plot(epochs[:len(edge_src)], edge_src, 'r-', label='Edge', linewidth=2)
             ax4.plot(epochs[:len(spec_src)], spec_src + edge_src, 'g--', label='Total', linewidth=2, alpha=0.7)
             ax4.set_xlabel('Epoch')
             ax4.set_ylabel('Loss')
-            ax4.set_title('Source Domain Alignment (dHCP)')
+            ax4.set_title('Prior Alignment (target)')
             ax4.legend()
             ax4.grid(True, alpha=0.3)
 
