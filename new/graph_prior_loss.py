@@ -325,7 +325,7 @@ class AgeConditionedGraphPriorLoss(nn.Module):
         return mean.squeeze(0).to(device), std.squeeze(0).to(device)
 
     def _interp_sdf(self, age: float, device: torch.device, target_shape: Tuple[int, int, int]) -> Optional[torch.Tensor]:
-        if not self.sdf_templates or self.sdf_age_values is None:
+        if self.sdf_templates is None or self.sdf_age_values is None:
             return None
         ages = self.sdf_age_values
         age_tensor = torch.tensor([age], device=ages.device)
