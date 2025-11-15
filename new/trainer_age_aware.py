@@ -10,7 +10,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from monai.losses import DiceLoss
 from monai.metrics import DiceMetric
-from monai.transforms import AsDiscrete
 from monai.inferers import sliding_window_inference
 
 
@@ -403,8 +402,6 @@ def validate_epoch(model: nn.Module,
                    prior_loss=None) -> Dict[str, float]:
     model.eval()
     dice_metric = DiceMetric(include_background=not foreground_only, reduction="mean_batch")
-    post_pred = AsDiscrete(argmax=True, to_onehot=num_classes, num_classes=num_classes)
-    post_label = AsDiscrete(to_onehot=num_classes, num_classes=num_classes)
 
     steps = 0
     debug_step_limit = max(1, int(debug_step_limit))
@@ -487,9 +484,17 @@ def validate_epoch(model: nn.Module,
                 logits = _run_inference(images)
 
             probs = torch.softmax(logits, dim=1)
-            preds = post_pred(probs)
 
-            target = post_label(labels_eval.unsqueeze(1))
+            pred_labels = torch.argmax(probs, dim=1)
+            preds = F.one_hot(pred_labels, num_classes=num_classes)
+            preds = preds.permute(0, 4, 1, 2, 3).to(dtype=probs.dtype)
+
+            labels_eval_wo_channel = labels_eval
+            if labels_eval_wo_channel.ndim == 5 and labels_eval_wo_channel.shape[1] == 1:
+                labels_eval_wo_channel = labels_eval_wo_channel.squeeze(1)
+            target = F.one_hot(labels_eval_wo_channel, num_classes=num_classes)
+            target = target.permute(0, 4, 1, 2, 3).to(dtype=probs.dtype)
+
             dice_metric(y_pred=preds, y=target)
             steps += 1
 
