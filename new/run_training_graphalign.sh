@@ -47,6 +47,8 @@ PRECHECK_PRIORS=${PRECHECK_PRIORS:-1}
 LATERALITY_PAIRS=${LATERALITY_PAIRS:-}
 EPOCH_TIME_BUFFER=${EPOCH_TIME_BUFFER:-600}
 SLURM_TIME_BUFFER=${SLURM_TIME_BUFFER:-300}
+DISABLE_PRIOR=${DISABLE_PRIOR:-0}
+USE_AMP=${USE_AMP:-1}
 
 # ---------- Derived paths ----------
 VOLUME_STATS="${TARGET_PRIOR_ROOT}/volume_stats.json"
@@ -55,14 +57,19 @@ ADJACENCY_PRIOR="${TARGET_PRIOR_ROOT}/adjacency_prior.npz"
 RESTRICTED_MASK="${TARGET_PRIOR_ROOT}/R_mask.npy"
 STRUCTURAL_RULES="${TARGET_PRIOR_ROOT}/structural_rules.json"
 
-for required in "${TARGET_SPLIT_JSON}" "${VOLUME_STATS}" "${SDF_TEMPLATES}" "${ADJACENCY_PRIOR}"; do
+required_files=("${TARGET_SPLIT_JSON}")
+if [ "${DISABLE_PRIOR}" -eq 0 ]; then
+    required_files+=("${VOLUME_STATS}" "${SDF_TEMPLATES}" "${ADJACENCY_PRIOR}")
+fi
+
+for required in "${required_files[@]}"; do
     if [ ! -f "$required" ]; then
         echo "Missing required file: $required" >&2
         exit 1
     fi
 done
 
-if [ "${PRECHECK_PRIORS}" -ne 0 ]; then
+if [ "${DISABLE_PRIOR}" -eq 0 ] && [ "${PRECHECK_PRIORS}" -ne 0 ]; then
     python "${SCRIPT_DIR}/prior_validator.py" \
         --dir "${TARGET_PRIOR_ROOT}" \
         --num-classes "${OUT_CHANNELS}"
@@ -120,14 +127,18 @@ CMD=(
     --slurm_time_buffer "${SLURM_TIME_BUFFER}"
 )
 
-if [ "${PRECHECK_PRIORS}" -ne 0 ]; then
+if [ "${DISABLE_PRIOR}" -eq 0 ] && [ "${PRECHECK_PRIORS}" -ne 0 ]; then
     CMD+=(--precheck_priors)
-else
+elif [ "${DISABLE_PRIOR}" -eq 0 ]; then
     CMD+=(--skip_prior_check)
 fi
 
 if [ -f "${RESTRICTED_MASK}" ]; then
     CMD+=(--restricted_mask "${RESTRICTED_MASK}")
+fi
+
+if [ "${DISABLE_PRIOR}" -ne 0 ]; then
+    CMD+=(--disable_prior)
 fi
 
 if [ -n "${RESUME_FROM:-}" ]; then
@@ -158,6 +169,10 @@ fi
 
 if [ "${EVAL_MULTI_SCALE}" -ne 0 ]; then
     CMD+=(--multi_scale_eval --eval_scales ${EVAL_SCALES})
+fi
+
+if [ "${USE_AMP}" -eq 0 ]; then
+    CMD+=(--no_amp)
 fi
 
 printf 'Running command:\n  %s\n' "${CMD[*]}"
