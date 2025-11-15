@@ -390,12 +390,40 @@ class AgeConditionedGraphPriorLoss(nn.Module):
     # forward
     # ------------------------------------------------------------------
     def forward(self, probs: torch.Tensor, ages: torch.Tensor) -> Dict[str, torch.Tensor]:
+        original_dtype = probs.dtype
+        if probs.dtype != torch.float32:
+            if self.debug_mode:
+                print(
+                    f"[GraphPriorLoss] casting probs from {original_dtype} to float32 for numerical stability",
+                    flush=True,
+                )
+            probs = probs.float()
+
         B, C, X, Y, Z = probs.shape
         device = probs.device
         dtype = probs.dtype
         ages_list = ages.detach().cpu().tolist()
 
         warmup = self.get_warmup_factor()
+
+        def _safe_tensor(tensor: torch.Tensor, name: str, *, age_value: Optional[float] = None) -> torch.Tensor:
+            if torch.isnan(tensor).any() or torch.isinf(tensor).any():
+                if self.debug_mode:
+                    age_msg = f" age={age_value:.2f}" if age_value is not None else ""
+                    finite_vals = tensor[torch.isfinite(tensor)]
+                    if finite_vals.numel() > 0:
+                        stats = finite_vals.detach().cpu()
+                        min_val = float(stats.min())
+                        max_val = float(stats.max())
+                        msg = f"min={min_val:.6f} max={max_val:.6f}"
+                    else:
+                        msg = "no finite values"
+                    print(
+                        f"[GraphPriorLoss] detected invalid values in {name}{age_msg}; {msg}",
+                        flush=True,
+                    )
+                tensor = torch.nan_to_num(tensor, nan=0.0, posinf=0.0, neginf=0.0)
+            return tensor
 
         zero = torch.tensor(0.0, device=device, dtype=dtype)
         weighted_volume = zero.clone()
@@ -432,13 +460,17 @@ class AgeConditionedGraphPriorLoss(nn.Module):
             lambda_factor_tensor = torch.tensor(lambda_factor, device=device, dtype=dtype)
 
             flat = probs[b].view(C, -1)
+            flat = _safe_tensor(flat, "flat_probs", age_value=age)
             frac = flat.sum(dim=1)
             frac = frac / frac.sum().clamp(min=1e-6)
+            frac = _safe_tensor(frac, "frac", age_value=age)
 
             if self.volume_bins is not None:
                 mean, std = self._interp_volume(age, device)
                 z = (frac - mean) / std.clamp(min=1e-3)
+                z = _safe_tensor(z, "volume_z", age_value=age)
                 vol_loss = _huber(z, self.huber_delta).mean()
+                vol_loss = _safe_tensor(vol_loss, "volume_loss", age_value=age)
                 weighted_volume = weighted_volume + self._base_lambda_volume * lambda_factor_tensor * vol_loss
                 volume_losses.append(vol_loss)
 
@@ -452,7 +484,9 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                     if self.sdf_band is not None:
                         band_mask = (tmpl.abs() <= self.sdf_band).float()
                         diff = diff * band_mask
+                    diff = _safe_tensor(diff, "shape_diff", age_value=age)
                     shape_loss = _huber(diff, self.huber_delta).mean()
+                    shape_loss = _safe_tensor(shape_loss, "shape_loss", age_value=age)
                     weighted_shape = weighted_shape + self._base_lambda_shape * lambda_factor_tensor * shape_loss
                     shape_losses.append(shape_loss)
 
@@ -460,10 +494,13 @@ class AgeConditionedGraphPriorLoss(nn.Module):
             if prior is not None:
                 adj_pred = torch.matmul(flat, flat.t()) / flat.shape[1]
                 adj_pred = _row_normalise(adj_pred)
+                adj_pred = _safe_tensor(adj_pred, "adj_pred", age_value=age)
                 diff = adj_pred - prior
                 if mask is not None:
                     diff = diff * mask
+                diff = _safe_tensor(diff, "adj_diff", age_value=age)
                 edge_loss = _huber(diff, self.huber_delta).mean()
+                edge_loss = _safe_tensor(edge_loss, "edge_loss", age_value=age)
                 weighted_edge = weighted_edge + self._base_lambda_edge * lambda_factor_tensor * edge_loss
                 edge_losses.append(edge_loss)
 
@@ -502,7 +539,10 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                         proj_pred = sub_pred @ sub_pred.t()
                         proj_prior = sub_prior @ sub_prior.t()
                         spec_loss = eval_loss + F.mse_loss(proj_pred, proj_prior)
-                        weighted_spec = weighted_spec + self._base_lambda_spec * lambda_factor_tensor * float(dyn_scale) * spec_loss
+                        spec_loss = _safe_tensor(spec_loss, "spectral_loss", age_value=age)
+                        weighted_spec = weighted_spec + (
+                            self._base_lambda_spec * lambda_factor_tensor * float(dyn_scale) * spec_loss
+                        )
                         spectral_losses.append(spec_loss)
                         spec_gap_vals.append(float(spec_loss.detach().cpu().item()))
 
@@ -510,11 +550,14 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                     penalties = []
                     for i, j in self.required_edges:
                         val = adj_pred[i, j]
-                        penalties.append(_huber(F.relu(self.required_margin - val), self.huber_delta))
+                        penalty = _huber(F.relu(self.required_margin - val), self.huber_delta)
+                        penalty = _safe_tensor(penalty, "required_penalty", age_value=age)
+                        penalties.append(penalty)
                         if val.detach().item() < self.required_margin:
                             required_missing_total += 1
                     if penalties:
                         req_loss = torch.stack(penalties).mean()
+                        req_loss = _safe_tensor(req_loss, "required_loss", age_value=age)
                         weighted_required = weighted_required + self.lambda_required * lambda_factor_tensor * req_loss
                         required_losses.append(req_loss)
 
@@ -522,11 +565,14 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                     penalties = []
                     for i, j in self.forbidden_edges:
                         val = adj_pred[i, j]
-                        penalties.append(_huber(F.relu(val - self.forbidden_margin), self.huber_delta))
+                        penalty = _huber(F.relu(val - self.forbidden_margin), self.huber_delta)
+                        penalty = _safe_tensor(penalty, "forbidden_penalty", age_value=age)
+                        penalties.append(penalty)
                         if val.detach().item() > self.forbidden_margin:
                             forbidden_present_total += 1
                     if penalties:
                         forb_loss = torch.stack(penalties).mean()
+                        forb_loss = _safe_tensor(forb_loss, "forbidden_loss", age_value=age)
                         weighted_forbidden = weighted_forbidden + self.lambda_forbidden * lambda_factor_tensor * forb_loss
                         forbidden_losses.append(forb_loss)
 
@@ -536,18 +582,31 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                     for left, right in self.lr_pairs:
                         row_gap = torch.mean(torch.abs(adj_pred[left] - adj_pred[right]))
                         col_gap = torch.mean(torch.abs(adj_pred[:, left] - adj_pred[:, right]))
+                        row_gap = _safe_tensor(row_gap, "sym_row_gap", age_value=age)
+                        col_gap = _safe_tensor(col_gap, "sym_col_gap", age_value=age)
                         pair_losses.extend([row_gap, col_gap])
                         pair_gap += float((row_gap + col_gap).detach().cpu().item() * 0.5)
                     if pair_losses:
                         sym_tensor = torch.stack(pair_losses)
+                        sym_tensor = _safe_tensor(sym_tensor, "sym_tensor", age_value=age)
                         sym_loss = _huber(sym_tensor, self.huber_delta).mean()
+                        sym_loss = _safe_tensor(sym_loss, "symmetry_loss", age_value=age)
                         weighted_symmetry = weighted_symmetry + self.lambda_symmetry * lambda_factor_tensor * sym_loss
                         symmetry_losses.append(sym_loss)
                         symmetry_gap_vals.append(pair_gap / max(len(self.lr_pairs), 1))
 
         denom = max(B, 1)
+        weighted_volume = _safe_tensor(weighted_volume, "weighted_volume")
+        weighted_shape = _safe_tensor(weighted_shape, "weighted_shape")
+        weighted_edge = _safe_tensor(weighted_edge, "weighted_edge")
+        weighted_spec = _safe_tensor(weighted_spec, "weighted_spec")
+        weighted_required = _safe_tensor(weighted_required, "weighted_required")
+        weighted_forbidden = _safe_tensor(weighted_forbidden, "weighted_forbidden")
+        weighted_symmetry = _safe_tensor(weighted_symmetry, "weighted_symmetry")
+
         total = (weighted_volume + weighted_shape + weighted_edge + weighted_spec +
                  weighted_required + weighted_forbidden + weighted_symmetry) / denom
+        total = _safe_tensor(total, "total_loss")
 
         volume_loss = torch.stack(volume_losses).mean() if volume_losses else zero
         shape_loss = torch.stack(shape_losses).mean() if shape_losses else zero
@@ -556,6 +615,14 @@ class AgeConditionedGraphPriorLoss(nn.Module):
         required_loss = torch.stack(required_losses).mean() if required_losses else zero
         forbidden_loss = torch.stack(forbidden_losses).mean() if forbidden_losses else zero
         symmetry_loss = torch.stack(symmetry_losses).mean() if symmetry_losses else zero
+
+        volume_loss = _safe_tensor(volume_loss, "volume_loss_mean")
+        shape_loss = _safe_tensor(shape_loss, "shape_loss_mean")
+        edge_loss = _safe_tensor(edge_loss, "edge_loss_mean")
+        spectral_loss = _safe_tensor(spectral_loss, "spectral_loss_mean")
+        required_loss = _safe_tensor(required_loss, "required_loss_mean")
+        forbidden_loss = _safe_tensor(forbidden_loss, "forbidden_loss_mean")
+        symmetry_loss = _safe_tensor(symmetry_loss, "symmetry_loss_mean")
 
         avg_age_weight = sum(age_weights) / max(len(age_weights), 1)
         avg_dyn = sum(dyn_scales) / max(len(dyn_scales), 1) if dyn_scales else 1.0
