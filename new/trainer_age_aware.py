@@ -403,8 +403,8 @@ def validate_epoch(model: nn.Module,
                    prior_loss=None) -> Dict[str, float]:
     model.eval()
     dice_metric = DiceMetric(include_background=not foreground_only, reduction="mean_batch")
-    post_pred = AsDiscrete(argmax=True, to_onehot=True, num_classes=num_classes)
-    post_label = AsDiscrete(to_onehot=True, num_classes=num_classes)
+    post_pred = AsDiscrete(argmax=True, to_onehot=num_classes, num_classes=num_classes)
+    post_label = AsDiscrete(to_onehot=num_classes, num_classes=num_classes)
 
     steps = 0
     debug_step_limit = max(1, int(debug_step_limit))
