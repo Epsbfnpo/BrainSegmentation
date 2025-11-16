@@ -26,7 +26,7 @@ PRETRAINED_CHECKPOINT=${PRETRAINED_CHECKPOINT:-}
 OUT_CHANNELS=${OUT_CHANNELS:-87}
 DISABLE_PRIOR=${DISABLE_PRIOR:-0}
 USE_AMP=${USE_AMP:-1}
-PRIOR_PROFILE=${PRIOR_PROFILE:-volume_shape}
+PRIOR_PROFILE=${PRIOR_PROFILE:-volume_shape_edge}
 
 ROI_X=${ROI_X:-128}
 ROI_Y=${ROI_Y:-128}
@@ -69,6 +69,16 @@ case "${PRIOR_PROFILE}" in
         LAMBDA_SYM=0.0
         LAMBDA_DYN=0.0
         ;;
+    volume_shape_edge)
+        LAMBDA_VOLUME=${LAMBDA_VOLUME:-0.2}
+        LAMBDA_SHAPE=${LAMBDA_SHAPE:-0.2}
+        LAMBDA_EDGE=${LAMBDA_EDGE:-0.1}
+        LAMBDA_SPEC=0.0
+        LAMBDA_REQUIRED=0.0
+        LAMBDA_FORBIDDEN=0.0
+        LAMBDA_SYM=0.0
+        LAMBDA_DYN=0.0
+        ;;
     full)
         :
         ;;
@@ -79,7 +89,7 @@ case "${PRIOR_PROFILE}" in
         DISABLE_PRIOR=1
         ;;
     *)
-        echo "Unknown PRIOR_PROFILE='${PRIOR_PROFILE}'. Supported profiles: volume_only, full, custom, off" >&2
+        echo "Unknown PRIOR_PROFILE='${PRIOR_PROFILE}'. Supported profiles: volume_only, volume_shape, volume_shape_edge, full, custom, off" >&2
         exit 1
         ;;
 esac
