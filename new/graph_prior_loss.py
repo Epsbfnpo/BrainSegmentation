@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import nullcontext
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -28,6 +29,12 @@ def _laplacian(adj: torch.Tensor) -> torch.Tensor:
     adj = 0.5 * (adj + adj.transpose(-1, -2))
     deg = torch.diag_embed(adj.sum(dim=-1))
     return deg - adj
+
+
+def _spectral_no_autocast():
+    if torch.cuda.is_available() and hasattr(torch.cuda, "amp") and hasattr(torch.cuda.amp, "autocast"):
+        return torch.cuda.amp.autocast(enabled=False)
+    return nullcontext()
 
 
 class AgeConditionedGraphPriorLoss(nn.Module):
@@ -517,34 +524,38 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                 qap_mismatches.append(adj_mae)
 
                 if self._base_lambda_spec > 0:
-                    L_pred = _laplacian(adj_pred)
-                    L_prior = _laplacian(prior)
+                    with _spectral_no_autocast():
+                        adj_pred_f32 = adj_pred.to(torch.float32)
+                        prior_f32 = prior.to(torch.float32)
+                        L_pred = _laplacian(adj_pred_f32)
+                        L_prior = _laplacian(prior_f32)
 
-                    L_pred = 0.5 * (L_pred + L_pred.transpose(-1, -2))
-                    L_prior = 0.5 * (L_prior + L_prior.transpose(-1, -2))
-                    eps = 1e-5
-                    eye = torch.eye(C, device=L_pred.device, dtype=L_pred.dtype)
+                        L_pred = 0.5 * (L_pred + L_pred.transpose(-1, -2))
+                        L_prior = 0.5 * (L_prior + L_prior.transpose(-1, -2))
+                        eps = 1e-5
+                        eye = torch.eye(C, device=L_pred.device, dtype=L_pred.dtype)
 
-                    top_k = max(1, min(self.spectral_top_k, C - 1))
-                    try:
-                        evals_pred, evecs_pred = torch.linalg.eigh(L_pred + eps * eye)
-                        evals_prior, evecs_prior = torch.linalg.eigh(L_prior + eps * eye)
-                    except RuntimeError as err:
-                        if self.debug_mode:
-                            print(f"[GraphPriorLoss] eigh failed, skip spectral loss for this sample: {err}")
-                    else:
-                        eval_loss = F.mse_loss(evals_pred[:top_k], evals_prior[:top_k])
-                        sub_pred = evecs_pred[:, :top_k]
-                        sub_prior = evecs_prior[:, :top_k]
-                        proj_pred = sub_pred @ sub_pred.t()
-                        proj_prior = sub_prior @ sub_prior.t()
-                        spec_loss = eval_loss + F.mse_loss(proj_pred, proj_prior)
-                        spec_loss = _safe_tensor(spec_loss, "spectral_loss", age_value=age)
-                        weighted_spec = weighted_spec + (
-                            self._base_lambda_spec * lambda_factor_tensor * float(dyn_scale) * spec_loss
-                        )
-                        spectral_losses.append(spec_loss)
-                        spec_gap_vals.append(float(spec_loss.detach().cpu().item()))
+                        top_k = max(1, min(self.spectral_top_k, C - 1))
+                        try:
+                            evals_pred, evecs_pred = torch.linalg.eigh(L_pred + eps * eye)
+                            evals_prior, evecs_prior = torch.linalg.eigh(L_prior + eps * eye)
+                        except RuntimeError as err:
+                            if self.debug_mode:
+                                print(f"[GraphPriorLoss] eigh failed, skip spectral loss for this sample: {err}")
+                        else:
+                            eval_loss = F.mse_loss(evals_pred[:top_k], evals_prior[:top_k])
+                            sub_pred = evecs_pred[:, :top_k]
+                            sub_prior = evecs_prior[:, :top_k]
+                            proj_pred = sub_pred @ sub_pred.t()
+                            proj_prior = sub_prior @ sub_prior.t()
+                            spec_loss = eval_loss + F.mse_loss(proj_pred, proj_prior)
+                            spec_loss = _safe_tensor(spec_loss, "spectral_loss", age_value=age)
+                            spec_loss = spec_loss.to(device=device, dtype=dtype)
+                            weighted_spec = weighted_spec + (
+                                self._base_lambda_spec * lambda_factor_tensor * float(dyn_scale) * spec_loss
+                            )
+                            spectral_losses.append(spec_loss)
+                            spec_gap_vals.append(float(spec_loss.detach().cpu().item()))
 
                 if self.required_edges:
                     penalties = []
