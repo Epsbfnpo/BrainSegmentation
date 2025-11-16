@@ -456,6 +456,8 @@ def main():
     last_checkpoint_path: Optional[Path] = None
     last_completed_epoch = 0
     time_limit_exhausted = False
+    latest_model_path = results_dir / "latest_model.pt"
+    final_model_path = results_dir / "final_model.pt"
 
     if args.resume:
         resume_path = Path(args.resume)
@@ -685,29 +687,41 @@ def main():
         time_limit_exhausted = True
 
     if time_limit_exhausted and is_main:
-        if last_checkpoint_path is None or not last_checkpoint_path.exists():
-            fallback_path = results_dir / f"checkpoint_autoresume_epoch{last_completed_epoch:03d}.pt"
-            save_checkpoint(
-                fallback_path,
-                model=model,
-                optimizer=optimizer,
-                scheduler=scheduler,
-                epoch=last_completed_epoch,
-                global_step=global_step,
-                best_dice=best_dice,
-                ema_state=ema_helper.state_dict() if ema_helper is not None else None,
-            )
-            record_resume_checkpoint(results_dir, fallback_path)
-            last_checkpoint_path = fallback_path
-        else:
-            record_resume_checkpoint(results_dir, last_checkpoint_path)
+        resume_epoch = last_completed_epoch if last_completed_epoch > 0 else max(0, start_epoch - 1)
+        save_checkpoint(
+            latest_model_path,
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            epoch=resume_epoch,
+            global_step=global_step,
+            best_dice=best_dice,
+            ema_state=ema_helper.state_dict() if ema_helper is not None else None,
+        )
+        record_resume_checkpoint(results_dir, latest_model_path)
+        print(f"💾 Latest checkpoint saved to {latest_model_path}")
         print("⛔ Time buffer reached; exiting gracefully for resubmission")
+    elif not time_limit_exhausted and is_main:
+        final_epoch = last_completed_epoch if last_completed_epoch > 0 else args.epochs
+        save_checkpoint(
+            final_model_path,
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            epoch=final_epoch,
+            global_step=global_step,
+            best_dice=best_dice,
+            ema_state=ema_helper.state_dict() if ema_helper is not None else None,
+        )
+        if latest_model_path.exists():
+            latest_model_path.unlink()
+        print(f"🏁 Final checkpoint saved to {final_model_path}")
 
     if distributed:
         dist.barrier()
     cleanup_distributed()
 
-    return 2 if time_limit_exhausted else 0
+    return 0
 
 
 if __name__ == "__main__":

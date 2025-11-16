@@ -36,8 +36,9 @@ conda activate brainseg
 REPO_ROOT="/datasets/work/hb-nhmrc-dhcp/work/liu275/new"
 RESULTS_DIR=${RESULTS_DIR:-${REPO_ROOT}/results/target_only}
 export RESULTS_DIR
-RESUBMIT_SENTINEL="${RESULTS_DIR}/.resubmitted"
 SCRIPT_PATH="${REPO_ROOT}/run_graph_align_flex.sbatch"
+FINAL_MODEL_PATH="${RESULTS_DIR}/final_model.pt"
+LATEST_MODEL_PATH="${RESULTS_DIR}/latest_model.pt"
 
 set +e
 bash ./run_training_graphalign.sh
@@ -49,13 +50,16 @@ echo "Job $SLURM_JOB_ID ended at $(date) with exit status $STATUS"
 echo "(DISABLE_PRIOR=${DISABLE_PRIOR} | USE_AMP=${USE_AMP} | PRIOR_PROFILE=${PRIOR_PROFILE})"
 echo "=============================================================="
 
-if [ "$STATUS" -eq 2 ]; then
-    if [ ! -f "$RESUBMIT_SENTINEL" ]; then
-        echo "⏱️  Time limit reached; scheduling a single resubmission"
-        touch "$RESUBMIT_SENTINEL"
-        sbatch --export=ALL,RESUBMITTED=1 "$SCRIPT_PATH"
+if [ -f "$FINAL_MODEL_PATH" ]; then
+    echo "🏁 Final model detected at $FINAL_MODEL_PATH; training complete."
+elif [ -f "$LATEST_MODEL_PATH" ]; then
+    echo "🔁 Training incomplete (final model missing, latest checkpoint present); requeuing job."
+    sbatch --export=ALL "$SCRIPT_PATH"
+else
+    if [ "$STATUS" -ne 0 ]; then
+        echo "❌ Job exited with status $STATUS and no latest checkpoint; manual intervention required."
     else
-        echo "Resubmission already performed; not submitting again"
+        echo "⚠️ Job completed without producing final or latest checkpoints; not resubmitting."
     fi
 fi
 
