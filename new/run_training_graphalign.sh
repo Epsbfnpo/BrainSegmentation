@@ -26,7 +26,7 @@ PRETRAINED_CHECKPOINT=${PRETRAINED_CHECKPOINT:-}
 OUT_CHANNELS=${OUT_CHANNELS:-87}
 DISABLE_PRIOR=${DISABLE_PRIOR:-0}
 USE_AMP=${USE_AMP:-1}
-PRIOR_PROFILE=${PRIOR_PROFILE:-volume_shape_edge_sym}
+PRIOR_PROFILE=${PRIOR_PROFILE:-volume_shape_edge_sym_reqforb}
 
 ROI_X=${ROI_X:-128}
 ROI_Y=${ROI_Y:-128}
@@ -89,6 +89,16 @@ case "${PRIOR_PROFILE}" in
         LAMBDA_SYM=${LAMBDA_SYM:-0.02}
         LAMBDA_DYN=0.0
         ;;
+    volume_shape_edge_sym_reqforb)
+        LAMBDA_VOLUME=${LAMBDA_VOLUME:-0.2}
+        LAMBDA_SHAPE=${LAMBDA_SHAPE:-0.2}
+        LAMBDA_EDGE=${LAMBDA_EDGE:-0.1}
+        LAMBDA_SPEC=0.0
+        LAMBDA_REQUIRED=${LAMBDA_REQUIRED:-0.05}
+        LAMBDA_FORBIDDEN=${LAMBDA_FORBIDDEN:-0.05}
+        LAMBDA_SYM=${LAMBDA_SYM:-0.02}
+        LAMBDA_DYN=0.0
+        ;;
     full)
         :
         ;;
@@ -99,7 +109,7 @@ case "${PRIOR_PROFILE}" in
         DISABLE_PRIOR=1
         ;;
     *)
-        echo "Unknown PRIOR_PROFILE='${PRIOR_PROFILE}'. Supported profiles: volume_only, volume_shape, volume_shape_edge, volume_shape_edge_sym, full, custom, off" >&2
+        echo "Unknown PRIOR_PROFILE='${PRIOR_PROFILE}'. Supported profiles: volume_only, volume_shape, volume_shape_edge, volume_shape_edge_sym, volume_shape_edge_sym_reqforb, full, custom, off" >&2
         exit 1
         ;;
 esac
@@ -131,8 +141,17 @@ for lambda_val in "${LAMBDA_EDGE}" "${LAMBDA_SPEC}" "${LAMBDA_REQUIRED}" "${LAMB
     fi
 done
 
-printf '    prior artifacts needed: volume=%s sdf=%s adjacency=%s\n' \
-    "${need_volume}" "${need_sdf}" "${need_adj}"
+need_struct_rules=0
+for lambda_val in "${LAMBDA_REQUIRED}" "${LAMBDA_FORBIDDEN}";
+do
+    if is_positive "${lambda_val}"; then
+        need_struct_rules=1
+        break
+    fi
+done
+
+printf '    prior artifacts needed: volume=%s sdf=%s adjacency=%s structural_rules=%s\n' \
+    "${need_volume}" "${need_sdf}" "${need_adj}" "${need_struct_rules}"
 
 DYN_START_EPOCH=${DYN_START_EPOCH:-60}
 DYN_RAMP_EPOCHS=${DYN_RAMP_EPOCHS:-40}
@@ -165,6 +184,9 @@ if [ "${DISABLE_PRIOR}" -eq 0 ]; then
     fi
     if [ "${need_adj}" -eq 1 ]; then
         required_files+=("${ADJACENCY_PRIOR}")
+    fi
+    if [ "${need_struct_rules}" -eq 1 ]; then
+        required_files+=("${STRUCTURAL_RULES}")
     fi
 fi
 
