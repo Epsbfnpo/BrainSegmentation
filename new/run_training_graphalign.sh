@@ -22,7 +22,7 @@ EPOCHS=${EPOCHS:-400}
 RESULTS_DIR=${RESULTS_DIR:-${REPO_ROOT}/results/target_only}
 TARGET_SPLIT_JSON=${TARGET_SPLIT_JSON:-${REPO_ROOT}/PPREMOPREBO_split.json}
 TARGET_PRIOR_ROOT=${TARGET_PRIOR_ROOT:-${REPO_ROOT}/new/priors/target}
-PRETRAINED_CHECKPOINT=${PRETRAINED_CHECKPOINT:-}
+PRETRAINED_CHECKPOINT=${PRETRAINED_CHECKPOINT:-/datasets/work/hb-nhmrc-dhcp/work/liu275/Tuning/results_fixed/dHCP_registered_fixed/best_model.pth}
 OUT_CHANNELS=${OUT_CHANNELS:-87}
 DISABLE_PRIOR=${DISABLE_PRIOR:-0}
 USE_AMP=${USE_AMP:-1}
@@ -230,16 +230,31 @@ fi
 mkdir -p "${RESULTS_DIR}"
 
 RESUME_FILE="${RESULTS_DIR}/resume_from.txt"
-if [ -z "${PRETRAINED_CHECKPOINT}" ] && [ -f "${RESUME_FILE}" ]; then
+RESUME_FROM=""
+if [ -f "${RESUME_FILE}" ]; then
     RESUME_CANDIDATE="$(cat "${RESUME_FILE}")"
     if [ -n "${RESUME_CANDIDATE}" ] && [ -f "${RESUME_CANDIDATE}" ]; then
-        PRETRAINED_CHECKPOINT="${RESUME_CANDIDATE}"
         RESUME_FROM="${RESUME_CANDIDATE}"
+        echo "🔄 Resume checkpoint detected: ${RESUME_FROM}"
+    else
+        echo "⚠️  resume_from.txt present but candidate missing (${RESUME_CANDIDATE}); ignoring."
     fi
 fi
 
-if [ -z "${RESUME_FROM:-}" ] && [ -n "${PRETRAINED_CHECKPOINT}" ] && [[ "${PRETRAINED_CHECKPOINT}" == *checkpoint*pt ]]; then
-    RESUME_FROM="${PRETRAINED_CHECKPOINT}"
+if [ -z "${RESUME_FROM}" ] && [ -n "${PRETRAINED_CHECKPOINT}" ]; then
+    case "${PRETRAINED_CHECKPOINT}" in
+        *checkpoint*.pt|*checkpoint*.pth)
+            if [ -f "${PRETRAINED_CHECKPOINT}" ]; then
+                RESUME_FROM="${PRETRAINED_CHECKPOINT}"
+                echo "🔄 Using user-provided checkpoint for resume: ${RESUME_FROM}"
+            else
+                echo "⚠️  Requested resume checkpoint ${PRETRAINED_CHECKPOINT} not found; falling back to pretrained init."
+            fi
+            ;;
+        *)
+            : # treat as pretrained init below
+            ;;
+    esac
 fi
 
 CMD=(
@@ -301,10 +316,14 @@ if [ "${DISABLE_PRIOR}" -ne 0 ]; then
     CMD+=(--disable_prior)
 fi
 
-if [ -n "${RESUME_FROM:-}" ]; then
+if [ -n "${RESUME_FROM}" ]; then
     CMD+=(--resume "${RESUME_FROM}")
 elif [ -n "${PRETRAINED_CHECKPOINT}" ]; then
-    CMD+=(--pretrained_checkpoint "${PRETRAINED_CHECKPOINT}")
+    if [ ! -f "${PRETRAINED_CHECKPOINT}" ]; then
+        echo "⚠️  Pretrained checkpoint ${PRETRAINED_CHECKPOINT} not found; proceeding without it."
+    else
+        CMD+=(--pretrained_checkpoint "${PRETRAINED_CHECKPOINT}")
+    fi
 fi
 
 if [ -n "${LATERALITY_PAIRS}" ]; then
