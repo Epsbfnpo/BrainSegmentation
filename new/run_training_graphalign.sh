@@ -4,6 +4,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+is_positive() {
+    python - "$1" <<'PY'
+import sys
+try:
+    value = float(sys.argv[1])
+except Exception:
+    sys.exit(1)
+sys.exit(0 if value > 0 else 1)
+PY
+}
+
 # ---------- User configuration ----------
 NUM_GPUS=${NUM_GPUS:-4}
 BATCH_SIZE=${BATCH_SIZE:-2}
@@ -13,6 +24,9 @@ TARGET_SPLIT_JSON=${TARGET_SPLIT_JSON:-${REPO_ROOT}/PPREMOPREBO_split.json}
 TARGET_PRIOR_ROOT=${TARGET_PRIOR_ROOT:-${REPO_ROOT}/new/priors/target}
 PRETRAINED_CHECKPOINT=${PRETRAINED_CHECKPOINT:-}
 OUT_CHANNELS=${OUT_CHANNELS:-87}
+DISABLE_PRIOR=${DISABLE_PRIOR:-0}
+USE_AMP=${USE_AMP:-1}
+PRIOR_PROFILE=${PRIOR_PROFILE:-volume_shape_edge_sym}
 
 ROI_X=${ROI_X:-128}
 ROI_Y=${ROI_Y:-128}
@@ -33,6 +47,93 @@ LAMBDA_REQUIRED=${LAMBDA_REQUIRED:-0.05}
 LAMBDA_FORBIDDEN=${LAMBDA_FORBIDDEN:-0.05}
 LAMBDA_SYM=${LAMBDA_SYM:-0.02}
 LAMBDA_DYN=${LAMBDA_DYN:-0.2}
+
+case "${PRIOR_PROFILE}" in
+    volume_only)
+        LAMBDA_VOLUME=${LAMBDA_VOLUME:-0.2}
+        LAMBDA_SHAPE=0.0
+        LAMBDA_EDGE=0.0
+        LAMBDA_SPEC=0.0
+        LAMBDA_REQUIRED=0.0
+        LAMBDA_FORBIDDEN=0.0
+        LAMBDA_SYM=0.0
+        LAMBDA_DYN=0.0
+        ;;
+    volume_shape)
+        LAMBDA_VOLUME=${LAMBDA_VOLUME:-0.2}
+        LAMBDA_SHAPE=${LAMBDA_SHAPE:-0.2}
+        LAMBDA_EDGE=0.0
+        LAMBDA_SPEC=0.0
+        LAMBDA_REQUIRED=0.0
+        LAMBDA_FORBIDDEN=0.0
+        LAMBDA_SYM=0.0
+        LAMBDA_DYN=0.0
+        ;;
+    volume_shape_edge)
+        LAMBDA_VOLUME=${LAMBDA_VOLUME:-0.2}
+        LAMBDA_SHAPE=${LAMBDA_SHAPE:-0.2}
+        LAMBDA_EDGE=${LAMBDA_EDGE:-0.1}
+        LAMBDA_SPEC=0.0
+        LAMBDA_REQUIRED=0.0
+        LAMBDA_FORBIDDEN=0.0
+        LAMBDA_SYM=0.0
+        LAMBDA_DYN=0.0
+        ;;
+    volume_shape_edge_sym)
+        LAMBDA_VOLUME=${LAMBDA_VOLUME:-0.2}
+        LAMBDA_SHAPE=${LAMBDA_SHAPE:-0.2}
+        LAMBDA_EDGE=${LAMBDA_EDGE:-0.1}
+        LAMBDA_SPEC=0.0
+        LAMBDA_REQUIRED=0.0
+        LAMBDA_FORBIDDEN=0.0
+        LAMBDA_SYM=${LAMBDA_SYM:-0.02}
+        LAMBDA_DYN=0.0
+        ;;
+    full)
+        :
+        ;;
+    custom)
+        :
+        ;;
+    off)
+        DISABLE_PRIOR=1
+        ;;
+    *)
+        echo "Unknown PRIOR_PROFILE='${PRIOR_PROFILE}'. Supported profiles: volume_only, volume_shape, volume_shape_edge, volume_shape_edge_sym, full, custom, off" >&2
+        exit 1
+        ;;
+esac
+
+if [ "${DISABLE_PRIOR}" -ne 0 ]; then
+    PRIOR_PROFILE="off"
+fi
+
+echo "➡️  Prior profile: ${PRIOR_PROFILE} (DISABLE_PRIOR=${DISABLE_PRIOR})"
+printf '    lambdas: volume=%s shape=%s edge=%s spec=%s required=%s forbidden=%s symmetry=%s dyn=%s\n' \
+    "${LAMBDA_VOLUME}" "${LAMBDA_SHAPE}" "${LAMBDA_EDGE}" "${LAMBDA_SPEC}" \
+    "${LAMBDA_REQUIRED}" "${LAMBDA_FORBIDDEN}" "${LAMBDA_SYM}" "${LAMBDA_DYN}"
+
+need_volume=0
+if is_positive "${LAMBDA_VOLUME}"; then
+    need_volume=1
+fi
+
+need_sdf=0
+if is_positive "${LAMBDA_SHAPE}"; then
+    need_sdf=1
+fi
+
+need_adj=0
+for lambda_val in "${LAMBDA_EDGE}" "${LAMBDA_SPEC}" "${LAMBDA_REQUIRED}" "${LAMBDA_FORBIDDEN}" "${LAMBDA_SYM}" "${LAMBDA_DYN}"; do
+    if is_positive "${lambda_val}"; then
+        need_adj=1
+        break
+    fi
+done
+
+printf '    prior artifacts needed: volume=%s sdf=%s adjacency=%s\n' \
+    "${need_volume}" "${need_sdf}" "${need_adj}"
+
 DYN_START_EPOCH=${DYN_START_EPOCH:-60}
 DYN_RAMP_EPOCHS=${DYN_RAMP_EPOCHS:-40}
 DYN_MISMATCH_REF=${DYN_MISMATCH_REF:-0.08}
@@ -55,17 +156,31 @@ ADJACENCY_PRIOR="${TARGET_PRIOR_ROOT}/adjacency_prior.npz"
 RESTRICTED_MASK="${TARGET_PRIOR_ROOT}/R_mask.npy"
 STRUCTURAL_RULES="${TARGET_PRIOR_ROOT}/structural_rules.json"
 
-for required in "${TARGET_SPLIT_JSON}" "${VOLUME_STATS}" "${SDF_TEMPLATES}" "${ADJACENCY_PRIOR}"; do
+required_files=("${TARGET_SPLIT_JSON}" "${VOLUME_STATS}")
+if [ "${DISABLE_PRIOR}" -eq 0 ]; then
+    if [ "${need_sdf}" -eq 1 ]; then
+        required_files+=("${SDF_TEMPLATES}")
+    fi
+    if [ "${need_adj}" -eq 1 ]; then
+        required_files+=("${ADJACENCY_PRIOR}")
+    fi
+fi
+
+for required in "${required_files[@]}"; do
     if [ ! -f "$required" ]; then
         echo "Missing required file: $required" >&2
         exit 1
     fi
 done
 
-if [ "${PRECHECK_PRIORS}" -ne 0 ]; then
-    python "${SCRIPT_DIR}/prior_validator.py" \
-        --dir "${TARGET_PRIOR_ROOT}" \
-        --num-classes "${OUT_CHANNELS}"
+if [ "${DISABLE_PRIOR}" -eq 0 ] && [ "${PRECHECK_PRIORS}" -ne 0 ]; then
+    if [ "${need_sdf}" -eq 0 ] && [ "${need_adj}" -eq 0 ]; then
+        echo "Skipping prior precheck (volume-only profile)"
+    else
+        python "${SCRIPT_DIR}/prior_validator.py" \
+            --dir "${TARGET_PRIOR_ROOT}" \
+            --num-classes "${OUT_CHANNELS}"
+    fi
 fi
 
 mkdir -p "${RESULTS_DIR}"
@@ -99,8 +214,6 @@ CMD=(
     --lr_warmup_start_factor "${LR_WARMUP_START}"
     --grad_accum_steps "${GRAD_ACCUM_STEPS}"
     --volume_stats "${VOLUME_STATS}"
-    --sdf_templates "${SDF_TEMPLATES}"
-    --adjacency_prior "${ADJACENCY_PRIOR}"
     --lambda_volume "${LAMBDA_VOLUME}"
     --lambda_shape "${LAMBDA_SHAPE}"
     --lambda_edge "${LAMBDA_EDGE}"
@@ -120,14 +233,28 @@ CMD=(
     --slurm_time_buffer "${SLURM_TIME_BUFFER}"
 )
 
-if [ "${PRECHECK_PRIORS}" -ne 0 ]; then
+if [ "${DISABLE_PRIOR}" -eq 0 ] && [ "${need_sdf}" -eq 1 ]; then
+    CMD+=(--sdf_templates "${SDF_TEMPLATES}")
+fi
+
+if [ "${DISABLE_PRIOR}" -eq 0 ] && [ "${need_adj}" -eq 1 ]; then
+    CMD+=(--adjacency_prior "${ADJACENCY_PRIOR}")
+    if [ -f "${RESTRICTED_MASK}" ]; then
+        CMD+=(--restricted_mask "${RESTRICTED_MASK}")
+    fi
+    if [ -f "${STRUCTURAL_RULES}" ]; then
+        CMD+=(--structural_rules "${STRUCTURAL_RULES}")
+    fi
+fi
+
+if [ "${DISABLE_PRIOR}" -eq 0 ] && [ "${PRECHECK_PRIORS}" -ne 0 ]; then
     CMD+=(--precheck_priors)
-else
+elif [ "${DISABLE_PRIOR}" -eq 0 ]; then
     CMD+=(--skip_prior_check)
 fi
 
-if [ -f "${RESTRICTED_MASK}" ]; then
-    CMD+=(--restricted_mask "${RESTRICTED_MASK}")
+if [ "${DISABLE_PRIOR}" -ne 0 ]; then
+    CMD+=(--disable_prior)
 fi
 
 if [ -n "${RESUME_FROM:-}" ]; then
@@ -158,6 +285,10 @@ fi
 
 if [ "${EVAL_MULTI_SCALE}" -ne 0 ]; then
     CMD+=(--multi_scale_eval --eval_scales ${EVAL_SCALES})
+fi
+
+if [ "${USE_AMP}" -eq 0 ]; then
+    CMD+=(--no_amp)
 fi
 
 printf 'Running command:\n  %s\n' "${CMD[*]}"
