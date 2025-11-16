@@ -198,10 +198,21 @@ def load_checkpoint(path: Path,
 
 
 def register_signal_handlers(flag_container: dict, *, is_main: bool) -> None:
+    flag_container.setdefault("triggered", False)
+    flag_container.setdefault("stop_requested", False)
+    flag_container.setdefault("signal", None)
+    flag_container.setdefault("timestamp", None)
+
     def _handler(signum, frame):
         if is_main:
-            print(f"⚠️  Received signal {signum}; checkpoint will be saved at epoch boundary", flush=True)
+            print(
+                f"⚠️  Received signal {signum}; requesting graceful shutdown after checkpoint",
+                flush=True,
+            )
         flag_container["triggered"] = True
+        flag_container["stop_requested"] = True
+        flag_container["signal"] = signum
+        flag_container["timestamp"] = time.time()
 
     for sig in (signal.SIGTERM, signal.SIGUSR1):
         signal.signal(sig, _handler)
@@ -244,6 +255,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sdf_templates", type=str, default=None)
     parser.add_argument("--adjacency_prior", type=str, default=None)
     parser.add_argument("--restricted_mask", type=str, default=None)
+    parser.add_argument("--disable_prior", action="store_true", default=False,
+                        help="Disable graph-based priors for debugging")
     parser.add_argument("--lambda_volume", type=float, default=0.2)
     parser.add_argument("--lambda_shape", type=float, default=0.2)
     parser.add_argument("--lambda_edge", type=float, default=0.1)
@@ -314,7 +327,7 @@ def main():
     log_dir = Path(args.log_dir) if args.log_dir else results_dir / "tensorboard"
     writer: Optional[SummaryWriter] = SummaryWriter(log_dir=str(log_dir)) if is_main else None
 
-    signal_state = {"triggered": False}
+    signal_state = {"triggered": False, "stop_requested": False, "signal": None, "timestamp": None}
     register_signal_handlers(signal_state, is_main=is_main)
 
     job_deadline = compute_job_deadline(float(args.slurm_time_buffer))
@@ -329,7 +342,7 @@ def main():
     prior_dir = Path(args.prior_dir).resolve() if args.prior_dir else None
     if prior_dir is None and args.volume_stats:
         prior_dir = Path(args.volume_stats).resolve().parent
-    if args.precheck_priors and prior_dir is not None:
+    if (not args.disable_prior) and args.precheck_priors and prior_dir is not None:
         report = None
         if is_main:
             report = check_prior_directory(str(prior_dir), expected_num_classes=args.out_channels)
@@ -402,35 +415,39 @@ def main():
         focal_gamma=args.focal_gamma,
     )
 
-    prior_loss = AgeConditionedGraphPriorLoss(
-        num_classes=args.out_channels,
-        volume_stats_path=args.volume_stats,
-        sdf_templates_path=args.sdf_templates,
-        adjacency_prior_path=args.adjacency_prior,
-        r_mask_path=args.restricted_mask,
-        structural_rules_path=args.structural_rules,
-        lr_pairs_path=args.laterality_pairs_json,
-        lambda_volume=args.lambda_volume,
-        lambda_shape=args.lambda_shape,
-        lambda_edge=args.lambda_edge,
-        lambda_spec=args.lambda_spec,
-        lambda_required=args.lambda_required,
-        lambda_forbidden=args.lambda_forbidden,
-        lambda_symmetry=args.lambda_symmetry,
-        sdf_temperature=args.sdf_temperature,
-        warmup_epochs=args.prior_warmup_epochs,
-        lambda_dyn=args.lambda_dyn,
-        dyn_start_epoch=args.dyn_start_epoch,
-        dyn_ramp_epochs=args.dyn_ramp_epochs,
-        dyn_mismatch_ref=args.dyn_mismatch_ref,
-        dyn_max_scale=args.dyn_max_scale,
-        age_reliability_min=args.age_reliability_min,
-        age_reliability_pow=args.age_reliability_pow,
-        debug=args.debug_mode,
-        debug_max_batches=args.prior_debug_batches,
-    ).to(device)
-    prior_loss.configure_schedule(args.epochs)
-    prior_loss.set_debug(args.debug_mode, args.prior_debug_batches)
+    prior_loss = None
+    if not args.disable_prior:
+        prior_loss = AgeConditionedGraphPriorLoss(
+            num_classes=args.out_channels,
+            volume_stats_path=args.volume_stats,
+            sdf_templates_path=args.sdf_templates,
+            adjacency_prior_path=args.adjacency_prior,
+            r_mask_path=args.restricted_mask,
+            structural_rules_path=args.structural_rules,
+            lr_pairs_path=args.laterality_pairs_json,
+            lambda_volume=args.lambda_volume,
+            lambda_shape=args.lambda_shape,
+            lambda_edge=args.lambda_edge,
+            lambda_spec=args.lambda_spec,
+            lambda_required=args.lambda_required,
+            lambda_forbidden=args.lambda_forbidden,
+            lambda_symmetry=args.lambda_symmetry,
+            sdf_temperature=args.sdf_temperature,
+            warmup_epochs=args.prior_warmup_epochs,
+            lambda_dyn=args.lambda_dyn,
+            dyn_start_epoch=args.dyn_start_epoch,
+            dyn_ramp_epochs=args.dyn_ramp_epochs,
+            dyn_mismatch_ref=args.dyn_mismatch_ref,
+            dyn_max_scale=args.dyn_max_scale,
+            age_reliability_min=args.age_reliability_min,
+            age_reliability_pow=args.age_reliability_pow,
+            debug=args.debug_mode,
+            debug_max_batches=args.prior_debug_batches,
+        ).to(device)
+        prior_loss.configure_schedule(args.epochs)
+        prior_loss.set_debug(args.debug_mode, args.prior_debug_batches)
+    elif is_main:
+        print("⚙️  Graph prior disabled; training with segmentation loss only")
 
     best_dice = 0.0
     global_step = 0
@@ -439,6 +456,8 @@ def main():
     last_checkpoint_path: Optional[Path] = None
     last_completed_epoch = 0
     time_limit_exhausted = False
+    latest_model_path = results_dir / "latest_model.pt"
+    final_model_path = results_dir / "final_model.pt"
 
     if args.resume:
         resume_path = Path(args.resume)
@@ -464,6 +483,14 @@ def main():
         print(f"📝 Logging to: {log_dir}")
 
     for epoch in range(start_epoch, args.epochs + 1):
+        if signal_state.get("stop_requested"):
+            if is_main:
+                print(
+                    f"🛑 Stop requested by external signal before epoch {epoch:03d}; exiting loop",
+                    flush=True,
+                )
+            time_limit_exhausted = True
+            break
         if job_deadline is not None:
             time_remaining = job_deadline - time.time()
             if time_remaining < float(args.epoch_time_buffer):
@@ -480,7 +507,8 @@ def main():
         if distributed and hasattr(train_loader.sampler, "set_epoch"):
             train_loader.sampler.set_epoch(epoch)
 
-        prior_loss.set_epoch(epoch)
+        if prior_loss is not None:
+            prior_loss.set_epoch(epoch)
 
         start_time = time.time()
         train_metrics = train_epoch(
@@ -510,19 +538,39 @@ def main():
         last_completed_epoch = epoch
 
         if is_main:
+            seg_msg = (
+                f"loss={train_metrics['loss']:.4f} seg={train_metrics['seg']:.4f} "
+                f"dice={train_metrics.get('dice', 0.0):.4f} ce={train_metrics.get('ce', 0.0):.4f} "
+                f"focal={train_metrics.get('focal', 0.0):.4f}"
+            )
+            prior_msg = (
+                f"prior={train_metrics['prior']:.4f} vol={train_metrics.get('volume', 0.0):.4f} "
+                f"shape={train_metrics.get('shape', 0.0):.4f} edge={train_metrics.get('edge', 0.0):.4f} "
+                f"spec={train_metrics.get('spectral', 0.0):.4f} req={train_metrics.get('required', 0.0):.4f} "
+                f"forb={train_metrics.get('forbidden', 0.0):.4f} sym={train_metrics.get('symmetry', 0.0):.4f}"
+            )
+            aux_msg = (
+                f"warmup={train_metrics.get('warmup', 1.0):.3f} dyn={train_metrics.get('dyn_lambda', 1.0):.3f} "
+                f"adj_mae={train_metrics.get('adj_mae', 0.0):.4f} spec_gap={train_metrics.get('spec_gap', 0.0):.4f} "
+                f"req_miss={train_metrics.get('required_missing', 0.0):.4f} "
+                f"forb_pres={train_metrics.get('forbidden_present', 0.0):.4f}"
+            )
             print(
-                f"Epoch {epoch:03d}: loss={train_metrics['loss']:.4f} seg={train_metrics['seg']:.4f} "
-                f"prior={train_metrics['prior']:.4f} warmup={train_metrics.get('warmup', 1.0):.3f} "
-                f"edge={train_metrics.get('edge', 0.0):.4f} spec={train_metrics.get('spectral', 0.0):.4f} "
-                f"req={train_metrics.get('required', 0.0):.4f} forb={train_metrics.get('forbidden', 0.0):.4f} "
-                f"sym={train_metrics.get('symmetry', 0.0):.4f} dyn={train_metrics.get('dyn_lambda', 1.0):.3f} "
-                f"grad={train_metrics.get('grad_norm', 0.0):.3f} time={duration:.1f}s",
+                f"Epoch {epoch:03d}: {seg_msg} | {prior_msg} | {aux_msg} "
+                f"grad={train_metrics.get('grad_norm', 0.0):.3f} time={duration:.1f}s lr={current_lr:.6f}",
                 flush=True,
             )
             if writer is not None:
                 writer.add_scalar("train/lr", current_lr, epoch)
 
-        if epoch % args.eval_interval == 0 or epoch == args.epochs:
+        stop_after_epoch = bool(signal_state.get("stop_requested"))
+        if stop_after_epoch and is_main:
+            print(
+                f"🛑 Stop requested; finishing after epoch {epoch:03d}",
+                flush=True,
+            )
+
+        if (not stop_after_epoch) and (epoch % args.eval_interval == 0 or epoch == args.epochs):
             if ema_helper is not None:
                 ema_helper.apply_shadow()
             val_metrics = validate_epoch(
@@ -626,34 +674,54 @@ def main():
             record_resume_checkpoint(results_dir, emergency_path)
             last_checkpoint_path = emergency_path
             signal_state["triggered"] = False
+            time_limit_exhausted = True
+
+        if stop_after_epoch:
+            time_limit_exhausted = True
+            break
 
     if writer is not None:
         writer.close()
 
+    if signal_state.get("stop_requested"):
+        time_limit_exhausted = True
+
     if time_limit_exhausted and is_main:
-        if last_checkpoint_path is None or not last_checkpoint_path.exists():
-            fallback_path = results_dir / f"checkpoint_autoresume_epoch{last_completed_epoch:03d}.pt"
-            save_checkpoint(
-                fallback_path,
-                model=model,
-                optimizer=optimizer,
-                scheduler=scheduler,
-                epoch=last_completed_epoch,
-                global_step=global_step,
-                best_dice=best_dice,
-                ema_state=ema_helper.state_dict() if ema_helper is not None else None,
-            )
-            record_resume_checkpoint(results_dir, fallback_path)
-            last_checkpoint_path = fallback_path
-        else:
-            record_resume_checkpoint(results_dir, last_checkpoint_path)
+        resume_epoch = last_completed_epoch if last_completed_epoch > 0 else max(0, start_epoch - 1)
+        save_checkpoint(
+            latest_model_path,
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            epoch=resume_epoch,
+            global_step=global_step,
+            best_dice=best_dice,
+            ema_state=ema_helper.state_dict() if ema_helper is not None else None,
+        )
+        record_resume_checkpoint(results_dir, latest_model_path)
+        print(f"💾 Latest checkpoint saved to {latest_model_path}")
         print("⛔ Time buffer reached; exiting gracefully for resubmission")
+    elif not time_limit_exhausted and is_main:
+        final_epoch = last_completed_epoch if last_completed_epoch > 0 else args.epochs
+        save_checkpoint(
+            final_model_path,
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            epoch=final_epoch,
+            global_step=global_step,
+            best_dice=best_dice,
+            ema_state=ema_helper.state_dict() if ema_helper is not None else None,
+        )
+        if latest_model_path.exists():
+            latest_model_path.unlink()
+        print(f"🏁 Final checkpoint saved to {final_model_path}")
 
     if distributed:
         dist.barrier()
     cleanup_distributed()
 
-    return 2 if time_limit_exhausted else 0
+    return 0
 
 
 if __name__ == "__main__":
