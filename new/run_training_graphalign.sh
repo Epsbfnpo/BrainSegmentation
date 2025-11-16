@@ -196,8 +196,9 @@ SDF_TEMPLATES="${TARGET_PRIOR_ROOT}/sdf_templates.npz"
 ADJACENCY_PRIOR="${TARGET_PRIOR_ROOT}/adjacency_prior.npz"
 RESTRICTED_MASK="${TARGET_PRIOR_ROOT}/R_mask.npy"
 STRUCTURAL_RULES="${TARGET_PRIOR_ROOT}/structural_rules.json"
+CLASS_MAP_JSON="${CLASS_MAP_JSON:-${TARGET_PRIOR_ROOT}/class_map.json}"
 
-required_files=("${TARGET_SPLIT_JSON}" "${VOLUME_STATS}")
+required_files=("${TARGET_SPLIT_JSON}" "${VOLUME_STATS}" "${CLASS_MAP_JSON}")
 if [ "${DISABLE_PRIOR}" -eq 0 ]; then
     if [ "${need_sdf}" -eq 1 ]; then
         required_files+=("${SDF_TEMPLATES}")
@@ -290,6 +291,7 @@ CMD=(
     --prior_dir "${TARGET_PRIOR_ROOT}"
     --epoch_time_buffer "${EPOCH_TIME_BUFFER}"
     --slurm_time_buffer "${SLURM_TIME_BUFFER}"
+    --class_map_json "${CLASS_MAP_JSON}"
 )
 
 if [ "${DISABLE_PRIOR}" -eq 0 ] && [ "${need_sdf}" -eq 1 ]; then

@@ -470,9 +470,13 @@ def validate_epoch(model: nn.Module,
                    debug_mode: bool = False,
                    debug_step_limit: int = 1,
                    is_main: bool = True,
-                   prior_loss=None) -> Dict[str, float]:
+                   prior_loss=None,
+                   return_per_class: bool = False) -> Dict[str, float]:
     model.eval()
     dice_metric = DiceMetric(include_background=not foreground_only, reduction="mean_batch")
+    per_class_metric = None
+    if return_per_class:
+        per_class_metric = DiceMetric(include_background=not foreground_only, reduction="none")
 
     steps = 0
     debug_step_limit = max(1, int(debug_step_limit))
@@ -567,6 +571,8 @@ def validate_epoch(model: nn.Module,
             target = target.permute(0, 4, 1, 2, 3).to(dtype=probs.dtype)
 
             dice_metric(y_pred=preds, y=target)
+            if per_class_metric is not None:
+                per_class_metric(y_pred=preds, y=target)
             steps += 1
 
             if prior_loss is not None and "age" in batch:
@@ -582,6 +588,20 @@ def validate_epoch(model: nn.Module,
 
     dice = dice_metric.aggregate()
     dice_metric.reset()
+
+    per_class_scores: Optional[torch.Tensor] = None
+    if per_class_metric is not None:
+        raw_scores = per_class_metric.aggregate()
+        per_class_metric.reset()
+        if isinstance(raw_scores, torch.Tensor):
+            per_class_scores = raw_scores
+        elif isinstance(raw_scores, (list, tuple)):
+            per_class_scores = torch.as_tensor(raw_scores, device=device, dtype=torch.float32)
+        else:
+            per_class_scores = torch.as_tensor(float(raw_scores), device=device, dtype=torch.float32)
+        if per_class_scores.ndim >= 2:
+            per_class_scores = per_class_scores.mean(dim=0)
+        per_class_scores = per_class_scores.to(device=device, dtype=torch.float32)
 
     if isinstance(dice, torch.Tensor):
         if dice.numel() == 0:
@@ -600,6 +620,9 @@ def validate_epoch(model: nn.Module,
     dice = float(reduce_mean(dice))
 
     result = {"dice": dice, "steps": steps}
+    if per_class_scores is not None:
+        per_class_scores = reduce_mean(per_class_scores)
+        result["per_class_dice"] = per_class_scores.detach().cpu().tolist()
     if struct_steps > 0:
         avg = {k: v / struct_steps for k, v in struct_totals.items()}
         result["structural_violations"] = {
