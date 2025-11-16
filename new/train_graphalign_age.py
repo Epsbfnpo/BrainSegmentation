@@ -2,6 +2,7 @@
 """Target-only training entrypoint with production diagnostics."""
 
 import argparse
+import json
 import os
 import random
 import signal
@@ -9,13 +10,21 @@ import time
 from collections import deque
 from datetime import timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
 import numpy as np
 import torch
 import torch.distributed as dist
 from monai.networks.nets import SwinUNETR
 from torch.utils.tensorboard import SummaryWriter
+
+try:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt  # type: ignore
+except Exception:  # pragma: no cover - matplotlib may be unavailable on some systems
+    plt = None
 
 from age_aware_modules import SimplifiedDAUnetModule
 from data_loader_age_aware import get_target_dataloaders
@@ -115,6 +124,208 @@ def set_seed(seed: int = 42) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
+def _sanitize_value(value):
+    if isinstance(value, torch.Tensor):
+        value = value.detach().cpu()
+        if value.numel() == 1:
+            return float(value.item())
+        return value.tolist()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_value(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _sanitize_value(v) for k, v in value.items()}
+    if isinstance(value, (int, float)):
+        return float(value)
+    return value
+
+
+def load_metrics_history(path: Path) -> Dict[str, list]:
+    if not path.exists():
+        return {"train": [], "val": []}
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return {"train": [], "val": []}
+    if not isinstance(data, dict):
+        return {"train": [], "val": []}
+    data.setdefault("train", [])
+    data.setdefault("val", [])
+    return data
+
+
+def save_metrics_history(history: Dict[str, list], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(history, indent=2), encoding="utf-8")
+
+
+def update_metrics_history(history: Dict[str, list],
+                           split: str,
+                           metrics: Dict,
+                           path: Path,
+                           is_main: bool) -> None:
+    split = "val" if split not in ("train", "val") else split
+    sanitized = {k: _sanitize_value(v) for k, v in metrics.items() if v is not None}
+    sanitized.setdefault("timestamp", time.time())
+    history.setdefault(split, []).append(sanitized)
+    if is_main:
+        save_metrics_history(history, path)
+
+
+def _extract_series(entries, key: str):
+    series = []
+    for entry in entries:
+        epoch = entry.get("epoch")
+        value = entry.get(key)
+        if epoch is None or value is None:
+            continue
+        series.append((epoch, value))
+    series.sort(key=lambda item: item[0])
+    if not series:
+        return [], []
+    epochs, values = zip(*series)
+    return list(epochs), list(values)
+
+
+def _plot_series(entries, keys, outfile: Path, title: str, ylabel: str):
+    if plt is None or not entries:
+        return False
+    plotted = False
+    plt.figure(figsize=(10, 5))
+    for key in keys:
+        xs, ys = _extract_series(entries, key)
+        if xs and ys:
+            plt.plot(xs, ys, label=key)
+            plotted = True
+    if not plotted:
+        plt.close()
+        return False
+    plt.title(title)
+    plt.xlabel("Epoch")
+    plt.ylabel(ylabel)
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    outfile.parent.mkdir(parents=True, exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(outfile)
+    plt.close()
+    return True
+
+
+def generate_training_plots(history: Dict[str, list], results_dir: Path) -> bool:
+    if plt is None:
+        print("⚠️  matplotlib is not available; skipping training plot generation.")
+        return False
+    plot_dir = results_dir / "analysis"
+    train_entries = history.get("train", [])
+    val_entries = history.get("val", [])
+    generated = False
+    if _plot_series(
+        train_entries,
+        ["loss", "seg", "dice", "ce", "focal"],
+        plot_dir / "train_seg_losses.png",
+        "Training segmentation losses",
+        "Loss",
+    ):
+        generated = True
+    if _plot_series(
+        train_entries,
+        ["prior", "volume", "shape", "edge", "spectral", "required", "forbidden", "symmetry", "warmup", "dyn_lambda"],
+        plot_dir / "prior_losses.png",
+        "Training prior losses",
+        "Loss",
+    ):
+        generated = True
+    if train_entries or val_entries:
+        if plt is not None:
+            plt.figure(figsize=(10, 5))
+            plotted = False
+            xs, ys = _extract_series(train_entries, "dice")
+            if xs and ys:
+                plt.plot(xs, ys, label="train_dice")
+                plotted = True
+            xs, ys = _extract_series(val_entries, "dice")
+            if xs and ys:
+                plt.plot(xs, ys, label="val_dice")
+                plotted = True
+            if plotted:
+                plt.title("Dice over epochs")
+                plt.xlabel("Epoch")
+                plt.ylabel("Dice")
+                plt.ylim(0, 1)
+                plt.grid(True, alpha=0.3)
+                plt.legend()
+                plot_dir.mkdir(parents=True, exist_ok=True)
+                plt.tight_layout()
+                plt.savefig(plot_dir / "dice_history.png")
+                generated = True
+            plt.close()
+    if not generated:
+        print("⚠️  No training metrics available for plotting yet.")
+    return generated
+
+
+def load_class_mapping(path: Optional[Path]) -> Dict[int, int]:
+    if path is None or not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return {}
+    mapping = {}
+    data = payload.get("index_to_raw_label") if isinstance(payload, dict) else None
+    if isinstance(data, dict):
+        for key, value in data.items():
+            try:
+                mapping[int(key)] = int(value)
+            except (TypeError, ValueError):
+                continue
+    return mapping
+
+
+def save_per_class_report(per_class_scores, class_mapping: Dict[int, int], results_dir: Path):
+    if not per_class_scores:
+        return None
+    analysis_dir = results_dir / "analysis"
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+    records = []
+    for idx, score in enumerate(per_class_scores):
+        raw_label = class_mapping.get(idx, idx + 1)
+        records.append({
+            "remapped_index": int(idx),
+            "raw_label": int(raw_label),
+            "dice": float(score),
+        })
+    json_path = analysis_dir / "best_model_per_class_dice.json"
+    json_path.write_text(json.dumps(records, indent=2), encoding="utf-8")
+    if plt is None:
+        return {"json": json_path}
+    labels = [str(item["raw_label"]) for item in records]
+    values = [item["dice"] for item in records]
+    width = max(16.0, len(values) * 0.15)
+    plt.figure(figsize=(width, 6))
+    plt.bar(range(len(values)), values, color="#2878B5")
+    plt.xticks(range(len(values)), labels, rotation=90, fontsize=6)
+    plt.xlabel("Raw label ID")
+    plt.ylabel("Dice")
+    plt.title("Best-model Dice per raw region")
+    plt.ylim(0, 1)
+    plt.grid(True, axis="y", alpha=0.3)
+    plt.tight_layout()
+    png_path = analysis_dir / "best_model_per_class_dice.png"
+    plt.savefig(png_path)
+    plt.close()
+    return {"json": json_path, "png": png_path}
+
+
+def load_model_weights_only(model: torch.nn.Module, checkpoint_path: Path) -> None:
+    payload = torch.load(checkpoint_path, map_location="cpu")
+    state = payload.get("state_dict", payload)
+    target = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
+    target.load_state_dict(state, strict=True)
+
+
 def build_model(args, device: torch.device) -> SimplifiedDAUnetModule:
     backbone = SwinUNETR(
         img_size=(args.roi_x, args.roi_y, args.roi_z),
@@ -198,10 +409,21 @@ def load_checkpoint(path: Path,
 
 
 def register_signal_handlers(flag_container: dict, *, is_main: bool) -> None:
+    flag_container.setdefault("triggered", False)
+    flag_container.setdefault("stop_requested", False)
+    flag_container.setdefault("signal", None)
+    flag_container.setdefault("timestamp", None)
+
     def _handler(signum, frame):
         if is_main:
-            print(f"⚠️  Received signal {signum}; checkpoint will be saved at epoch boundary", flush=True)
+            print(
+                f"⚠️  Received signal {signum}; requesting graceful shutdown after checkpoint",
+                flush=True,
+            )
         flag_container["triggered"] = True
+        flag_container["stop_requested"] = True
+        flag_container["signal"] = signum
+        flag_container["timestamp"] = time.time()
 
     for sig in (signal.SIGTERM, signal.SIGUSR1):
         signal.signal(sig, _handler)
@@ -244,6 +466,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sdf_templates", type=str, default=None)
     parser.add_argument("--adjacency_prior", type=str, default=None)
     parser.add_argument("--restricted_mask", type=str, default=None)
+    parser.add_argument("--disable_prior", action="store_true", default=False,
+                        help="Disable graph-based priors for debugging")
+    parser.add_argument("--class_map_json", type=str, default=None,
+                        help="JSON file containing index_to_raw_label mapping for reporting")
     parser.add_argument("--lambda_volume", type=float, default=0.2)
     parser.add_argument("--lambda_shape", type=float, default=0.2)
     parser.add_argument("--lambda_edge", type=float, default=0.1)
@@ -307,6 +533,8 @@ def main():
 
     results_dir = Path(args.results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
+    history_path = results_dir / "metrics_history.json"
+    history = load_metrics_history(history_path)
 
     distributed = init_distributed(args)
     is_main = is_main_process(args)
@@ -314,7 +542,7 @@ def main():
     log_dir = Path(args.log_dir) if args.log_dir else results_dir / "tensorboard"
     writer: Optional[SummaryWriter] = SummaryWriter(log_dir=str(log_dir)) if is_main else None
 
-    signal_state = {"triggered": False}
+    signal_state = {"triggered": False, "stop_requested": False, "signal": None, "timestamp": None}
     register_signal_handlers(signal_state, is_main=is_main)
 
     job_deadline = compute_job_deadline(float(args.slurm_time_buffer))
@@ -329,7 +557,15 @@ def main():
     prior_dir = Path(args.prior_dir).resolve() if args.prior_dir else None
     if prior_dir is None and args.volume_stats:
         prior_dir = Path(args.volume_stats).resolve().parent
-    if args.precheck_priors and prior_dir is not None:
+    class_map_path: Optional[Path]
+    if args.class_map_json:
+        class_map_path = Path(args.class_map_json).resolve()
+    elif prior_dir is not None:
+        class_map_path = (prior_dir / "class_map.json").resolve()
+    else:
+        class_map_path = None
+    class_mapping = load_class_mapping(class_map_path) if class_map_path is not None else {}
+    if (not args.disable_prior) and args.precheck_priors and prior_dir is not None:
         report = None
         if is_main:
             report = check_prior_directory(str(prior_dir), expected_num_classes=args.out_channels)
@@ -402,35 +638,39 @@ def main():
         focal_gamma=args.focal_gamma,
     )
 
-    prior_loss = AgeConditionedGraphPriorLoss(
-        num_classes=args.out_channels,
-        volume_stats_path=args.volume_stats,
-        sdf_templates_path=args.sdf_templates,
-        adjacency_prior_path=args.adjacency_prior,
-        r_mask_path=args.restricted_mask,
-        structural_rules_path=args.structural_rules,
-        lr_pairs_path=args.laterality_pairs_json,
-        lambda_volume=args.lambda_volume,
-        lambda_shape=args.lambda_shape,
-        lambda_edge=args.lambda_edge,
-        lambda_spec=args.lambda_spec,
-        lambda_required=args.lambda_required,
-        lambda_forbidden=args.lambda_forbidden,
-        lambda_symmetry=args.lambda_symmetry,
-        sdf_temperature=args.sdf_temperature,
-        warmup_epochs=args.prior_warmup_epochs,
-        lambda_dyn=args.lambda_dyn,
-        dyn_start_epoch=args.dyn_start_epoch,
-        dyn_ramp_epochs=args.dyn_ramp_epochs,
-        dyn_mismatch_ref=args.dyn_mismatch_ref,
-        dyn_max_scale=args.dyn_max_scale,
-        age_reliability_min=args.age_reliability_min,
-        age_reliability_pow=args.age_reliability_pow,
-        debug=args.debug_mode,
-        debug_max_batches=args.prior_debug_batches,
-    ).to(device)
-    prior_loss.configure_schedule(args.epochs)
-    prior_loss.set_debug(args.debug_mode, args.prior_debug_batches)
+    prior_loss = None
+    if not args.disable_prior:
+        prior_loss = AgeConditionedGraphPriorLoss(
+            num_classes=args.out_channels,
+            volume_stats_path=args.volume_stats,
+            sdf_templates_path=args.sdf_templates,
+            adjacency_prior_path=args.adjacency_prior,
+            r_mask_path=args.restricted_mask,
+            structural_rules_path=args.structural_rules,
+            lr_pairs_path=args.laterality_pairs_json,
+            lambda_volume=args.lambda_volume,
+            lambda_shape=args.lambda_shape,
+            lambda_edge=args.lambda_edge,
+            lambda_spec=args.lambda_spec,
+            lambda_required=args.lambda_required,
+            lambda_forbidden=args.lambda_forbidden,
+            lambda_symmetry=args.lambda_symmetry,
+            sdf_temperature=args.sdf_temperature,
+            warmup_epochs=args.prior_warmup_epochs,
+            lambda_dyn=args.lambda_dyn,
+            dyn_start_epoch=args.dyn_start_epoch,
+            dyn_ramp_epochs=args.dyn_ramp_epochs,
+            dyn_mismatch_ref=args.dyn_mismatch_ref,
+            dyn_max_scale=args.dyn_max_scale,
+            age_reliability_min=args.age_reliability_min,
+            age_reliability_pow=args.age_reliability_pow,
+            debug=args.debug_mode,
+            debug_max_batches=args.prior_debug_batches,
+        ).to(device)
+        prior_loss.configure_schedule(args.epochs)
+        prior_loss.set_debug(args.debug_mode, args.prior_debug_batches)
+    elif is_main:
+        print("⚙️  Graph prior disabled; training with segmentation loss only")
 
     best_dice = 0.0
     global_step = 0
@@ -439,6 +679,10 @@ def main():
     last_checkpoint_path: Optional[Path] = None
     last_completed_epoch = 0
     time_limit_exhausted = False
+    latest_model_path = results_dir / "latest_model.pt"
+    final_model_path = results_dir / "final_model.pt"
+    best_checkpoint_path = results_dir / "best_model.pt"
+    best_model_epoch: Optional[int] = None
 
     if args.resume:
         resume_path = Path(args.resume)
@@ -462,8 +706,20 @@ def main():
     if is_main:
         print(f"📂 Results directory: {results_dir}")
         print(f"📝 Logging to: {log_dir}")
+        if class_mapping:
+            print(f"🗺️  Loaded class mapping for {len(class_mapping)} regions from {class_map_path}")
+        else:
+            print("⚠️  No class map found; per-class reports will use remapped indices only")
 
     for epoch in range(start_epoch, args.epochs + 1):
+        if signal_state.get("stop_requested"):
+            if is_main:
+                print(
+                    f"🛑 Stop requested by external signal before epoch {epoch:03d}; exiting loop",
+                    flush=True,
+                )
+            time_limit_exhausted = True
+            break
         if job_deadline is not None:
             time_remaining = job_deadline - time.time()
             if time_remaining < float(args.epoch_time_buffer):
@@ -480,7 +736,8 @@ def main():
         if distributed and hasattr(train_loader.sampler, "set_epoch"):
             train_loader.sampler.set_epoch(epoch)
 
-        prior_loss.set_epoch(epoch)
+        if prior_loss is not None:
+            prior_loss.set_epoch(epoch)
 
         start_time = time.time()
         train_metrics = train_epoch(
@@ -510,19 +767,40 @@ def main():
         last_completed_epoch = epoch
 
         if is_main:
+            seg_msg = (
+                f"loss={train_metrics['loss']:.4f} seg={train_metrics['seg']:.4f} "
+                f"dice={train_metrics.get('dice', 0.0):.4f} ce={train_metrics.get('ce', 0.0):.4f} "
+                f"focal={train_metrics.get('focal', 0.0):.4f}"
+            )
+            prior_msg = (
+                f"prior={train_metrics['prior']:.4f} vol={train_metrics.get('volume', 0.0):.4f} "
+                f"shape={train_metrics.get('shape', 0.0):.4f} edge={train_metrics.get('edge', 0.0):.4f} "
+                f"spec={train_metrics.get('spectral', 0.0):.4f} req={train_metrics.get('required', 0.0):.4f} "
+                f"forb={train_metrics.get('forbidden', 0.0):.4f} sym={train_metrics.get('symmetry', 0.0):.4f}"
+            )
+            aux_msg = (
+                f"warmup={train_metrics.get('warmup', 1.0):.3f} dyn={train_metrics.get('dyn_lambda', 1.0):.3f} "
+                f"adj_mae={train_metrics.get('adj_mae', 0.0):.4f} spec_gap={train_metrics.get('spec_gap', 0.0):.4f} "
+                f"req_miss={train_metrics.get('required_missing', 0.0):.4f} "
+                f"forb_pres={train_metrics.get('forbidden_present', 0.0):.4f}"
+            )
             print(
-                f"Epoch {epoch:03d}: loss={train_metrics['loss']:.4f} seg={train_metrics['seg']:.4f} "
-                f"prior={train_metrics['prior']:.4f} warmup={train_metrics.get('warmup', 1.0):.3f} "
-                f"edge={train_metrics.get('edge', 0.0):.4f} spec={train_metrics.get('spectral', 0.0):.4f} "
-                f"req={train_metrics.get('required', 0.0):.4f} forb={train_metrics.get('forbidden', 0.0):.4f} "
-                f"sym={train_metrics.get('symmetry', 0.0):.4f} dyn={train_metrics.get('dyn_lambda', 1.0):.3f} "
-                f"grad={train_metrics.get('grad_norm', 0.0):.3f} time={duration:.1f}s",
+                f"Epoch {epoch:03d}: {seg_msg} | {prior_msg} | {aux_msg} "
+                f"grad={train_metrics.get('grad_norm', 0.0):.3f} time={duration:.1f}s lr={current_lr:.6f}",
                 flush=True,
             )
             if writer is not None:
                 writer.add_scalar("train/lr", current_lr, epoch)
+            update_metrics_history(history, "train", train_metrics, history_path, True)
 
-        if epoch % args.eval_interval == 0 or epoch == args.epochs:
+        stop_after_epoch = bool(signal_state.get("stop_requested"))
+        if stop_after_epoch and is_main:
+            print(
+                f"🛑 Stop requested; finishing after epoch {epoch:03d}",
+                flush=True,
+            )
+
+        if (not stop_after_epoch) and (epoch % args.eval_interval == 0 or epoch == args.epochs):
             if ema_helper is not None:
                 ema_helper.apply_shadow()
             val_metrics = validate_epoch(
@@ -544,8 +822,13 @@ def main():
                 is_main=is_main,
                 prior_loss=prior_loss,
             )
+            val_metrics["epoch"] = epoch
             if ema_helper is not None:
                 ema_helper.restore()
+            improved = val_metrics["dice"] > best_dice
+            if improved:
+                best_dice = val_metrics["dice"]
+                best_model_epoch = epoch
             if is_main:
                 extra_msgs = []
                 adj_errors = val_metrics.get("adjacency_errors")
@@ -571,9 +854,8 @@ def main():
                         writer.add_scalar("val/forbidden_present", struct.get("forbidden_present", 0.0), epoch)
                     if sym_scores:
                         writer.add_scalar("val/symmetry_score", sym_scores[0], epoch)
-                if val_metrics["dice"] > best_dice:
-                    best_dice = val_metrics["dice"]
-                    best_path = results_dir / "best_model.pt"
+                if improved:
+                    best_path = best_checkpoint_path
                     save_checkpoint(
                         best_path,
                         model=model,
@@ -587,6 +869,7 @@ def main():
                     record_resume_checkpoint(results_dir, best_path)
                     last_checkpoint_path = best_path
                     print(f"  ✅ New best checkpoint saved to {best_path}")
+                update_metrics_history(history, "val", val_metrics, history_path, True)
 
         if is_main and args.save_interval > 0 and epoch % args.save_interval == 0:
             ckpt_path = results_dir / f"checkpoint_epoch{epoch:03d}.pt"
@@ -626,34 +909,106 @@ def main():
             record_resume_checkpoint(results_dir, emergency_path)
             last_checkpoint_path = emergency_path
             signal_state["triggered"] = False
+            time_limit_exhausted = True
+
+        if stop_after_epoch:
+            time_limit_exhausted = True
+            break
 
     if writer is not None:
         writer.close()
 
+    if signal_state.get("stop_requested"):
+        time_limit_exhausted = True
+
     if time_limit_exhausted and is_main:
-        if last_checkpoint_path is None or not last_checkpoint_path.exists():
-            fallback_path = results_dir / f"checkpoint_autoresume_epoch{last_completed_epoch:03d}.pt"
+        resume_epoch = last_completed_epoch if last_completed_epoch > 0 else max(0, start_epoch - 1)
+        save_checkpoint(
+            latest_model_path,
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            epoch=resume_epoch,
+            global_step=global_step,
+            best_dice=best_dice,
+            ema_state=ema_helper.state_dict() if ema_helper is not None else None,
+        )
+        record_resume_checkpoint(results_dir, latest_model_path)
+        print(f"💾 Latest checkpoint saved to {latest_model_path}")
+        print("⛔ Time buffer reached; exiting gracefully for resubmission")
+    elif not time_limit_exhausted:
+        final_epoch = last_completed_epoch if last_completed_epoch > 0 else args.epochs
+        if is_main:
             save_checkpoint(
-                fallback_path,
+                final_model_path,
                 model=model,
                 optimizer=optimizer,
                 scheduler=scheduler,
-                epoch=last_completed_epoch,
+                epoch=final_epoch,
                 global_step=global_step,
                 best_dice=best_dice,
                 ema_state=ema_helper.state_dict() if ema_helper is not None else None,
             )
-            record_resume_checkpoint(results_dir, fallback_path)
-            last_checkpoint_path = fallback_path
-        else:
-            record_resume_checkpoint(results_dir, last_checkpoint_path)
-        print("⛔ Time buffer reached; exiting gracefully for resubmission")
+            if latest_model_path.exists():
+                latest_model_path.unlink()
+            print(f"🏁 Final checkpoint saved to {final_model_path}")
+
+        analysis_checkpoint = None
+        analysis_epoch = final_epoch
+        if best_checkpoint_path.exists():
+            analysis_checkpoint = best_checkpoint_path
+            if best_model_epoch is not None:
+                analysis_epoch = best_model_epoch
+        elif final_model_path.exists():
+            analysis_checkpoint = final_model_path
+
+        if analysis_checkpoint is not None and analysis_checkpoint.exists():
+            if is_main:
+                print(f"📊 Running final evaluation with {analysis_checkpoint}")
+            load_model_weights_only(model, analysis_checkpoint)
+            if prior_loss is not None and analysis_epoch is not None:
+                prior_loss.set_epoch(analysis_epoch)
+            final_eval = validate_epoch(
+                model,
+                val_loader,
+                device=device,
+                num_classes=args.out_channels,
+                foreground_only=args.foreground_only,
+                use_sliding_window=args.use_sliding_window,
+                roi_size=(args.roi_x, args.roi_y, args.roi_z),
+                sw_batch_size=args.sw_batch_size,
+                sw_overlap=args.sw_overlap,
+                multi_scale=args.multi_scale_eval,
+                eval_scales=args.eval_scales,
+                eval_tta=args.eval_tta,
+                tta_axes=args.tta_flip_axes,
+                debug_mode=False,
+                debug_step_limit=1,
+                is_main=is_main,
+                prior_loss=prior_loss,
+                return_per_class=True,
+            )
+            final_eval["epoch"] = analysis_epoch
+            if is_main:
+                per_class = final_eval.get("per_class_dice")
+                locations = save_per_class_report(per_class, class_mapping, results_dir) if per_class else None
+                msg = f"  ✅ Final analysis dice={final_eval['dice']:.4f}"
+                if locations and "json" in locations:
+                    msg += f" | per-class report: {locations['json']}"
+                if locations and "png" in locations:
+                    msg += f" | bar chart: {locations['png']}"
+                print(msg)
+        if is_main:
+            plots_generated = generate_training_plots(history, results_dir)
+            save_metrics_history(history, history_path)
+            if plots_generated:
+                print(f"📈 Training curves written to {results_dir / 'analysis'}")
 
     if distributed:
         dist.barrier()
     cleanup_distributed()
 
-    return 2 if time_limit_exhausted else 0
+    return 0
 
 
 if __name__ == "__main__":
