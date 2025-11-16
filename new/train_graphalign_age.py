@@ -244,6 +244,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sdf_templates", type=str, default=None)
     parser.add_argument("--adjacency_prior", type=str, default=None)
     parser.add_argument("--restricted_mask", type=str, default=None)
+    parser.add_argument("--disable_prior", action="store_true", default=False,
+                        help="Disable graph-based priors for debugging")
     parser.add_argument("--lambda_volume", type=float, default=0.2)
     parser.add_argument("--lambda_shape", type=float, default=0.2)
     parser.add_argument("--lambda_edge", type=float, default=0.1)
@@ -329,7 +331,7 @@ def main():
     prior_dir = Path(args.prior_dir).resolve() if args.prior_dir else None
     if prior_dir is None and args.volume_stats:
         prior_dir = Path(args.volume_stats).resolve().parent
-    if args.precheck_priors and prior_dir is not None:
+    if (not args.disable_prior) and args.precheck_priors and prior_dir is not None:
         report = None
         if is_main:
             report = check_prior_directory(str(prior_dir), expected_num_classes=args.out_channels)
@@ -402,35 +404,39 @@ def main():
         focal_gamma=args.focal_gamma,
     )
 
-    prior_loss = AgeConditionedGraphPriorLoss(
-        num_classes=args.out_channels,
-        volume_stats_path=args.volume_stats,
-        sdf_templates_path=args.sdf_templates,
-        adjacency_prior_path=args.adjacency_prior,
-        r_mask_path=args.restricted_mask,
-        structural_rules_path=args.structural_rules,
-        lr_pairs_path=args.laterality_pairs_json,
-        lambda_volume=args.lambda_volume,
-        lambda_shape=args.lambda_shape,
-        lambda_edge=args.lambda_edge,
-        lambda_spec=args.lambda_spec,
-        lambda_required=args.lambda_required,
-        lambda_forbidden=args.lambda_forbidden,
-        lambda_symmetry=args.lambda_symmetry,
-        sdf_temperature=args.sdf_temperature,
-        warmup_epochs=args.prior_warmup_epochs,
-        lambda_dyn=args.lambda_dyn,
-        dyn_start_epoch=args.dyn_start_epoch,
-        dyn_ramp_epochs=args.dyn_ramp_epochs,
-        dyn_mismatch_ref=args.dyn_mismatch_ref,
-        dyn_max_scale=args.dyn_max_scale,
-        age_reliability_min=args.age_reliability_min,
-        age_reliability_pow=args.age_reliability_pow,
-        debug=args.debug_mode,
-        debug_max_batches=args.prior_debug_batches,
-    ).to(device)
-    prior_loss.configure_schedule(args.epochs)
-    prior_loss.set_debug(args.debug_mode, args.prior_debug_batches)
+    prior_loss = None
+    if not args.disable_prior:
+        prior_loss = AgeConditionedGraphPriorLoss(
+            num_classes=args.out_channels,
+            volume_stats_path=args.volume_stats,
+            sdf_templates_path=args.sdf_templates,
+            adjacency_prior_path=args.adjacency_prior,
+            r_mask_path=args.restricted_mask,
+            structural_rules_path=args.structural_rules,
+            lr_pairs_path=args.laterality_pairs_json,
+            lambda_volume=args.lambda_volume,
+            lambda_shape=args.lambda_shape,
+            lambda_edge=args.lambda_edge,
+            lambda_spec=args.lambda_spec,
+            lambda_required=args.lambda_required,
+            lambda_forbidden=args.lambda_forbidden,
+            lambda_symmetry=args.lambda_symmetry,
+            sdf_temperature=args.sdf_temperature,
+            warmup_epochs=args.prior_warmup_epochs,
+            lambda_dyn=args.lambda_dyn,
+            dyn_start_epoch=args.dyn_start_epoch,
+            dyn_ramp_epochs=args.dyn_ramp_epochs,
+            dyn_mismatch_ref=args.dyn_mismatch_ref,
+            dyn_max_scale=args.dyn_max_scale,
+            age_reliability_min=args.age_reliability_min,
+            age_reliability_pow=args.age_reliability_pow,
+            debug=args.debug_mode,
+            debug_max_batches=args.prior_debug_batches,
+        ).to(device)
+        prior_loss.configure_schedule(args.epochs)
+        prior_loss.set_debug(args.debug_mode, args.prior_debug_batches)
+    elif is_main:
+        print("⚙️  Graph prior disabled; training with segmentation loss only")
 
     best_dice = 0.0
     global_step = 0
@@ -480,7 +486,8 @@ def main():
         if distributed and hasattr(train_loader.sampler, "set_epoch"):
             train_loader.sampler.set_epoch(epoch)
 
-        prior_loss.set_epoch(epoch)
+        if prior_loss is not None:
+            prior_loss.set_epoch(epoch)
 
         start_time = time.time()
         train_metrics = train_epoch(
