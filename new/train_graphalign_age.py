@@ -198,10 +198,21 @@ def load_checkpoint(path: Path,
 
 
 def register_signal_handlers(flag_container: dict, *, is_main: bool) -> None:
+    flag_container.setdefault("triggered", False)
+    flag_container.setdefault("stop_requested", False)
+    flag_container.setdefault("signal", None)
+    flag_container.setdefault("timestamp", None)
+
     def _handler(signum, frame):
         if is_main:
-            print(f"⚠️  Received signal {signum}; checkpoint will be saved at epoch boundary", flush=True)
+            print(
+                f"⚠️  Received signal {signum}; requesting graceful shutdown after checkpoint",
+                flush=True,
+            )
         flag_container["triggered"] = True
+        flag_container["stop_requested"] = True
+        flag_container["signal"] = signum
+        flag_container["timestamp"] = time.time()
 
     for sig in (signal.SIGTERM, signal.SIGUSR1):
         signal.signal(sig, _handler)
@@ -316,7 +327,7 @@ def main():
     log_dir = Path(args.log_dir) if args.log_dir else results_dir / "tensorboard"
     writer: Optional[SummaryWriter] = SummaryWriter(log_dir=str(log_dir)) if is_main else None
 
-    signal_state = {"triggered": False}
+    signal_state = {"triggered": False, "stop_requested": False, "signal": None, "timestamp": None}
     register_signal_handlers(signal_state, is_main=is_main)
 
     job_deadline = compute_job_deadline(float(args.slurm_time_buffer))
@@ -470,6 +481,14 @@ def main():
         print(f"📝 Logging to: {log_dir}")
 
     for epoch in range(start_epoch, args.epochs + 1):
+        if signal_state.get("stop_requested"):
+            if is_main:
+                print(
+                    f"🛑 Stop requested by external signal before epoch {epoch:03d}; exiting loop",
+                    flush=True,
+                )
+            time_limit_exhausted = True
+            break
         if job_deadline is not None:
             time_remaining = job_deadline - time.time()
             if time_remaining < float(args.epoch_time_buffer):
@@ -517,19 +536,39 @@ def main():
         last_completed_epoch = epoch
 
         if is_main:
+            seg_msg = (
+                f"loss={train_metrics['loss']:.4f} seg={train_metrics['seg']:.4f} "
+                f"dice={train_metrics.get('dice', 0.0):.4f} ce={train_metrics.get('ce', 0.0):.4f} "
+                f"focal={train_metrics.get('focal', 0.0):.4f}"
+            )
+            prior_msg = (
+                f"prior={train_metrics['prior']:.4f} vol={train_metrics.get('volume', 0.0):.4f} "
+                f"shape={train_metrics.get('shape', 0.0):.4f} edge={train_metrics.get('edge', 0.0):.4f} "
+                f"spec={train_metrics.get('spectral', 0.0):.4f} req={train_metrics.get('required', 0.0):.4f} "
+                f"forb={train_metrics.get('forbidden', 0.0):.4f} sym={train_metrics.get('symmetry', 0.0):.4f}"
+            )
+            aux_msg = (
+                f"warmup={train_metrics.get('warmup', 1.0):.3f} dyn={train_metrics.get('dyn_lambda', 1.0):.3f} "
+                f"adj_mae={train_metrics.get('adj_mae', 0.0):.4f} spec_gap={train_metrics.get('spec_gap', 0.0):.4f} "
+                f"req_miss={train_metrics.get('required_missing', 0.0):.4f} "
+                f"forb_pres={train_metrics.get('forbidden_present', 0.0):.4f}"
+            )
             print(
-                f"Epoch {epoch:03d}: loss={train_metrics['loss']:.4f} seg={train_metrics['seg']:.4f} "
-                f"prior={train_metrics['prior']:.4f} warmup={train_metrics.get('warmup', 1.0):.3f} "
-                f"edge={train_metrics.get('edge', 0.0):.4f} spec={train_metrics.get('spectral', 0.0):.4f} "
-                f"req={train_metrics.get('required', 0.0):.4f} forb={train_metrics.get('forbidden', 0.0):.4f} "
-                f"sym={train_metrics.get('symmetry', 0.0):.4f} dyn={train_metrics.get('dyn_lambda', 1.0):.3f} "
-                f"grad={train_metrics.get('grad_norm', 0.0):.3f} time={duration:.1f}s",
+                f"Epoch {epoch:03d}: {seg_msg} | {prior_msg} | {aux_msg} "
+                f"grad={train_metrics.get('grad_norm', 0.0):.3f} time={duration:.1f}s lr={current_lr:.6f}",
                 flush=True,
             )
             if writer is not None:
                 writer.add_scalar("train/lr", current_lr, epoch)
 
-        if epoch % args.eval_interval == 0 or epoch == args.epochs:
+        stop_after_epoch = bool(signal_state.get("stop_requested"))
+        if stop_after_epoch and is_main:
+            print(
+                f"🛑 Stop requested; finishing after epoch {epoch:03d}",
+                flush=True,
+            )
+
+        if (not stop_after_epoch) and (epoch % args.eval_interval == 0 or epoch == args.epochs):
             if ema_helper is not None:
                 ema_helper.apply_shadow()
             val_metrics = validate_epoch(
@@ -633,9 +672,17 @@ def main():
             record_resume_checkpoint(results_dir, emergency_path)
             last_checkpoint_path = emergency_path
             signal_state["triggered"] = False
+            time_limit_exhausted = True
+
+        if stop_after_epoch:
+            time_limit_exhausted = True
+            break
 
     if writer is not None:
         writer.close()
+
+    if signal_state.get("stop_requested"):
+        time_limit_exhausted = True
 
     if time_limit_exhausted and is_main:
         if last_checkpoint_path is None or not last_checkpoint_path.exists():
