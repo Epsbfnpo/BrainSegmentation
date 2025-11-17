@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CODE_DIR="${SCRIPT_DIR}/code_oa"
 DEFAULT_SPLIT_JSON="${SCRIPT_DIR}/../PPREMOPREBO_split.json"
 DEFAULT_LR_PAIRS="${SCRIPT_DIR}/../new/priors/target/dhcp_lr_swap.json"
+DEFAULT_PRETRAINED="/datasets/work/hb-nhmrc-dhcp/work/liu275/Tuning/results_fixed/dHCP_registered_fixed/best_model.pth"
 
 SPLIT_JSON=${SPLIT_JSON:-${DEFAULT_SPLIT_JSON}}
 EXP_NAME=${EXP_NAME:-UGTST_PPREMO}
@@ -20,7 +21,7 @@ BASE_LR=${BASE_LR:-1e-4}
 MAX_ITER=${MAX_ITER:-20000}
 NUM_CLASSES=${NUM_CLASSES:-87}
 LATERALITY_PAIRS=${LATERALITY_PAIRS:-${DEFAULT_LR_PAIRS}}
-PRETRAINED_PATH=${PRETRAINED_PATH:-}
+PRETRAINED_PATH=${PRETRAINED_PATH:-${DEFAULT_PRETRAINED}}
 EARLY_STOP=${EARLY_STOP:-5000}
 
 if [ ! -f "${SPLIT_JSON}" ]; then
@@ -52,9 +53,17 @@ if [ -n "${LATERALITY_PAIRS}" ] && [ -f "${LATERALITY_PAIRS}" ]; then
     CMD+=(--laterality_pairs_json "${LATERALITY_PAIRS}")
 fi
 
-if [ -n "${PRETRAINED_PATH}" ] && [ -f "${PRETRAINED_PATH}" ]; then
-    CMD+=(--pretrained_path "${PRETRAINED_PATH}")
+if [ -z "${PRETRAINED_PATH}" ]; then
+    echo "PRETRAINED_PATH must be specified." >&2
+    exit 1
 fi
+
+if [ ! -f "${PRETRAINED_PATH}" ]; then
+    echo "Pretrained checkpoint not found: ${PRETRAINED_PATH}" >&2
+    exit 1
+fi
+
+CMD+=(--pretrained_path "${PRETRAINED_PATH}")
 
 printf 'Running UGTST fine-tuning with command:\n  %s\n' "${CMD[*]}"
 "${CMD[@]}"

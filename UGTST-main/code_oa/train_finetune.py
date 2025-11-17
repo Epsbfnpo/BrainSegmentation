@@ -57,7 +57,8 @@ parser.add_argument('--consistency_rampup', type=float,
 parser.add_argument('--early_stop_patient', type=float,  default=5000,
                     help='num for early stop patient')
 parser.add_argument('--pretrained_path', type=str,
-                    default='../model/NPC/source_train/UNet_best_model.pth', help='Path to the pretrained model')
+                    default='/datasets/work/hb-nhmrc-dhcp/work/liu275/Tuning/results_fixed/dHCP_registered_fixed/best_model.pth',
+                    help='Path to the pretrained model')
 parser.add_argument('--labeled_num', type=int, default=56, help='labeled slices')
 parser.add_argument('--active_method', type=str,
                     default='UGTST', help='active learning method')
@@ -101,13 +102,46 @@ def train(args, snapshot_path):
     batch_size = args.batch_size
     max_iterations = args.max_iterations
     early_stop_patient = args.early_stop_patient
+    def load_pretrained_weights(model):
+        if args.pretrained_path is None or args.pretrained_path == "":
+            logging.warning("No pretrained path provided; training will start from random initialization.")
+            return model
+
+        ckpt_path = Path(args.pretrained_path).expanduser()
+        if not ckpt_path.is_file():
+            raise FileNotFoundError(f"Pretrained checkpoint not found: {ckpt_path}")
+
+        checkpoint = torch.load(str(ckpt_path), map_location='cpu')
+        state_dict = checkpoint
+        if isinstance(checkpoint, dict):
+            if 'state_dict' in checkpoint and isinstance(checkpoint['state_dict'], dict):
+                state_dict = checkpoint['state_dict']
+            elif 'model' in checkpoint and isinstance(checkpoint['model'], dict):
+                state_dict = checkpoint['model']
+
+        cleaned_state_dict = {}
+        for key, value in state_dict.items():
+            new_key = key
+            if key.startswith('module.'):
+                new_key = key[len('module.'):]
+            cleaned_state_dict[new_key] = value
+
+        load_result = model.load_state_dict(cleaned_state_dict, strict=False)
+        missing = load_result.missing_keys if hasattr(load_result, 'missing_keys') else []
+        unexpected = load_result.unexpected_keys if hasattr(load_result, 'unexpected_keys') else []
+        if missing:
+            logging.warning(f"Missing keys when loading pretrained weights: {missing}")
+        if unexpected:
+            logging.warning(f"Unexpected keys when loading pretrained weights: {unexpected}")
+
+        logging.info(f"Loaded pretrained model from {ckpt_path}")
+        return model
+
     def create_model(ema=False):
         # Network definition
         model = UNet(in_chns=1,
                             class_num=num_classes)
-        if args.pretrained_path is not None:
-            model.load_state_dict(torch.load(args.pretrained_path))
-            logging.info(f"Loaded pretrained model from {args.pretrained_path}")
+        model = load_pretrained_weights(model)
         model = model.cuda()
         if ema:
             for param in model.parameters():
