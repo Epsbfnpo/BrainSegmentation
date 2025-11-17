@@ -5,6 +5,7 @@ import random
 import shutil
 import sys
 import time
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -16,19 +17,15 @@ from tensorboardX import SummaryWriter
 from torch.nn import BCEWithLogitsLoss
 from torch.nn.modules.loss import CrossEntropyLoss
 from torch.utils.data import DataLoader
-from torchvision import transforms
-from torchvision.utils import make_grid
 from tqdm import tqdm
 
-from dataloaders import utils
-from dataloaders.dataset import H5DataSet, RandomGenerator, TwoStreamBatchSampler
+from dataloaders.dataset import TwoStreamBatchSampler
+from dataloaders.ppremo_dataset import create_target_datasets
 from networks.unet import UNet
 from utils import losses, metrics, ramps
 from val_2D import test_single_volume
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--root_path', type=str,
-                    default='../data/data_preprocessed/NPC/WCH', help='Name of Experiment')
 parser.add_argument('--exp', type=str,
                     default='NPC_WCH/WCH_self_training_UGTST+_5%', help='experiment_name')
 parser.add_argument('--model', type=str,
@@ -41,10 +38,10 @@ parser.add_argument('--deterministic', type=int,  default=1,
                     help='whether use deterministic training')
 parser.add_argument('--base_lr', type=float,  default=0.001,
                     help='segmentation network learning rate')
-parser.add_argument('--patch_size', type=list, default=[320, 320],
-                    help='patch size of network input')
+parser.add_argument('--patch_size', type=int, nargs=2, default=[128, 128],
+                    help='patch size of 2D network input (X, Y)')
 parser.add_argument('--seed', type=int, default=1337, help='random seed')
-parser.add_argument('--num_classes', type=int,  default=2,
+parser.add_argument('--num_classes', type=int,  default=87,
                     help='output channel of network')
 # label and unlabel
 parser.add_argument('--labeled_bs', type=int, default=12,
@@ -64,6 +61,25 @@ parser.add_argument('--pretrained_path', type=str,
 parser.add_argument('--labeled_num', type=int, default=56, help='labeled slices')
 parser.add_argument('--active_method', type=str,
                     default='UGTST', help='active learning method')
+parser.add_argument('--split_json', type=str, required=True,
+                    help='Split JSON describing training/validation data')
+parser.add_argument('--roi_x', type=int, default=128, help='ROI size along X axis')
+parser.add_argument('--roi_y', type=int, default=128, help='ROI size along Y axis')
+parser.add_argument('--roi_z', type=int, default=128, help='ROI size along Z axis (slice depth)')
+parser.add_argument('--target_spacing', type=float, nargs=3, default=[0.8, 0.8, 0.8],
+                    help='Target voxel spacing for resampling (x y z)')
+parser.add_argument('--apply_spacing', dest='apply_spacing', action='store_true', default=True)
+parser.add_argument('--no_apply_spacing', dest='apply_spacing', action='store_false')
+parser.add_argument('--apply_orientation', dest='apply_orientation', action='store_true', default=True)
+parser.add_argument('--no_apply_orientation', dest='apply_orientation', action='store_false')
+parser.add_argument('--foreground_only', action='store_true', default=True,
+                    help='Enable Draw-EM foreground-only label remapping')
+parser.add_argument('--laterality_pairs_json', type=str, default=None,
+                    help='JSON file containing LR swapping label pairs')
+parser.add_argument('--val_subset', type=str, default='validation',
+                    help='Key used for validation subset inside the split JSON')
+parser.add_argument('--slices_per_volume', type=int, default=None,
+                    help='Override number of axial slices per subject (defaults to roi_z)')
 args = parser.parse_args()
 
 def get_current_consistency_weight(epoch):
@@ -100,14 +116,25 @@ def train(args, snapshot_path):
 
     model = create_model()
 
-    db_train = H5DataSet(base_dir=args.root_path, split="semi_train", active_method=f'{args.active_method}',
-                           num=None, transform=transforms.Compose([
-        RandomGenerator(args.patch_size, IntensityAug=True, SpatialAug=True, NonlinearAug=False)
-    ]))
-    db_val = H5DataSet(base_dir=args.root_path, split="val")
+    roi_size = (args.roi_x, args.roi_y, args.roi_z)
+    spacing = tuple(float(s) for s in args.target_spacing)
+    train_dataset, val_dataset = create_target_datasets(
+        args.split_json,
+        roi_size=roi_size,
+        target_spacing=spacing,
+        apply_spacing=args.apply_spacing,
+        apply_orientation=args.apply_orientation,
+        foreground_only=args.foreground_only,
+        laterality_pairs_json=args.laterality_pairs_json,
+        slices_per_volume=args.slices_per_volume,
+        val_subset=args.val_subset,
+    )
 
-    total_slices = len(db_train)
-    labeled_slice = args.labeled_num
+    total_slices = len(train_dataset)
+    if total_slices <= 1:
+        raise RuntimeError("Target dataset must contain at least two training slices for semi-supervised sampling")
+    labeled_slice = min(args.labeled_num, total_slices - 1)
+    labeled_slice = max(labeled_slice, 1)
     print("Total silices is: {}, labeled slices is: {}".format(
         total_slices, labeled_slice))
     labeled_idxs = list(range(0, labeled_slice))
@@ -115,18 +142,18 @@ def train(args, snapshot_path):
     batch_sampler = TwoStreamBatchSampler(
         labeled_idxs, unlabeled_idxs, batch_size, batch_size-args.labeled_bs)
 
-    trainloader = DataLoader(db_train, batch_sampler=batch_sampler,
+    trainloader = DataLoader(train_dataset, batch_sampler=batch_sampler,
                              num_workers=8, pin_memory=True, worker_init_fn=worker_init_fn)
 
     model.train()
 
-    valloader = DataLoader(db_val, batch_size=1, shuffle=False,
+    valloader = DataLoader(val_dataset, batch_size=1, shuffle=False,
                            num_workers=0)
 
     optimizer = optim.SGD(model.parameters(), lr=base_lr,
                           momentum=0.9, weight_decay=0.0001)
 
-    ce_loss = CrossEntropyLoss()
+    ce_loss = CrossEntropyLoss(ignore_index=-1)
     dice_loss = losses.DiceLoss(num_classes)
 
     writer = SummaryWriter(snapshot_path + '/log')
@@ -141,15 +168,19 @@ def train(args, snapshot_path):
         for i_batch, sampled_batch in enumerate(trainloader):
 
             volume_batch, label_batch = sampled_batch['image'], sampled_batch['label']
-            volume_batch, label_batch = volume_batch.cuda(), label_batch.cuda()
+            volume_batch = volume_batch.cuda()
+            label_batch = label_batch.cuda()
 
             output, _ = model(volume_batch)
             outputs_soft = torch.softmax(output, dim=1)
 
             consistency_weight = get_current_consistency_weight(iter_num // 150)
 
-            loss_lab = 0.5 * (ce_loss(output[:args.labeled_bs], label_batch[:][:args.labeled_bs].long()) + dice_loss(
-                outputs_soft[:args.labeled_bs], label_batch[:args.labeled_bs].unsqueeze(1)))
+            labeled_gt = label_batch[:args.labeled_bs]
+            labeled_gt_dice = labeled_gt.clone()
+            labeled_gt_dice[labeled_gt_dice < 0] = 0
+            loss_lab = 0.5 * (ce_loss(output[:args.labeled_bs], labeled_gt.long()) + dice_loss(
+                outputs_soft[:args.labeled_bs], labeled_gt_dice.unsqueeze(1)))
             pseudo_outputs = torch.argmax(outputs_soft[args.labeled_bs:].detach(), dim=1, keepdim=False)
             pseudo_supervision = ce_loss(output[args.labeled_bs:], pseudo_outputs)
 
@@ -188,11 +219,11 @@ def train(args, snapshot_path):
                         sampled_batch["image"], sampled_batch["label"], model,
                         classes=num_classes, patch_size=args.patch_size)
                     metric_list += np.array(metric_i)
-                metric_list = metric_list / len(db_val)
-                for class_i in range(num_classes-1):
-                    writer.add_scalar('info/model1_val_{}_dice'.format(class_i+1),
+                metric_list = metric_list / len(val_dataset)
+                for class_i in range(num_classes):
+                    writer.add_scalar('info/model1_val_{}_dice'.format(class_i),
                                       metric_list[class_i, 0], iter_num)
-                    writer.add_scalar('info/model1_val_{}_hd95'.format(class_i+1),
+                    writer.add_scalar('info/model1_val_{}_hd95'.format(class_i),
                                       metric_list[class_i, 1], iter_num)
 
                 performance = np.mean(metric_list, axis=0)[0]
@@ -235,6 +266,11 @@ def train(args, snapshot_path):
             iterator.close()
             break
     writer.close()
+    try:
+        complete_flag = Path(snapshot_path) / "training_complete.txt"
+        complete_flag.write_text("done\n", encoding='utf-8')
+    except Exception as exc:
+        logging.warning(f"Failed to write completion flag: {exc}")
 
 if __name__ == "__main__":
     if not args.deterministic:
