@@ -24,6 +24,28 @@ def reduce_mean(value: torch.Tensor) -> torch.Tensor:
     return value
 
 
+def _summarize_tensor(name: str, tensor: torch.Tensor) -> str:
+    tensor = tensor.detach()
+    finite_mask = torch.isfinite(tensor)
+    min_val = tensor[finite_mask].min().item() if finite_mask.any() else float("nan")
+    max_val = tensor[finite_mask].max().item() if finite_mask.any() else float("nan")
+    mean_val = tensor[finite_mask].mean().item() if finite_mask.any() else float("nan")
+    return (
+        f"{name}: shape={tuple(tensor.shape)} min={min_val:.4e} max={max_val:.4e} "
+        f"mean={mean_val:.4e} any_nan={torch.isnan(tensor).any().item()} "
+        f"any_inf={torch.isinf(tensor).any().item()}"
+    )
+
+
+def _check_finite(name: str, tensor: torch.Tensor, *, prefix: str = "") -> bool:
+    if tensor is None:
+        return True
+    if torch.isfinite(tensor).all():
+        return True
+    print(f"[NaN DETECTED]{prefix} {_summarize_tensor(name, tensor)}", flush=True)
+    return False
+
+
 class ExponentialMovingAverage:
     """Track an exponential moving average of model parameters."""
 
@@ -286,6 +308,36 @@ def train_epoch(model: nn.Module,
                 }
             loss = seg_losses["total"] + prior_dict["total"]
 
+        check_targets = {
+            "seg_total": seg_losses["total"],
+            "seg_dice": seg_losses["dice"],
+            "seg_ce": seg_losses["ce"],
+            "seg_focal": seg_losses["focal"],
+            "prior_total": prior_dict["total"],
+            "prior_volume": prior_dict.get("volume"),
+            "prior_shape": prior_dict.get("shape"),
+            "prior_edge": prior_dict.get("edge"),
+            "prior_spectral": prior_dict.get("spectral"),
+            "prior_required": prior_dict.get("required"),
+            "prior_forbidden": prior_dict.get("forbidden"),
+            "prior_symmetry": prior_dict.get("symmetry"),
+            "loss_total": loss,
+        }
+        finite_ok = True
+        for name, tensor in check_targets.items():
+            if tensor is None:
+                continue
+            if not _check_finite(name, tensor, prefix=f"[epoch={epoch} step={step}]"):
+                finite_ok = False
+        if not finite_ok:
+            if is_main:
+                print(
+                    f"[Train][Epoch {epoch:03d}][Step {step:03d}] encountered non-finite loss components, skipping batch",
+                    flush=True,
+                )
+            optimizer.zero_grad(set_to_none=True)
+            continue
+
         loss_for_backward = loss / grad_accum_steps
         scaler.scale(loss_for_backward).backward()
 
@@ -324,6 +376,25 @@ def train_epoch(model: nn.Module,
 
         if should_step:
             scaler.unscale_(optimizer)
+
+            bad_grad = None
+            for name, param in model.named_parameters():
+                if param.grad is None:
+                    continue
+                if not torch.isfinite(param.grad).all():
+                    bad_grad = (name, param.grad.detach())
+                    break
+
+            if bad_grad is not None:
+                name, grad_tensor = bad_grad
+                print(
+                    f"[NaN GRAD][epoch={epoch} step={step}] {_summarize_tensor(name + '.grad', grad_tensor)}",
+                    flush=True,
+                )
+                optimizer.zero_grad(set_to_none=True)
+                scaler.update()
+                continue
+
             grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip, error_if_nonfinite=False)
             scaler.step(optimizer)
             scaler.update()
@@ -399,9 +470,13 @@ def validate_epoch(model: nn.Module,
                    debug_mode: bool = False,
                    debug_step_limit: int = 1,
                    is_main: bool = True,
-                   prior_loss=None) -> Dict[str, float]:
+                   prior_loss=None,
+                   return_per_class: bool = False) -> Dict[str, float]:
     model.eval()
     dice_metric = DiceMetric(include_background=not foreground_only, reduction="mean_batch")
+    per_class_metric = None
+    if return_per_class:
+        per_class_metric = DiceMetric(include_background=not foreground_only, reduction="none")
 
     steps = 0
     debug_step_limit = max(1, int(debug_step_limit))
@@ -496,6 +571,8 @@ def validate_epoch(model: nn.Module,
             target = target.permute(0, 4, 1, 2, 3).to(dtype=probs.dtype)
 
             dice_metric(y_pred=preds, y=target)
+            if per_class_metric is not None:
+                per_class_metric(y_pred=preds, y=target)
             steps += 1
 
             if prior_loss is not None and "age" in batch:
@@ -509,11 +586,43 @@ def validate_epoch(model: nn.Module,
                 partial = dice_metric.aggregate().detach().cpu().numpy()
                 print(f"[Val][Step {step:03d}] running dice mean={partial.mean():.4f}", flush=True)
 
-    dice = dice_metric.aggregate().to(device)
+    dice = dice_metric.aggregate()
     dice_metric.reset()
+
+    per_class_scores: Optional[torch.Tensor] = None
+    if per_class_metric is not None:
+        raw_scores = per_class_metric.aggregate()
+        per_class_metric.reset()
+        if isinstance(raw_scores, torch.Tensor):
+            per_class_scores = raw_scores
+        elif isinstance(raw_scores, (list, tuple)):
+            per_class_scores = torch.as_tensor(raw_scores, device=device, dtype=torch.float32)
+        else:
+            per_class_scores = torch.as_tensor(float(raw_scores), device=device, dtype=torch.float32)
+        if per_class_scores.ndim >= 2:
+            per_class_scores = per_class_scores.mean(dim=0)
+        per_class_scores = per_class_scores.to(device=device, dtype=torch.float32)
+
+    if isinstance(dice, torch.Tensor):
+        if dice.numel() == 0:
+            dice = torch.tensor(0.0, device=device, dtype=torch.float32)
+        elif dice.numel() > 1:
+            dice = dice.mean()
+        dice = dice.to(device)
+    elif isinstance(dice, (list, tuple)):
+        if len(dice) == 0:
+            dice = torch.tensor(0.0, device=device, dtype=torch.float32)
+        else:
+            dice = torch.as_tensor(dice, device=device, dtype=torch.float32).mean()
+    else:
+        dice = torch.tensor(float(dice), device=device, dtype=torch.float32)
+
     dice = float(reduce_mean(dice))
 
     result = {"dice": dice, "steps": steps}
+    if per_class_scores is not None:
+        per_class_scores = reduce_mean(per_class_scores)
+        result["per_class_dice"] = per_class_scores.detach().cpu().tolist()
     if struct_steps > 0:
         avg = {k: v / struct_steps for k, v in struct_totals.items()}
         result["structural_violations"] = {
