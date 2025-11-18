@@ -475,7 +475,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lambda_edge", type=float, default=0.1)
     parser.add_argument("--lambda_spec", type=float, default=0.05)
     parser.add_argument("--sdf_temperature", type=float, default=4.0)
-    parser.add_argument("--prior_warmup_epochs", type=int, default=10)
+    parser.add_argument("--prior_warmup_epochs", type=int, default=8)
     parser.add_argument("--structural_rules", type=str, default=None)
     parser.add_argument("--lambda_required", type=float, default=0.05)
     parser.add_argument("--lambda_forbidden", type=float, default=0.05)
