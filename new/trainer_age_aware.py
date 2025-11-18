@@ -476,7 +476,11 @@ def validate_epoch(model: nn.Module,
     dice_metric = DiceMetric(include_background=not foreground_only, reduction="mean_batch")
     per_class_metric = None
     if return_per_class:
-        per_class_metric = DiceMetric(include_background=not foreground_only, reduction="none")
+        per_class_metric = DiceMetric(
+            include_background=not foreground_only,
+            reduction="none",
+            get_not_nans=True,
+        )
 
     steps = 0
     debug_step_limit = max(1, int(debug_step_limit))
@@ -590,18 +594,49 @@ def validate_epoch(model: nn.Module,
     dice_metric.reset()
 
     per_class_scores: Optional[torch.Tensor] = None
+    per_class_valid: Optional[torch.Tensor] = None
     if per_class_metric is not None:
-        raw_scores = per_class_metric.aggregate()
+        aggregate_out = per_class_metric.aggregate()
         per_class_metric.reset()
-        if isinstance(raw_scores, torch.Tensor):
-            per_class_scores = raw_scores
-        elif isinstance(raw_scores, (list, tuple)):
-            per_class_scores = torch.as_tensor(raw_scores, device=device, dtype=torch.float32)
+
+        raw_scores: Optional[torch.Tensor]
+        raw_counts: Optional[torch.Tensor]
+
+        if isinstance(aggregate_out, (tuple, list)) and len(aggregate_out) == 2:
+            raw_scores, raw_counts = aggregate_out
         else:
-            per_class_scores = torch.as_tensor(float(raw_scores), device=device, dtype=torch.float32)
-        if per_class_scores.ndim >= 2:
-            per_class_scores = per_class_scores.mean(dim=0)
-        per_class_scores = per_class_scores.to(device=device, dtype=torch.float32)
+            raw_scores = aggregate_out
+            raw_counts = None
+
+        def _to_tensor(data) -> torch.Tensor:
+            if isinstance(data, torch.Tensor):
+                tensor = data
+            elif isinstance(data, (list, tuple)):
+                tensor = torch.as_tensor(data, device=device, dtype=torch.float32)
+            else:
+                tensor = torch.as_tensor(float(data), device=device, dtype=torch.float32)
+            return tensor.to(device=device, dtype=torch.float32)
+
+        if raw_scores is not None:
+            per_class_scores = _to_tensor(raw_scores)
+            if per_class_scores.ndim >= 2:
+                per_class_scores = per_class_scores.mean(dim=0)
+            per_class_scores = torch.nan_to_num(per_class_scores, nan=0.0, posinf=0.0, neginf=0.0)
+
+        if raw_counts is not None:
+            per_class_valid = _to_tensor(raw_counts)
+            if per_class_valid.ndim >= 2:
+                per_class_valid = per_class_valid.sum(dim=0)
+            per_class_valid = torch.nan_to_num(per_class_valid, nan=0.0, posinf=0.0, neginf=0.0)
+            per_class_valid = per_class_valid.to(dtype=torch.float32)
+
+        if per_class_scores is not None and per_class_valid is not None:
+            # Guard against classes that never appear in the validation set.
+            valid_mask = per_class_valid > 0.5
+            if valid_mask.numel() == per_class_scores.numel():
+                per_class_scores = torch.where(valid_mask, per_class_scores, torch.zeros_like(per_class_scores))
+            else:
+                per_class_valid = None
 
     if isinstance(dice, torch.Tensor):
         if dice.numel() == 0:
@@ -623,6 +658,13 @@ def validate_epoch(model: nn.Module,
     if per_class_scores is not None:
         per_class_scores = reduce_mean(per_class_scores)
         result["per_class_dice"] = per_class_scores.detach().cpu().tolist()
+        if per_class_valid is not None:
+            per_class_valid = reduce_mean(per_class_valid)
+            valid_counts = per_class_valid.detach().cpu().tolist()
+            result["per_class_valid_counts"] = valid_counts
+            missing = [idx for idx, count in enumerate(valid_counts) if count <= 0.5]
+            if missing:
+                result["per_class_missing_labels"] = missing
     if struct_steps > 0:
         avg = {k: v / struct_steps for k, v in struct_totals.items()}
         result["structural_violations"] = {

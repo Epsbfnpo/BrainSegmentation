@@ -9,7 +9,7 @@
 #SBATCH --gpus-per-node=4
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err
-#SBATCH --time=2:00:00
+#SBATCH --time=6:00:00
 #SBATCH --signal=B:TERM@300
 
 set -euo pipefail
