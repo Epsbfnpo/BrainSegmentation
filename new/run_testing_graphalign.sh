@@ -14,7 +14,7 @@ python -u "${SCRIPT_DIR}/test_graphalign_age.py" \
   --in_channels 1 \
   --out_channels 87 \
   --feature_size 48 \
-  --roi_x 96 --roi_y 96 --roi_z 96 \
+  --roi_x 128 --roi_y 128 --roi_z 128 \
   --target_spacing 0.8 0.8 0.8 \
   --foreground_only \
   --sw_batch_size 1 \

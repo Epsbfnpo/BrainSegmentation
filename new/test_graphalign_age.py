@@ -12,7 +12,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from monai.inferers import sliding_window_inference
-from monai.metrics import DiceMetric, compute_meandice
+from monai.metrics import DiceMetric
+from monai.metrics.utils import compute_dice
 from torch.cuda.amp import autocast
 
 from data_loader_age_aware import get_target_test_loader
@@ -29,9 +30,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--in_channels", default=1, type=int)
     parser.add_argument("--out_channels", default=87, type=int)
     parser.add_argument("--feature_size", default=48, type=int)
-    parser.add_argument("--roi_x", default=96, type=int)
-    parser.add_argument("--roi_y", default=96, type=int)
-    parser.add_argument("--roi_z", default=96, type=int)
+    parser.add_argument("--roi_x", default=128, type=int)
+    parser.add_argument("--roi_y", default=128, type=int)
+    parser.add_argument("--roi_z", default=128, type=int)
     parser.add_argument("--apply_spacing", dest="apply_spacing", action="store_true", default=True)
     parser.add_argument("--no_apply_spacing", dest="apply_spacing", action="store_false")
     parser.add_argument("--apply_orientation", dest="apply_orientation", action="store_true", default=True)
@@ -205,7 +206,7 @@ def evaluate(args: argparse.Namespace) -> Dict:
             dice_metric(y_pred=preds, y=target)
             per_class_metric(y_pred=preds, y=target)
 
-            case_dice = compute_meandice(
+            case_dice = compute_dice(
                 y_pred=preds,
                 y=target,
                 include_background=not args.foreground_only,
