@@ -67,9 +67,29 @@ def _prepare_output(pred_labels: torch.Tensor, *, foreground_only: bool) -> np.n
 
 
 def _resolve_affine(meta: Dict) -> np.ndarray:
-    affine = meta.get("affine") or meta.get("original_affine")
+    """Return an affine matrix from available metadata.
+
+    Some datasets store affines under different keys (e.g., ``original_affine`` or
+    ``sform_affine``). We try a handful of common aliases before falling back to an
+    identity matrix so that prediction export never hard-fails.
+    """
+
+    affine = None
+    for key in (
+        "affine",
+        "original_affine",
+        "resample_affine",
+        "sform_affine",
+        "qform_affine",
+    ):
+        affine = meta.get(key)
+        if affine is not None:
+            break
+
     if affine is None:
-        raise ValueError("Missing affine information in metadata; cannot save NIfTI")
+        print("⚠️  Missing affine in metadata; using identity for export")
+        affine = np.eye(4, dtype=np.float32)
+
     if isinstance(affine, torch.Tensor):
         affine = affine.cpu().numpy()
     return np.asarray(affine)
@@ -93,19 +113,42 @@ def _save_prediction(pred_volume: np.ndarray, meta: Dict, output_dir: Path, clas
 def _select_meta(batch: Dict) -> Dict:
     """Robustly fetch the metadata dictionary for the first sample in a batch."""
 
+    def _as_dict(obj):
+        if obj is None:
+            return None
+        if isinstance(obj, dict):
+            return obj
+        if hasattr(obj, "meta"):
+            meta_obj = getattr(obj, "meta")
+            if isinstance(meta_obj, dict):
+                return meta_obj
+        return None
+
     # Preferred: explicitly provided metadata (may be a list or a single dict)
     metadata = batch.get("metadata")
     if isinstance(metadata, list) and metadata:
-        return metadata[0] or {}
+        maybe = _as_dict(metadata[0]) or metadata[0]
+        if isinstance(maybe, dict):
+            return maybe
     if isinstance(metadata, dict):
         return metadata
 
     # Fallback: MONAI's MetaTensor dictionaries (list or dict)
     meta_dicts = batch.get("image_meta_dict")
     if isinstance(meta_dicts, list) and meta_dicts:
-        return meta_dicts[0] or {}
+        maybe = _as_dict(meta_dicts[0]) or meta_dicts[0]
+        if isinstance(maybe, dict):
+            return maybe
     if isinstance(meta_dicts, dict):
         return meta_dicts
+
+    # Final fallback: meta attached to the image tensor
+    image = batch.get("image")
+    if isinstance(image, list) and image:
+        image = image[0]
+    meta_from_image = _as_dict(image)
+    if isinstance(meta_from_image, dict):
+        return meta_from_image
 
     return {}
 
