@@ -108,14 +108,15 @@ def _coerce_to_str_path(value: Union[str, Path, Sequence, None], key: str) -> Op
 
 
 def _resolve_affine(meta: Dict) -> np.ndarray:
-    """Return an affine matrix from available metadata.
+    """Return a valid 4x4 affine matrix from available metadata.
 
     Some datasets store affines under different keys (e.g., ``original_affine`` or
     ``sform_affine``). We try a handful of common aliases and finally fall back to
-    loading the source file header before resorting to an identity matrix.
+    loading the source file header before resorting to an identity matrix. Non-4x4
+    shapes are promoted (3x3) or rejected (others) to avoid nibabel errors.
     """
 
-    affine = None
+    candidate = None
     for key in (
         "affine",
         "original_affine",
@@ -123,26 +124,48 @@ def _resolve_affine(meta: Dict) -> np.ndarray:
         "sform_affine",
         "qform_affine",
     ):
-        affine = meta.get(key)
-        if affine is not None:
+        value = meta.get(key)
+        if value is not None:
+            candidate = value
+            _debug("Found affine in meta", {"key": key})
             break
 
     # If no affine is bundled in metadata, try to read it from the original file.
     filename = _coerce_to_str_path(meta.get("filename_or_obj"), "filename_or_obj")
-    if affine is None and filename:
+    if candidate is None and filename:
         try:
             header_affine = nib.load(filename).affine
-            affine = header_affine
-        except Exception:
+            candidate = header_affine
+            _debug("Loaded affine from source file", {"shape": list(header_affine.shape)})
+        except Exception as exc:
+            _debug("Failed to load affine from source file", {"error": str(exc)})
+            candidate = None
+
+    affine = None
+    if candidate is not None:
+        if isinstance(candidate, torch.Tensor):
+            candidate = candidate.detach().cpu().numpy()
+        candidate_np = np.asarray(candidate)
+        shape = tuple(candidate_np.shape)
+
+        if shape == (4, 4):
+            affine = candidate_np
+        elif shape == (3, 3):
+            affine = np.eye(4, dtype=np.float32)
+            affine[:3, :3] = candidate_np
+            _debug("Promoted 3x3 affine to 4x4", {"original_shape": list(shape)})
+        elif len(shape) == 3 and shape[0] == 1 and shape[1:] == (4, 4):
+            affine = candidate_np[0]
+            _debug("Squeezed leading dimension from affine", {"original_shape": list(shape)})
+        else:
+            _debug("Invalid affine shape; falling back to identity", {"shape": list(shape)})
             affine = None
 
     if affine is None:
         print("⚠️  Missing affine in metadata; using identity for export")
         affine = np.eye(4, dtype=np.float32)
 
-    if isinstance(affine, torch.Tensor):
-        affine = affine.cpu().numpy()
-    return np.asarray(affine)
+    return np.asarray(affine, dtype=np.float32)
 
 
 def _save_prediction(pred_volume: np.ndarray, meta: Dict, output_dir: Path, class_map: Optional[Dict[int, int]]) -> Path:
