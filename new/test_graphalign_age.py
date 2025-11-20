@@ -90,15 +90,31 @@ def _save_prediction(pred_volume: np.ndarray, meta: Dict, output_dir: Path, clas
     return out_path
 
 
-def _compute_case_id(batch: Dict) -> str:
-    metadata_list = batch.get("metadata")
-    if metadata_list and isinstance(metadata_list, list):
-        meta = metadata_list[0] or {}
-        if isinstance(meta, dict) and "subject_id" in meta:
-            return str(meta["subject_id"])
+def _select_meta(batch: Dict) -> Dict:
+    """Robustly fetch the metadata dictionary for the first sample in a batch."""
+
+    # Preferred: explicitly provided metadata (may be a list or a single dict)
+    metadata = batch.get("metadata")
+    if isinstance(metadata, list) and metadata:
+        return metadata[0] or {}
+    if isinstance(metadata, dict):
+        return metadata
+
+    # Fallback: MONAI's MetaTensor dictionaries (list or dict)
     meta_dicts = batch.get("image_meta_dict")
-    if meta_dicts:
-        meta = meta_dicts[0]
+    if isinstance(meta_dicts, list) and meta_dicts:
+        return meta_dicts[0] or {}
+    if isinstance(meta_dicts, dict):
+        return meta_dicts
+
+    return {}
+
+
+def _compute_case_id(batch: Dict) -> str:
+    meta = _select_meta(batch)
+    if "subject_id" in meta:
+        return str(meta["subject_id"])
+    if "filename_or_obj" in meta:
         return Path(meta.get("filename_or_obj", "case")).stem
     return "case"
 
@@ -255,7 +271,7 @@ def evaluate(args: argparse.Namespace) -> Dict:
             case_dice_value = float(case_dice.mean().item()) if case_dice.numel() > 0 else 0.0
 
             case_id = _compute_case_id(batch)
-            meta_dict = batch.get("image_meta_dict", [{}])[0]
+            meta_dict = _select_meta(batch)
             pred_volume = _prepare_output(pred_labels, foreground_only=args.foreground_only)
             pred_path = _save_prediction(pred_volume, meta_dict, predictions_dir, class_mapping)
 
