@@ -233,6 +233,8 @@ class RandFlipLateralityd(Randomizable, MapTransform):
 
 
 def _load_split(json_path: str) -> Tuple[List[Dict], List[Dict]]:
+    if not os.path.exists(json_path):
+        raise FileNotFoundError(f"Split JSON not found: {json_path}")
     with open(json_path, "r") as f:
         data = json.load(f)
     train = data.get("training") or data.get("train") or []
@@ -240,6 +242,19 @@ def _load_split(json_path: str) -> Tuple[List[Dict], List[Dict]]:
     if not val:
         raise RuntimeError("Split JSON must provide a validation set")
     return train, val
+
+
+def _load_test_split(json_path: str) -> List[Dict]:
+    if not os.path.exists(json_path):
+        raise FileNotFoundError(f"Split JSON not found: {json_path}")
+    with open(json_path, "r") as f:
+        data = json.load(f)
+
+    for key in ("testing", "test", "test_set"):
+        items = data.get(key) or []
+        if items:
+            return _process_items(items)
+    raise RuntimeError("Split JSON must provide a testing set")
 
 
 def _process_items(items: List[Dict]) -> List[Dict]:
@@ -336,6 +351,25 @@ def _base_transforms(args,
     if mode == "train":
         transforms.append(_augmentation_transforms(args, laterality_pairs=laterality_pairs))
         transforms.append(EnsureTyped(keys=["image", "label", "age"], track_meta=False))
+    return Compose(transforms)
+
+
+def _inference_transforms(args, *, keep_meta: bool = True) -> Compose:
+    transforms = [
+        LoadImaged(keys=["image", "label"]),
+        EnsureChannelFirstd(keys=["image", "label"]),
+        ExtractAged(),
+    ]
+    if getattr(args, "apply_spacing", True):
+        transforms.append(
+            Spacingd(keys=["image", "label"], pixdim=args.target_spacing, mode=("bilinear", "nearest"))
+        )
+    if getattr(args, "apply_orientation", True):
+        transforms.append(Orientationd(keys=["image", "label"], axcodes="RAS"))
+    transforms.append(PercentileNormalizationd(keys=["image"]))
+    if getattr(args, "foreground_only", False):
+        transforms.append(RemapLabelsd(keys=["label"]))
+    transforms.append(EnsureTyped(keys=["image", "label", "age"], track_meta=keep_meta))
     return Compose(transforms)
 
 
@@ -498,3 +532,17 @@ def get_target_dataloaders(args,
     )
 
     return train_loader, val_loader
+
+
+def get_target_test_loader(args, *, keep_meta: bool = True):
+    test_items = _load_test_split(args.split_json)
+    test_transform = _inference_transforms(args, keep_meta=keep_meta)
+    test_dataset = Dataset(test_items, transform=test_transform)
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=1,
+        shuffle=False,
+        num_workers=max(1, args.num_workers // 2),
+        pin_memory=True,
+    )
+    return test_loader
