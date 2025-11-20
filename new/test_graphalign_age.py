@@ -13,7 +13,6 @@ import torch
 import torch.nn.functional as F
 from monai.inferers import sliding_window_inference
 from monai.metrics import DiceMetric
-from monai.metrics.utils import compute_dice
 from torch.cuda.amp import autocast
 
 from data_loader_age_aware import get_target_test_loader
@@ -96,6 +95,42 @@ def _compute_case_id(batch: Dict) -> str:
         meta = meta_dicts[0]
         return Path(meta.get("filename_or_obj", "case")).stem
     return "case"
+
+
+def _compute_case_dice(
+    preds: torch.Tensor,
+    target: torch.Tensor,
+    *,
+    include_background: bool = True,
+    eps: float = 1e-8,
+) -> torch.Tensor:
+    """
+    Compute per-case Dice scores from one-hot predictions and labels.
+
+    Args:
+        preds: one-hot predictions shaped (B, C, H, W, D).
+        target: one-hot labels shaped (B, C, H, W, D).
+        include_background: whether channel 0 is included in the Dice computation.
+        eps: small value to avoid division by zero.
+
+    Returns:
+        Dice score tensor shaped (B, C) if include_background else (B, C-1).
+    """
+
+    if preds.shape != target.shape:
+        raise ValueError(f"preds and target must share shape; got {preds.shape} vs {target.shape}")
+
+    # Drop background channel if excluded
+    if not include_background:
+        preds = preds[:, 1:]
+        target = target[:, 1:]
+
+    reduce_dims = tuple(range(2, preds.ndim))
+    intersection = (preds * target).sum(dim=reduce_dims)
+    pred_sum = preds.sum(dim=reduce_dims)
+    target_sum = target.sum(dim=reduce_dims)
+    dice = (2.0 * intersection + eps) / (pred_sum + target_sum + eps)
+    return dice
 
 
 def evaluate(args: argparse.Namespace) -> Dict:
@@ -206,11 +241,10 @@ def evaluate(args: argparse.Namespace) -> Dict:
             dice_metric(y_pred=preds, y=target)
             per_class_metric(y_pred=preds, y=target)
 
-            case_dice = compute_dice(
-                y_pred=preds,
-                y=target,
+            case_dice = _compute_case_dice(
+                preds=preds,
+                target=target,
                 include_background=not args.foreground_only,
-                ignore_empty=False,
             )
             case_dice_value = float(case_dice.mean().item()) if case_dice.numel() > 0 else 0.0
 
