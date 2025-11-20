@@ -174,9 +174,15 @@ def _select_meta(batch: Dict) -> Dict:
 def _compute_case_id(batch: Dict) -> str:
     meta = _select_meta(batch)
     if "subject_id" in meta:
-        return str(meta["subject_id"])
+        subject = meta["subject_id"]
+        if isinstance(subject, (list, tuple)) and subject:
+            subject = subject[0]
+        return str(subject)
     if "filename_or_obj" in meta:
-        return Path(meta.get("filename_or_obj", "case")).stem
+        fname = meta.get("filename_or_obj", "case")
+        if isinstance(fname, (list, tuple)) and fname:
+            fname = fname[0]
+        return Path(str(fname)).stem
     return "case"
 
 
