@@ -70,8 +70,8 @@ def _resolve_affine(meta: Dict) -> np.ndarray:
     """Return an affine matrix from available metadata.
 
     Some datasets store affines under different keys (e.g., ``original_affine`` or
-    ``sform_affine``). We try a handful of common aliases before falling back to an
-    identity matrix so that prediction export never hard-fails.
+    ``sform_affine``). We try a handful of common aliases and finally fall back to
+    loading the source file header before resorting to an identity matrix.
     """
 
     affine = None
@@ -85,6 +85,14 @@ def _resolve_affine(meta: Dict) -> np.ndarray:
         affine = meta.get(key)
         if affine is not None:
             break
+
+    # If no affine is bundled in metadata, try to read it from the original file.
+    if affine is None and meta.get("filename_or_obj"):
+        try:
+            header_affine = nib.load(meta["filename_or_obj"]).affine
+            affine = header_affine
+        except Exception:
+            affine = None
 
     if affine is None:
         print("⚠️  Missing affine in metadata; using identity for export")
@@ -124,32 +132,42 @@ def _select_meta(batch: Dict) -> Dict:
                 return meta_obj
         return None
 
-    # Preferred: explicitly provided metadata (may be a list or a single dict)
-    metadata = batch.get("metadata")
-    if isinstance(metadata, list) and metadata:
-        maybe = _as_dict(metadata[0]) or metadata[0]
-        if isinstance(maybe, dict):
-            return maybe
-    if isinstance(metadata, dict):
-        return metadata
+    candidates: List[Dict] = []
 
-    # Fallback: MONAI's MetaTensor dictionaries (list or dict)
+    # MONAI's MetaTensor dictionaries (list or dict)
     meta_dicts = batch.get("image_meta_dict")
     if isinstance(meta_dicts, list) and meta_dicts:
         maybe = _as_dict(meta_dicts[0]) or meta_dicts[0]
         if isinstance(maybe, dict):
-            return maybe
+            candidates.append(maybe)
     if isinstance(meta_dicts, dict):
-        return meta_dicts
+        candidates.append(meta_dicts)
 
-    # Final fallback: meta attached to the image tensor
+    # Metadata provided explicitly in the JSON (may not include affine)
+    metadata = batch.get("metadata")
+    if isinstance(metadata, list) and metadata:
+        maybe = _as_dict(metadata[0]) or metadata[0]
+        if isinstance(maybe, dict):
+            candidates.append(maybe)
+    if isinstance(metadata, dict):
+        candidates.append(metadata)
+
+    # Meta attached to the image tensor
     image = batch.get("image")
     if isinstance(image, list) and image:
         image = image[0]
     meta_from_image = _as_dict(image)
     if isinstance(meta_from_image, dict):
-        return meta_from_image
+        candidates.append(meta_from_image)
 
+    # Prefer a candidate that already contains affine-like information
+    for meta in candidates:
+        if any(k in meta for k in ("affine", "original_affine", "sform_affine", "qform_affine")):
+            return meta
+
+    # Otherwise return the first available candidate or an empty dict
+    if candidates:
+        return candidates[0]
     return {}
 
 
