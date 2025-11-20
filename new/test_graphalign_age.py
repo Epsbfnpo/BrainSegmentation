@@ -5,7 +5,7 @@ import argparse
 import json
 import itertools
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence, Union
 
 import nibabel as nib
 import numpy as np
@@ -18,6 +18,17 @@ from torch.cuda.amp import autocast
 from data_loader_age_aware import get_target_test_loader
 from train_graphalign_age import (build_model, load_class_mapping,
                                   load_model_weights_only, set_seed)
+
+
+DEBUG = False
+
+
+def _debug(msg: str, payload: Optional[Dict] = None) -> None:
+    if DEBUG:
+        if payload is None:
+            print(f"[DEBUG] {msg}")
+        else:
+            print(f"[DEBUG] {msg}: {payload}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -66,6 +77,36 @@ def _prepare_output(pred_labels: torch.Tensor, *, foreground_only: bool) -> np.n
     return volume
 
 
+def _coerce_to_str_path(value: Union[str, Path, Sequence, None], key: str) -> Optional[str]:
+    """Convert metadata values to a usable path string.
+
+    This normalises list/tuple values to their first element, converts Path-like
+    objects to strings, and reports unexpected types when debug logging is enabled.
+    """
+
+    original_type = type(value).__name__
+    if isinstance(value, (list, tuple)):
+        if not value:
+            _debug(f"meta[{key}] is empty sequence")
+            return None
+        _debug(f"meta[{key}] provided as sequence", {"len": len(value), "first_type": type(value[0]).__name__})
+        value = value[0]
+
+    if value is None:
+        return None
+
+    if isinstance(value, (str, Path, bytes)):
+        return str(value)
+
+    try:
+        coerced = str(value)
+        _debug(f"meta[{key}] coerced to string", {"original_type": original_type, "coerced": coerced})
+        return coerced
+    except Exception:
+        _debug(f"meta[{key}] could not be coerced", {"original_type": original_type})
+        return None
+
+
 def _resolve_affine(meta: Dict) -> np.ndarray:
     """Return an affine matrix from available metadata.
 
@@ -87,9 +128,10 @@ def _resolve_affine(meta: Dict) -> np.ndarray:
             break
 
     # If no affine is bundled in metadata, try to read it from the original file.
-    if affine is None and meta.get("filename_or_obj"):
+    filename = _coerce_to_str_path(meta.get("filename_or_obj"), "filename_or_obj")
+    if affine is None and filename:
         try:
-            header_affine = nib.load(meta["filename_or_obj"]).affine
+            header_affine = nib.load(filename).affine
             affine = header_affine
         except Exception:
             affine = None
@@ -105,8 +147,8 @@ def _resolve_affine(meta: Dict) -> np.ndarray:
 
 def _save_prediction(pred_volume: np.ndarray, meta: Dict, output_dir: Path, class_map: Optional[Dict[int, int]]) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
-    filename = Path(meta.get("filename_or_obj", "case"))
-    case_stem = filename.stem.replace(".nii", "")
+    filename = _coerce_to_str_path(meta.get("filename_or_obj", "case"), "filename_or_obj") or "case"
+    case_stem = Path(filename).stem.replace(".nii", "")
     if class_map:
         remapped = np.zeros_like(pred_volume, dtype=np.int16)
         for idx, raw_label in class_map.items():
@@ -163,26 +205,31 @@ def _select_meta(batch: Dict) -> Dict:
     # Prefer a candidate that already contains affine-like information
     for meta in candidates:
         if any(k in meta for k in ("affine", "original_affine", "sform_affine", "qform_affine")):
+            _debug("Selected meta with affine keys", {"keys": list(meta.keys())})
             return meta
 
     # Otherwise return the first available candidate or an empty dict
     if candidates:
+        _debug("Selected first available meta", {"keys": list(candidates[0].keys())})
         return candidates[0]
+    _debug("No metadata found in batch")
     return {}
 
 
 def _compute_case_id(batch: Dict) -> str:
     meta = _select_meta(batch)
-    if "subject_id" in meta:
-        subject = meta["subject_id"]
-        if isinstance(subject, (list, tuple)) and subject:
-            subject = subject[0]
-        return str(subject)
-    if "filename_or_obj" in meta:
-        fname = meta.get("filename_or_obj", "case")
-        if isinstance(fname, (list, tuple)) and fname:
-            fname = fname[0]
-        return Path(str(fname)).stem
+    subject = _coerce_to_str_path(meta.get("subject_id"), "subject_id")
+    if subject:
+        _debug("Using subject_id for case id", {"value": subject})
+        return subject
+
+    fname = _coerce_to_str_path(meta.get("filename_or_obj"), "filename_or_obj")
+    if fname:
+        stem = Path(fname).stem
+        _debug("Using filename_or_obj for case id", {"value": fname, "stem": stem})
+        return stem
+
+    _debug("Falling back to default case id", {"meta_keys": list(meta.keys())})
     return "case"
 
 
@@ -390,6 +437,9 @@ def evaluate(args: argparse.Namespace) -> Dict:
 
 def main():
     args = parse_args()
+    global DEBUG
+    DEBUG = args.debug_mode
+    _debug("Debug mode enabled")
     metrics = evaluate(args)
     print(json.dumps({"mean_dice": metrics.get("mean_dice", 0.0), "cases": len(metrics.get("cases", []))}, indent=2))
 
