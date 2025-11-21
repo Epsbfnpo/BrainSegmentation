@@ -70,7 +70,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--resample_to_native",
         action="store_true",
-        default=False,
+        default=True,
         help="Resample predictions back to native headers; disable to keep inference-space geometry",
     )
     parser.add_argument(
