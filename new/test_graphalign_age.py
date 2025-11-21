@@ -170,20 +170,28 @@ def _resolve_affine(meta: Dict) -> np.ndarray:
     return np.asarray(affine, dtype=np.float32)
 
 
-def _save_prediction(pred_volume: np.ndarray, meta: Dict, output_dir: Path, class_map: Optional[Dict[int, int]]) -> Path:
+def _save_prediction(
+    pred_volume: np.ndarray,
+    image_meta: Dict,
+    label_meta: Dict,
+    output_dir: Path,
+    class_map: Optional[Dict[int, int]],
+) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
-    filename = _coerce_to_str_path(meta.get("filename_or_obj", "case"), "filename_or_obj") or "case"
+    filename = _coerce_to_str_path(image_meta.get("filename_or_obj", "case"), "filename_or_obj") or "case"
     case_stem = Path(filename).stem.replace(".nii", "")
     if class_map:
         remapped = np.zeros_like(pred_volume, dtype=np.int16)
         for idx, raw_label in class_map.items():
             remapped[pred_volume == idx + 1] = int(raw_label)
         pred_volume = remapped
-    affine = _resolve_affine(meta)
+    affine = _resolve_affine(image_meta)
 
     # Resample back to the original image space to avoid contour/affine mismatch
     # when visualising alongside the native test images.
-    filename_for_resample = _coerce_to_str_path(meta.get("filename_or_obj"), "filename_or_obj")
+    filename_for_resample = _coerce_to_str_path(label_meta.get("filename_or_obj"), "label_filename")
+    if not filename_for_resample:
+        filename_for_resample = _coerce_to_str_path(image_meta.get("filename_or_obj"), "filename_or_obj")
     if filename_for_resample and os.path.exists(filename_for_resample):
         try:
             src_img = nib.Nifti1Image(pred_volume, affine)
@@ -263,8 +271,45 @@ def _select_meta(batch: Dict) -> Dict:
     return {}
 
 
+def _select_label_meta(batch: Dict) -> Dict:
+    """Fetch metadata associated with the label tensor when available."""
+
+    def _as_dict(obj):
+        if obj is None:
+            return None
+        if isinstance(obj, dict):
+            return obj
+        if hasattr(obj, "meta"):
+            meta_obj = getattr(obj, "meta")
+            if isinstance(meta_obj, dict):
+                return meta_obj
+        return None
+
+    candidates: List[Dict] = []
+
+    meta_dicts = batch.get("label_meta_dict")
+    if isinstance(meta_dicts, list) and meta_dicts:
+        maybe = _as_dict(meta_dicts[0]) or meta_dicts[0]
+        if isinstance(maybe, dict):
+            candidates.append(maybe)
+    if isinstance(meta_dicts, dict):
+        candidates.append(meta_dicts)
+
+    label_obj = batch.get("label")
+    if isinstance(label_obj, list) and label_obj:
+        label_obj = label_obj[0]
+    meta_from_label = _as_dict(label_obj)
+    if isinstance(meta_from_label, dict):
+        candidates.append(meta_from_label)
+
+    if candidates:
+        return candidates[0]
+    return {}
+
+
 def _compute_case_id(batch: Dict) -> str:
-    meta = _select_meta(batch)
+    label_meta = _select_label_meta(batch)
+    meta = label_meta or _select_meta(batch)
     subject = _coerce_to_str_path(meta.get("subject_id"), "subject_id")
     if subject:
         _debug("Using subject_id for case id", {"value": subject})
@@ -350,6 +395,10 @@ def evaluate(args: argparse.Namespace) -> Dict:
                 valid_mask = (labels >= 0).squeeze(1)
             else:
                 valid_mask = labels >= 0
+            brain_mask = labels_eval.clone()
+            if brain_mask.ndim == 5 and brain_mask.shape[1] == 1:
+                brain_mask = brain_mask.squeeze(1)
+            brain_mask = brain_mask > 0
 
             def _run_model(volume: torch.Tensor) -> torch.Tensor:
                 eval_scales = list(args.eval_scales or [1.0])
@@ -416,16 +465,18 @@ def evaluate(args: argparse.Namespace) -> Dict:
 
             probs = torch.softmax(logits, dim=1)
             pred_labels = torch.argmax(probs, dim=1)
-            pred_labels = torch.where(valid_mask > 0, pred_labels, torch.zeros_like(pred_labels))
+            pred_labels = torch.where(brain_mask, pred_labels, torch.zeros_like(pred_labels))
             preds = F.one_hot(pred_labels, num_classes=args.out_channels)
             preds = preds.permute(0, 4, 1, 2, 3).to(dtype=probs.dtype)
 
             labels_eval_wo_channel = labels_eval
             if labels_eval_wo_channel.ndim == 5 and labels_eval_wo_channel.shape[1] == 1:
                 labels_eval_wo_channel = labels_eval_wo_channel.squeeze(1)
-            labels_eval_wo_channel = torch.where(valid_mask > 0, labels_eval_wo_channel, torch.zeros_like(labels_eval_wo_channel))
+            labels_eval_wo_channel = torch.where(brain_mask, labels_eval_wo_channel, torch.zeros_like(labels_eval_wo_channel))
             target = F.one_hot(labels_eval_wo_channel, num_classes=args.out_channels)
             target = target.permute(0, 4, 1, 2, 3).to(dtype=probs.dtype)
+            preds = preds * brain_mask.unsqueeze(1)
+            target = target * brain_mask.unsqueeze(1)
 
             dice_metric(y_pred=preds, y=target)
             per_class_metric(y_pred=preds, y=target)
@@ -439,8 +490,9 @@ def evaluate(args: argparse.Namespace) -> Dict:
 
             case_id = _compute_case_id(batch)
             meta_dict = _select_meta(batch)
+            label_meta = _select_label_meta(batch)
             pred_volume = _prepare_output(pred_labels, foreground_only=args.foreground_only)
-            pred_path = _save_prediction(pred_volume, meta_dict, predictions_dir, class_mapping)
+            pred_path = _save_prediction(pred_volume, meta_dict, label_meta, predictions_dir, class_mapping)
 
             per_case.append({
                 "index": batch_idx,
