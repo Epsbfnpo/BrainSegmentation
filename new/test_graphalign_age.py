@@ -238,12 +238,18 @@ def _save_prediction(
     *,
     resample_to_native: bool,
     spacing_tolerance: float,
+    override_affine: Optional[np.ndarray] = None,
+    override_spacing: Optional[np.ndarray] = None,
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     preferred_meta = label_meta or image_meta
     filename = _coerce_to_str_path(preferred_meta.get("filename_or_obj", "case"), "filename_or_obj") or "case"
     case_stem = Path(filename).stem.replace(".nii", "")
-    affine = _resolve_affine(preferred_meta)
+    if override_affine is not None:
+        affine = np.asarray(override_affine, dtype=np.float32)
+        _debug("Using override affine from tensor", {"shape": list(affine.shape)})
+    else:
+        affine = _resolve_affine(preferred_meta)
 
     # Always save in inference space; optionally resample to native only when spacing matches
     native_resample_done = False
@@ -259,7 +265,9 @@ def _save_prediction(
             try:
                 target_img = nib.load(filename_for_resample)
 
-                infer_spacing = _extract_spacing(preferred_meta)
+                infer_spacing = override_spacing
+                if infer_spacing is None:
+                    infer_spacing = _extract_spacing(preferred_meta)
                 native_spacing = np.asarray(target_img.header.get_zooms()[:3], dtype=float)
                 if infer_spacing is not None:
                     rel_diff = np.abs(infer_spacing - native_spacing) / np.maximum(native_spacing, 1e-6)
@@ -580,6 +588,21 @@ def evaluate(args: argparse.Namespace) -> Dict:
             case_id = _compute_case_id(batch)
             meta_dict = _select_meta(batch)
             label_meta = _select_label_meta(batch)
+
+            inference_affine: Optional[np.ndarray] = None
+            if hasattr(images, "affine"):
+                affine_tensor = images.affine
+                affine_np = affine_tensor.detach().cpu().numpy() if isinstance(affine_tensor, torch.Tensor) else np.asarray(affine_tensor)
+                if affine_np.ndim == 3 and affine_np.shape[0] >= 1:
+                    inference_affine = affine_np[0]
+                elif affine_np.shape == (4, 4):
+                    inference_affine = affine_np
+
+            inference_spacing: Optional[np.ndarray] = None
+            image_meta = getattr(images, "meta", None)
+            if isinstance(image_meta, dict):
+                inference_spacing = _extract_spacing(image_meta)
+
             pred_volume = _prepare_output(
                 pred_labels,
                 foreground_only=args.foreground_only,
@@ -593,6 +616,8 @@ def evaluate(args: argparse.Namespace) -> Dict:
                 predictions_dir,
                 resample_to_native=args.resample_to_native,
                 spacing_tolerance=args.resample_tolerance,
+                override_affine=inference_affine,
+                override_spacing=inference_spacing,
             )
 
             per_case.append({

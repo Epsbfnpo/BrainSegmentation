@@ -548,6 +548,10 @@ def validate_epoch(model: nn.Module,
             labels_eval[labels_eval < 0] = 0
             labels_eval = labels_eval.long()
 
+            brain_mask = labels_eval > 0
+            if brain_mask.ndim == 5 and brain_mask.shape[1] == 1:
+                brain_mask = brain_mask.squeeze(1)
+
             if eval_tta and tta_axes:
                 combos = [()]  # include identity
                 for r in range(1, len(tta_axes) + 1):
@@ -565,14 +569,19 @@ def validate_epoch(model: nn.Module,
             probs = torch.softmax(logits, dim=1)
 
             pred_labels = torch.argmax(probs, dim=1)
+            pred_labels = torch.where(brain_mask, pred_labels, torch.zeros_like(pred_labels))
             preds = F.one_hot(pred_labels, num_classes=num_classes)
             preds = preds.permute(0, 4, 1, 2, 3).to(dtype=probs.dtype)
+
+            preds = preds * brain_mask.unsqueeze(1)
 
             labels_eval_wo_channel = labels_eval
             if labels_eval_wo_channel.ndim == 5 and labels_eval_wo_channel.shape[1] == 1:
                 labels_eval_wo_channel = labels_eval_wo_channel.squeeze(1)
             target = F.one_hot(labels_eval_wo_channel, num_classes=num_classes)
             target = target.permute(0, 4, 1, 2, 3).to(dtype=probs.dtype)
+
+            target = target * brain_mask.unsqueeze(1)
 
             dice_metric(y_pred=preds, y=target)
             if per_class_metric is not None:
