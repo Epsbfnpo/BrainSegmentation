@@ -4,10 +4,12 @@
 import argparse
 import json
 import itertools
+import os
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Union
 
 import nibabel as nib
+from nibabel import processing
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -178,6 +180,28 @@ def _save_prediction(pred_volume: np.ndarray, meta: Dict, output_dir: Path, clas
             remapped[pred_volume == idx + 1] = int(raw_label)
         pred_volume = remapped
     affine = _resolve_affine(meta)
+
+    # Resample back to the original image space to avoid contour/affine mismatch
+    # when visualising alongside the native test images.
+    filename_for_resample = _coerce_to_str_path(meta.get("filename_or_obj"), "filename_or_obj")
+    if filename_for_resample and os.path.exists(filename_for_resample):
+        try:
+            src_img = nib.Nifti1Image(pred_volume, affine)
+            target_img = nib.load(filename_for_resample)
+            resampled = processing.resample_from_to(src_img, target_img, order=0)
+            pred_volume = np.asarray(resampled.dataobj)
+            affine = resampled.affine
+
+            # Mask out non-brain voxels using the native image foreground.
+            brain_mask = np.asarray(target_img.dataobj) > 0
+            pred_volume = np.where(brain_mask, pred_volume, 0).astype(np.int16)
+            _debug(
+                "Resampled prediction to native space",
+                {"source_shape": list(src_img.shape), "target_shape": list(target_img.shape)},
+            )
+        except Exception as exc:
+            _debug("Failed to resample prediction to native space", {"error": str(exc)})
+
     out_path = output_dir / f"{case_stem}_pred.nii.gz"
     nib.save(nib.Nifti1Image(pred_volume, affine), str(out_path))
     return out_path
@@ -322,6 +346,10 @@ def evaluate(args: argparse.Namespace) -> Dict:
             labels_eval = labels.clone()
             labels_eval[labels_eval < 0] = 0
             labels_eval = labels_eval.long()
+            if labels.ndim == 5 and labels.shape[1] == 1:
+                valid_mask = (labels >= 0).squeeze(1)
+            else:
+                valid_mask = labels >= 0
 
             def _run_model(volume: torch.Tensor) -> torch.Tensor:
                 eval_scales = list(args.eval_scales or [1.0])
@@ -388,12 +416,14 @@ def evaluate(args: argparse.Namespace) -> Dict:
 
             probs = torch.softmax(logits, dim=1)
             pred_labels = torch.argmax(probs, dim=1)
+            pred_labels = torch.where(valid_mask > 0, pred_labels, torch.zeros_like(pred_labels))
             preds = F.one_hot(pred_labels, num_classes=args.out_channels)
             preds = preds.permute(0, 4, 1, 2, 3).to(dtype=probs.dtype)
 
             labels_eval_wo_channel = labels_eval
             if labels_eval_wo_channel.ndim == 5 and labels_eval_wo_channel.shape[1] == 1:
                 labels_eval_wo_channel = labels_eval_wo_channel.squeeze(1)
+            labels_eval_wo_channel = torch.where(valid_mask > 0, labels_eval_wo_channel, torch.zeros_like(labels_eval_wo_channel))
             target = F.one_hot(labels_eval_wo_channel, num_classes=args.out_channels)
             target = target.permute(0, 4, 1, 2, 3).to(dtype=probs.dtype)
 
