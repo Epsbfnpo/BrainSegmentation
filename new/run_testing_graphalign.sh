@@ -16,6 +16,7 @@ python -u "${SCRIPT_DIR}/test_graphalign_age.py" \
   --feature_size 48 \
   --roi_x 128 --roi_y 128 --roi_z 128 \
   --target_spacing 0.8 0.8 0.8 \
+  --resample_to_native \
   --foreground_only \
   --sw_batch_size 1 \
   --sw_overlap 0.25 \
