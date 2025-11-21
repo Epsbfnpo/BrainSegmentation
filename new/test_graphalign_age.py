@@ -67,6 +67,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no_swin_checkpoint", dest="use_swin_checkpoint", action="store_false")
     parser.add_argument("--debug_mode", action="store_true", default=False)
     parser.add_argument("--class_map_json", type=str, default=None, help="Optional index-to-raw-label map for saving outputs")
+    parser.add_argument(
+        "--resample_to_native",
+        action="store_true",
+        default=False,
+        help="Resample predictions back to native headers; disable to keep inference-space geometry",
+    )
+    parser.add_argument(
+        "--resample_tolerance",
+        type=float,
+        default=0.1,
+        help="Relative spacing delta tolerated before skipping native-space resample (fractional)",
+    )
     parser.add_argument("--seed", type=int, default=42)
     return parser.parse_args()
 
@@ -200,11 +212,32 @@ def _resolve_affine(meta: Dict) -> np.ndarray:
     return np.asarray(affine, dtype=np.float32)
 
 
+def _extract_spacing(meta: Dict) -> Optional[np.ndarray]:
+    """Read voxel spacing from metadata if available."""
+
+    for key in ("pixdim", "spacing", "original_spacing"):
+        value = meta.get(key)
+        if value is None:
+            continue
+        try:
+            arr = np.asarray(value).astype(float)
+            if arr.ndim == 1 and arr.shape[0] >= 3:
+                return arr[:3]
+            if arr.ndim == 2 and arr.shape[1] >= 3:
+                return arr[0, :3]
+        except Exception:
+            continue
+    return None
+
+
 def _save_prediction(
     pred_volume: np.ndarray,
     image_meta: Dict,
     label_meta: Dict,
     output_dir: Path,
+    *,
+    resample_to_native: bool,
+    spacing_tolerance: float,
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     preferred_meta = label_meta or image_meta
@@ -212,31 +245,62 @@ def _save_prediction(
     case_stem = Path(filename).stem.replace(".nii", "")
     affine = _resolve_affine(preferred_meta)
 
-    # Resample back to the original image space to avoid contour/affine mismatch
-    # when visualising alongside the native test images.
-    filename_for_resample = _coerce_to_str_path(label_meta.get("filename_or_obj"), "label_filename")
-    if not filename_for_resample:
-        filename_for_resample = _coerce_to_str_path(image_meta.get("filename_or_obj"), "filename_or_obj")
-    if filename_for_resample and os.path.exists(filename_for_resample):
-        try:
-            src_img = nib.Nifti1Image(pred_volume, affine)
-            target_img = nib.load(filename_for_resample)
-            resampled = processing.resample_from_to(src_img, target_img, order=0)
-            pred_volume = np.asarray(resampled.dataobj)
-            affine = resampled.affine
+    # Always save in inference space; optionally resample to native only when spacing matches
+    native_resample_done = False
 
-            # Mask out non-brain voxels using the native image foreground.
-            brain_mask = np.asarray(target_img.dataobj) > 0
-            pred_volume = np.where(brain_mask, pred_volume, 0).astype(np.int16)
-            _debug(
-                "Resampled prediction to native space",
-                {"source_shape": list(src_img.shape), "target_shape": list(target_img.shape)},
-            )
-        except Exception as exc:
-            _debug("Failed to resample prediction to native space", {"error": str(exc)})
+    # Optionally resample back to native header if spacing is compatible; otherwise
+    # stay in inference space to avoid geometric distortion.
+    if resample_to_native:
+        filename_for_resample = _coerce_to_str_path(label_meta.get("filename_or_obj"), "label_filename")
+        if not filename_for_resample:
+            filename_for_resample = _coerce_to_str_path(image_meta.get("filename_or_obj"), "filename_or_obj")
+
+        if filename_for_resample and os.path.exists(filename_for_resample):
+            try:
+                target_img = nib.load(filename_for_resample)
+
+                infer_spacing = _extract_spacing(preferred_meta)
+                native_spacing = np.asarray(target_img.header.get_zooms()[:3], dtype=float)
+                if infer_spacing is not None:
+                    rel_diff = np.abs(infer_spacing - native_spacing) / np.maximum(native_spacing, 1e-6)
+                    max_rel = float(rel_diff.max())
+                    _debug(
+                        "Spacing comparison",
+                        {
+                            "inference_spacing": infer_spacing.tolist(),
+                            "native_spacing": native_spacing.tolist(),
+                            "max_rel_diff": max_rel,
+                        },
+                    )
+                    if max_rel > spacing_tolerance:
+                        print(
+                            f"⚠️  Skip native resample for {case_stem}: spacing mismatch (max rel diff {max_rel:.3f} > {spacing_tolerance})"
+                        )
+                    else:
+                        src_img = nib.Nifti1Image(pred_volume, affine)
+                        resampled = processing.resample_from_to(src_img, target_img, order=0)
+                        pred_volume = np.asarray(resampled.dataobj)
+                        affine = resampled.affine
+                        brain_mask = np.asarray(target_img.dataobj) > 0
+                        pred_volume = np.where(brain_mask, pred_volume, 0).astype(np.int16)
+                        native_resample_done = True
+                        _debug(
+                            "Resampled prediction to native space",
+                            {"source_shape": list(src_img.shape), "target_shape": list(target_img.shape)},
+                        )
+                else:
+                    print(f"⚠️  Skip native resample for {case_stem}: missing inference spacing metadata")
+            except Exception as exc:
+                _debug("Failed to resample prediction to native space", {"error": str(exc)})
+        elif resample_to_native:
+            print(f"⚠️  Skip native resample for {case_stem}: missing filename for resample")
 
     out_path = output_dir / f"{case_stem}_pred.nii.gz"
     nib.save(nib.Nifti1Image(pred_volume, affine), str(out_path))
+    if native_resample_done:
+        _debug("Saved native-space prediction", {"path": str(out_path)})
+    else:
+        _debug("Saved inference-space prediction", {"path": str(out_path)})
     return out_path
 
 
@@ -522,7 +586,14 @@ def evaluate(args: argparse.Namespace) -> Dict:
                 brain_mask=brain_mask,
                 class_map=class_mapping,
             )
-            pred_path = _save_prediction(pred_volume, meta_dict, label_meta, predictions_dir)
+            pred_path = _save_prediction(
+                pred_volume,
+                meta_dict,
+                label_meta,
+                predictions_dir,
+                resample_to_native=args.resample_to_native,
+                spacing_tolerance=args.resample_tolerance,
+            )
 
             per_case.append({
                 "index": batch_idx,
