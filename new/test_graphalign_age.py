@@ -71,12 +71,42 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _prepare_output(pred_labels: torch.Tensor, *, foreground_only: bool) -> np.ndarray:
+def _prepare_output(
+    pred_labels: torch.Tensor,
+    *,
+    foreground_only: bool,
+    brain_mask: Optional[torch.Tensor] = None,
+    class_map: Optional[Dict[int, int]] = None,
+) -> np.ndarray:
+    """Convert network indices to raw labels (0..87) while honouring brain mask.
+
+    The model operates on remapped labels (background=-1 ignored, foreground 0..86).
+    For export we must recover the original class IDs: background=0, tissue=1..87,
+    and optionally map indices through a provided ``class_map``. A brain mask gates
+    any voxels outside the skull to 0 to avoid off-brain artefacts.
+    """
+
     volume = pred_labels.squeeze(0).detach().cpu().numpy().astype(np.int16)
-    if foreground_only:
-        # Model predicts 0..86 where 0 corresponds to raw label 1.
-        volume = np.where(volume >= 0, volume + 1, 0)
-    return volume
+
+    if brain_mask is not None:
+        brain_mask_np = brain_mask.squeeze(0).detach().cpu().numpy().astype(bool)
+    else:
+        brain_mask_np = np.ones_like(volume, dtype=bool)
+
+    raw_volume = np.zeros_like(volume, dtype=np.int16)
+
+    if class_map:
+        for idx, raw_label in class_map.items():
+            mask = (volume == idx)
+            raw_volume[mask] = int(raw_label)
+    else:
+        if foreground_only:
+            raw_volume = volume + 1  # shift 0..86 -> 1..87
+        else:
+            raw_volume = volume
+
+    raw_volume = np.where(brain_mask_np, raw_volume, 0)
+    return raw_volume.astype(np.int16)
 
 
 def _coerce_to_str_path(value: Union[str, Path, Sequence, None], key: str) -> Optional[str]:
@@ -175,17 +205,12 @@ def _save_prediction(
     image_meta: Dict,
     label_meta: Dict,
     output_dir: Path,
-    class_map: Optional[Dict[int, int]],
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
-    filename = _coerce_to_str_path(image_meta.get("filename_or_obj", "case"), "filename_or_obj") or "case"
+    preferred_meta = label_meta or image_meta
+    filename = _coerce_to_str_path(preferred_meta.get("filename_or_obj", "case"), "filename_or_obj") or "case"
     case_stem = Path(filename).stem.replace(".nii", "")
-    if class_map:
-        remapped = np.zeros_like(pred_volume, dtype=np.int16)
-        for idx, raw_label in class_map.items():
-            remapped[pred_volume == idx + 1] = int(raw_label)
-        pred_volume = remapped
-    affine = _resolve_affine(image_meta)
+    affine = _resolve_affine(preferred_meta)
 
     # Resample back to the original image space to avoid contour/affine mismatch
     # when visualising alongside the native test images.
@@ -491,8 +516,13 @@ def evaluate(args: argparse.Namespace) -> Dict:
             case_id = _compute_case_id(batch)
             meta_dict = _select_meta(batch)
             label_meta = _select_label_meta(batch)
-            pred_volume = _prepare_output(pred_labels, foreground_only=args.foreground_only)
-            pred_path = _save_prediction(pred_volume, meta_dict, label_meta, predictions_dir, class_mapping)
+            pred_volume = _prepare_output(
+                pred_labels,
+                foreground_only=args.foreground_only,
+                brain_mask=brain_mask,
+                class_map=class_mapping,
+            )
+            pred_path = _save_prediction(pred_volume, meta_dict, label_meta, predictions_dir)
 
             per_case.append({
                 "index": batch_idx,
