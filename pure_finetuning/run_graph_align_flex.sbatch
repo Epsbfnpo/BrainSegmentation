@@ -14,6 +14,8 @@
 
 set -euo pipefail
 
+SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+
 echo "=============================================================="
 echo "PURE FINE-TUNING JOB"
 echo "Job $SLURM_JOB_ID started at $(date)"
@@ -33,6 +35,8 @@ conda activate brainseg
 
 RESULTS_DIR=${RESULTS_DIR:-${REPO_ROOT}/results/pure_finetuning}
 export RESULTS_DIR
+FINAL_MODEL_PATH="${RESULTS_DIR}/final_model.pt"
+LATEST_MODEL_PATH="${RESULTS_DIR}/latest_model.pt"
 
 set +e
 bash ./run_training_graphalign.sh
@@ -43,5 +47,18 @@ echo "=============================================================="
 echo "Job $SLURM_JOB_ID ended at $(date) with exit status $STATUS"
 echo "Results directory: ${RESULTS_DIR}"
 echo "=============================================================="
+
+if [ -f "$FINAL_MODEL_PATH" ]; then
+    echo "🏁 Final model detected at $FINAL_MODEL_PATH; training complete."
+elif [ -f "$LATEST_MODEL_PATH" ]; then
+    echo "🔁 Training incomplete (final model missing, latest checkpoint present); requeuing job."
+    sbatch --export=ALL "$SCRIPT_PATH"
+else
+    if [ "$STATUS" -ne 0 ]; then
+        echo "❌ Job exited with status $STATUS and no latest checkpoint; manual intervention required."
+    else
+        echo "⚠️ Job completed without producing final or latest checkpoints; not resubmitting."
+    fi
+fi
 
 exit $STATUS
