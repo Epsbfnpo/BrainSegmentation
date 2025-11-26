@@ -283,19 +283,25 @@ def train_epoch(model: nn.Module,
     optimizer.zero_grad(set_to_none=True)
 
     for step, batch in enumerate(loader):
-        images = batch["image"].to(device)
-        labels = batch["label"].to(device)
+        images_aug = batch["image"].to(device)
+        labels_aug = batch["label"].to(device)
         ages = batch.get("age")
         if ages is None:
             raise RuntimeError("Data loader must provide 'age' key")
         ages = ages.to(device).view(-1)
 
         with torch.cuda.amp.autocast(enabled=use_amp):
-            logits = model(images)
-            seg_losses = loss_fn(logits, labels)
-            probs = torch.softmax(logits, dim=1)
+            logits_aug = model(images_aug)
+            seg_losses = loss_fn(logits_aug, labels_aug)
+
             if prior_loss is not None:
-                prior_dict = prior_loss(probs, ages)
+                images_clean = batch.get("image_clean")
+                if images_clean is None:
+                    raise RuntimeError("Data loader must provide 'image_clean' for canonical prior loss")
+                images_clean = images_clean.to(device)
+                logits_clean = model(images_clean)
+                probs_clean = torch.softmax(logits_clean, dim=1)
+                prior_dict = prior_loss(probs_clean, ages)
             else:
                 zeros = torch.zeros_like(seg_losses["total"])
                 prior_dict = {
@@ -304,7 +310,7 @@ def train_epoch(model: nn.Module,
                     "shape": zeros,
                     "edge": zeros,
                     "spectral": zeros,
-                    "warmup": torch.tensor(1.0, device=probs.device, dtype=zeros.dtype),
+                    "warmup": torch.tensor(1.0, device=seg_losses["total"].device, dtype=zeros.dtype),
                 }
             loss = seg_losses["total"] + prior_dict["total"]
 
