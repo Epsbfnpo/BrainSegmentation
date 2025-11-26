@@ -9,7 +9,7 @@ import nibabel as nib
 import numpy as np
 import torch
 from monai.data import CacheDataset, DataLoader, Dataset, MetaTensor
-from monai.transforms import (CenterSpatialCropd, Compose, EnsureChannelFirstd,
+from monai.transforms import (CenterSpatialCropd, Compose, CopyItemsd, EnsureChannelFirstd,
                               EnsureTyped, LoadImaged, MapTransform, Orientationd,
                               RandAdjustContrastd, RandBiasFieldd, RandCropByLabelClassesd,
                               RandGaussianNoised, RandGaussianSmoothd, RandHistogramShiftd,
@@ -349,8 +349,9 @@ def _base_transforms(args,
     transforms.append(EnsureTyped(keys=["image", "label", "age"], track_meta=False))
 
     if mode == "train":
+        transforms.append(CopyItemsd(keys=["image", "label"], times=1, names=["image_clean", "label_clean"]))
         transforms.append(_augmentation_transforms(args, laterality_pairs=laterality_pairs))
-        transforms.append(EnsureTyped(keys=["image", "label", "age"], track_meta=False))
+        transforms.append(EnsureTyped(keys=["image", "label", "image_clean", "label_clean", "age"], track_meta=False))
     return Compose(transforms)
 
 
