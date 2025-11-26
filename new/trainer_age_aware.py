@@ -299,7 +299,9 @@ def train_epoch(model: nn.Module,
                 seg_losses = loss_fn(logits_aug, labels_aug)
 
             seg_loss_for_backward = seg_losses["total"] / grad_accum_steps
-            scaler.scale(seg_loss_for_backward).backward()
+            # retain_graph=True ensures the shared computation graph remains for the clean
+            # stream backward that follows in the same iteration.
+            scaler.scale(seg_loss_for_backward).backward(retain_graph=True)
 
         with torch.cuda.amp.autocast(enabled=use_amp):
             if prior_loss is not None:
@@ -357,9 +359,6 @@ def train_epoch(model: nn.Module,
                 )
             optimizer.zero_grad(set_to_none=True)
             continue
-
-        loss_for_backward = loss / grad_accum_steps
-        scaler.scale(loss_for_backward).backward()
 
         batch_count += 1
         accum_batches += 1
