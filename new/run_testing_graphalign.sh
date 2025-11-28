@@ -10,7 +10,7 @@ python -u "${SCRIPT_DIR}/test_graphalign_age.py" \
   --split_json "${SCRIPT_DIR}/../PPREMOPREBO_split_test.json" \
   --model_path /datasets/work/hb-nhmrc-dhcp/work/liu275/new/results/target_only/best_model.pt \
   --output_dir "${SCRIPT_DIR}/test_predictions" \
-  --metrics_path "${SCRIPT_DIR}/analysis/test_metrics.json" \
+  --metrics_path "${SCRIPT_DIR}/analysis/test_metrics_extended.json" \
   --in_channels 1 \
   --out_channels 87 \
   --feature_size 48 \
@@ -21,4 +21,7 @@ python -u "${SCRIPT_DIR}/test_graphalign_age.py" \
   --sw_batch_size 1 \
   --sw_overlap 0.25 \
   --eval_tta \
-  --tta_flip_axes 0 1 2
+  --tta_flip_axes 0 1 2 \
+  --adjacency_prior "${SCRIPT_DIR}/priors/target/adjacency_prior.npz" \
+  --structural_rules "${SCRIPT_DIR}/priors/target/structural_rules.json" \
+  --laterality_pairs_json "${SCRIPT_DIR}/priors/target/dhcp_lr_swap.json"
