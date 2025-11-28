@@ -794,8 +794,8 @@ def evaluate(args: argparse.Namespace) -> Dict:
 
             dice_metric(y_pred=preds, y=target)
             per_class_metric(y_pred=preds, y=target)
-            hd95_metric(y_pred=preds, y=target)
-            assd_metric(y_pred=preds, y=target)
+            hd95_batch = hd95_metric(y_pred=preds, y=target)
+            assd_batch = assd_metric(y_pred=preds, y=target)
 
             case_dice = _compute_case_dice(
                 preds=preds,
@@ -803,6 +803,46 @@ def evaluate(args: argparse.Namespace) -> Dict:
                 include_background=not args.foreground_only,
             )
             case_dice_value = float(case_dice.mean().item()) if case_dice.numel() > 0 else 0.0
+            case_hd95_value = hd95_batch
+            if isinstance(case_hd95_value, torch.Tensor):
+                case_hd95_value = torch.nan_to_num(case_hd95_value, nan=0.0, posinf=0.0, neginf=0.0)
+                case_hd95_value = float(case_hd95_value.mean().item()) if case_hd95_value.numel() > 0 else 0.0
+            else:
+                case_hd95_value = float(case_hd95_value)
+
+            case_assd_value = assd_batch
+            if isinstance(case_assd_value, torch.Tensor):
+                case_assd_value = torch.nan_to_num(case_assd_value, nan=0.0, posinf=0.0, neginf=0.0)
+                case_assd_value = float(case_assd_value.mean().item()) if case_assd_value.numel() > 0 else 0.0
+            else:
+                case_assd_value = float(case_assd_value)
+
+            age_value = 40.0
+            if "age" in batch:
+                age_tensor = batch["age"]
+                if isinstance(age_tensor, torch.Tensor):
+                    age_value = float(age_tensor.flatten()[0].item())
+                else:
+                    try:
+                        age_value = float(age_tensor)
+                    except (TypeError, ValueError):
+                        age_value = 40.0
+
+            brain_mask_vol = brain_mask
+            if brain_mask_vol.ndim == 4:
+                brain_mask_vol = brain_mask_vol[0]
+            pred_labels_vol = pred_labels
+            if pred_labels_vol.ndim == 4:
+                pred_labels_vol = pred_labels_vol[0]
+            target_labels_vol = labels_eval_wo_channel
+            if target_labels_vol.ndim == 4:
+                target_labels_vol = target_labels_vol[0]
+
+            adjacency = adv_metrics.compute_adjacency(pred_labels_vol, brain_mask_vol)
+            spec_distance = adv_metrics.compute_spectral_distance(adjacency, age_value)
+            violations = adv_metrics.compute_structural_violations(adjacency)
+            symmetry_score = adv_metrics.compute_symmetry(pred_labels_vol, brain_mask_vol)
+            rve_score = adv_metrics.compute_rve(pred_labels_vol, target_labels_vol, brain_mask_vol)
 
             age_value = 40.0
             if "age" in batch:
@@ -870,8 +910,8 @@ def evaluate(args: argparse.Namespace) -> Dict:
                 "index": batch_idx,
                 "case_id": case_id,
                 "dice": case_dice_value,
-                "hd95": None,
-                "assd": None,
+                "hd95": case_hd95_value,
+                "assd": case_assd_value,
                 "rve": rve_score,
                 "symmetry": symmetry_score,
                 "spec_distance": spec_distance if spec_distance is not None else None,
