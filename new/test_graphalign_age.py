@@ -844,6 +844,33 @@ def evaluate(args: argparse.Namespace) -> Dict:
             symmetry_score = adv_metrics.compute_symmetry(pred_labels_vol, brain_mask_vol)
             rve_score = adv_metrics.compute_rve(pred_labels_vol, target_labels_vol, brain_mask_vol)
 
+            age_value = 40.0
+            if "age" in batch:
+                age_tensor = batch["age"]
+                if isinstance(age_tensor, torch.Tensor):
+                    age_value = float(age_tensor.flatten()[0].item())
+                else:
+                    try:
+                        age_value = float(age_tensor)
+                    except (TypeError, ValueError):
+                        age_value = 40.0
+
+            brain_mask_vol = brain_mask
+            if brain_mask_vol.ndim == 4:
+                brain_mask_vol = brain_mask_vol[0]
+            pred_labels_vol = pred_labels
+            if pred_labels_vol.ndim == 4:
+                pred_labels_vol = pred_labels_vol[0]
+            target_labels_vol = labels_eval_wo_channel
+            if target_labels_vol.ndim == 4:
+                target_labels_vol = target_labels_vol[0]
+
+            adjacency = adv_metrics.compute_adjacency(pred_labels_vol, brain_mask_vol)
+            spec_distance = adv_metrics.compute_spectral_distance(adjacency, age_value)
+            violations = adv_metrics.compute_structural_violations(adjacency)
+            symmetry_score = adv_metrics.compute_symmetry(pred_labels_vol, brain_mask_vol)
+            rve_score = adv_metrics.compute_rve(pred_labels_vol, target_labels_vol, brain_mask_vol)
+
             case_id = _compute_case_id(batch)
             meta_dict = _select_meta(batch)
             label_meta = _select_label_meta(batch)
