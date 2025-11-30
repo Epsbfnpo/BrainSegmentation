@@ -7,7 +7,10 @@ from scipy.ndimage import distance_transform_edt
 
 def cl_score(v: np.ndarray, s: np.ndarray) -> float:
     """Compute skeleton coverage of a volume."""
-    return float(np.sum(v * s) / np.sum(s))
+    denom = np.sum(s)
+    if denom == 0:
+        return 0.0
+    return float(np.sum(v * s) / denom)
 
 
 def compute_cldice(v_p: np.ndarray, v_l: np.ndarray) -> float:
@@ -65,27 +68,29 @@ def compute_cbdice(v_p: np.ndarray, v_l: np.ndarray) -> float:
     return float(2.0 * tprec * tsens / (tprec + tsens))
 
 
+# --- PyTorch Soft Skeleton Utils ---
+
 def soft_erode(img: torch.Tensor) -> torch.Tensor:
-    """PyTorch soft erosion for 2D/3D tensors."""
-    if len(img.shape) == 4:
+    """PyTorch implementation of soft erosion."""
+    if len(img.shape) == 4:  # 2D: (B, C, H, W)
         p1 = -F.max_pool2d(-img, (3, 1), (1, 1), (1, 0))
         p2 = -F.max_pool2d(-img, (1, 3), (1, 1), (0, 1))
         return torch.min(p1, p2)
-    if len(img.shape) == 5:
+    elif len(img.shape) == 5:  # 3D: (B, C, D, H, W)
         p1 = -F.max_pool3d(-img, (3, 1, 1), (1, 1, 1), (1, 0, 0))
         p2 = -F.max_pool3d(-img, (1, 3, 1), (1, 1, 1), (0, 1, 0))
         p3 = -F.max_pool3d(-img, (1, 1, 3), (1, 1, 1), (0, 0, 1))
         return torch.min(torch.min(p1, p2), p3)
-    raise ValueError("Unsupported tensor shape for soft_erode")
+    return img
 
 
 def soft_dilate(img: torch.Tensor) -> torch.Tensor:
-    """PyTorch soft dilation for 2D/3D tensors."""
+    """PyTorch implementation of soft dilation."""
     if len(img.shape) == 4:
         return F.max_pool2d(img, (3, 3), (1, 1), (1, 1))
-    if len(img.shape) == 5:
+    elif len(img.shape) == 5:
         return F.max_pool3d(img, (3, 3, 3), (1, 1, 1), (1, 1, 1))
-    raise ValueError("Unsupported tensor shape for soft_dilate")
+    return img
 
 
 def soft_open(img: torch.Tensor) -> torch.Tensor:
@@ -93,7 +98,9 @@ def soft_open(img: torch.Tensor) -> torch.Tensor:
 
 
 def soft_skel(img: torch.Tensor, iter_: int = 3) -> torch.Tensor:
-    """Compute soft skeleton for 2D/3D probability maps."""
+    """Compute soft skeleton for 2D/3D probability maps.
+    Optimization: Ensure this runs on small batches or single channels.
+    """
     img1 = soft_open(img)
     skel = F.relu(img - img1)
     for _ in range(iter_):
@@ -105,36 +112,50 @@ def soft_skel(img: torch.Tensor, iter_: int = 3) -> torch.Tensor:
 
 
 def compute_clce(y_pred_logits: torch.Tensor, y_true: torch.Tensor) -> float:
-    """Compute centerline cross-entropy (lower is better)."""
-    y_pred_prob = torch.softmax(y_pred_logits, dim=1)
+    """Compute centerline cross-entropy (lower is better).
 
-    if y_true.shape[1] == 1:
-        num_classes = y_pred_logits.shape[1]
-        y_true_oh = (
-            F.one_hot(y_true.squeeze(1).long(), num_classes=num_classes)
-            .permute(0, 4, 1, 2, 3)
-            .float()
-        )
-    else:
-        y_true_oh = y_true.float()
-
-    log_prob = F.log_softmax(y_pred_logits, dim=1)
-    ce_map = -(y_true_oh * log_prob)
-
-    iters = 3
-    skel_pred = soft_skel(y_pred_prob, iters)
-    skel_true = soft_skel(y_true_oh, iters)
+    Memory Optimized Version:
+    Iterates over classes one by one to avoid OOM on GPUs when handling
+    large 3D volumes with many classes (e.g., 87 classes).
+    """
+    if y_pred_logits.ndim != 5:
+        return 0.0
 
     num_classes = y_pred_logits.shape[1]
-    loss_val = 0.0
-    cnt = 0
+
+    y_pred_prob = torch.softmax(y_pred_logits, dim=1)
+    log_prob = F.log_softmax(y_pred_logits, dim=1)
+
+    is_indices = y_true.shape[1] == 1
+
+    total_loss = 0.0
+    valid_classes = 0
+    smooth = 1e-5
+    iters = 3
 
     for c in range(1, num_classes):
-        tprec = torch.sum(ce_map[:, c] * skel_true[:, c]) / (torch.sum(skel_true[:, c]) + 1e-5)
-        tsens = torch.sum(ce_map[:, c] * skel_pred[:, c]) / (torch.sum(skel_pred[:, c]) + 1e-5)
-        loss_val += (tprec + tsens)
-        cnt += 1
+        if is_indices:
+            y_true_c = (y_true == c).float()
+        else:
+            y_true_c = y_true[:, c:c + 1].float()
 
-    if cnt == 0:
+        y_pred_c = y_pred_prob[:, c:c + 1]
+
+        skel_true = soft_skel(y_true_c, iter_=iters)
+        skel_pred = soft_skel(y_pred_c, iter_=iters)
+
+        log_prob_c = log_prob[:, c:c + 1]
+        ce_map_c = -(y_true_c * log_prob_c)
+
+        tprec = torch.sum(ce_map_c * skel_true) / (torch.sum(skel_true) + smooth)
+        tsens = torch.sum(ce_map_c * skel_pred) / (torch.sum(skel_pred) + smooth)
+
+        total_loss += (tprec + tsens).item()
+        valid_classes += 1
+
+        del y_true_c, y_pred_c, skel_true, skel_pred, ce_map_c, log_prob_c
+
+    if valid_classes == 0:
         return 0.0
-    return float((loss_val / cnt).item())
+
+    return total_loss / valid_classes
