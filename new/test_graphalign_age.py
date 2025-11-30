@@ -20,6 +20,7 @@ from torch.cuda.amp import autocast
 from data_loader_age_aware import get_target_test_loader
 from train_graphalign_age import (build_model, load_class_mapping,
                                   load_model_weights_only, set_seed)
+from extra_metrics import compute_cbdice, compute_clce, compute_cldice
 
 
 DEBUG = False
@@ -844,32 +845,27 @@ def evaluate(args: argparse.Namespace) -> Dict:
             symmetry_score = adv_metrics.compute_symmetry(pred_labels_vol, brain_mask_vol)
             rve_score = adv_metrics.compute_rve(pred_labels_vol, target_labels_vol, brain_mask_vol)
 
-            age_value = 40.0
-            if "age" in batch:
-                age_tensor = batch["age"]
-                if isinstance(age_tensor, torch.Tensor):
-                    age_value = float(age_tensor.flatten()[0].item())
-                else:
-                    try:
-                        age_value = float(age_tensor)
-                    except (TypeError, ValueError):
-                        age_value = 40.0
+            pred_np = pred_labels_vol.detach().cpu().numpy()
+            target_np = target_labels_vol.detach().cpu().numpy()
 
-            brain_mask_vol = brain_mask
-            if brain_mask_vol.ndim == 4:
-                brain_mask_vol = brain_mask_vol[0]
-            pred_labels_vol = pred_labels
-            if pred_labels_vol.ndim == 4:
-                pred_labels_vol = pred_labels_vol[0]
-            target_labels_vol = labels_eval_wo_channel
-            if target_labels_vol.ndim == 4:
-                target_labels_vol = target_labels_vol[0]
+            cldice_sum = 0.0
+            cbdice_sum = 0.0
+            valid_class_count = 0
 
-            adjacency = adv_metrics.compute_adjacency(pred_labels_vol, brain_mask_vol)
-            spec_distance = adv_metrics.compute_spectral_distance(adjacency, age_value)
-            violations = adv_metrics.compute_structural_violations(adjacency)
-            symmetry_score = adv_metrics.compute_symmetry(pred_labels_vol, brain_mask_vol)
-            rve_score = adv_metrics.compute_rve(pred_labels_vol, target_labels_vol, brain_mask_vol)
+            for c in range(1, args.out_channels):
+                p_c = pred_np == c
+                t_c = target_np == c
+
+                if np.sum(t_c) > 0:
+                    cldice_sum += compute_cldice(p_c, t_c)
+                    cbdice_sum += compute_cbdice(p_c, t_c)
+                    valid_class_count += 1
+
+            case_cldice = cldice_sum / valid_class_count if valid_class_count > 0 else 0.0
+            case_cbdice = cbdice_sum / valid_class_count if valid_class_count > 0 else 0.0
+
+            labels_for_clce = torch.where(brain_mask.unsqueeze(1), labels_eval, torch.zeros_like(labels_eval))
+            case_clce = compute_clce(logits, labels_for_clce)
 
             case_id = _compute_case_id(batch)
             meta_dict = _select_meta(batch)
@@ -915,6 +911,9 @@ def evaluate(args: argparse.Namespace) -> Dict:
                 "rve": rve_score,
                 "symmetry": symmetry_score,
                 "spec_distance": spec_distance if spec_distance is not None else None,
+                "cldice": case_cldice,
+                "cbdice": case_cbdice,
+                "clce": case_clce,
                 "violation_forbidden": violations.get("forbidden", 0),
                 "violation_required": violations.get("required", 0),
                 "prediction_path": str(pred_path),
@@ -965,9 +964,15 @@ def evaluate(args: argparse.Namespace) -> Dict:
     spec_values = [c.get("spec_distance") for c in per_case if c.get("spec_distance") is not None]
     rve_values = [c.get("rve", 0.0) for c in per_case]
     symmetry_values = [c.get("symmetry", 0.0) for c in per_case]
+    cldice_values = [c.get("cldice", 0.0) for c in per_case]
+    cbdice_values = [c.get("cbdice", 0.0) for c in per_case]
+    clce_values = [c.get("clce", 0.0) for c in per_case]
     mean_spec = float(sum(spec_values) / len(spec_values)) if spec_values else 0.0
     mean_rve = float(sum(rve_values) / len(rve_values)) if rve_values else 0.0
     mean_sym = float(sum(symmetry_values) / len(symmetry_values)) if symmetry_values else 0.0
+    mean_cldice = float(sum(cldice_values) / len(cldice_values)) if cldice_values else 0.0
+    mean_cbdice = float(sum(cbdice_values) / len(cbdice_values)) if cbdice_values else 0.0
+    mean_clce = float(sum(clce_values) / len(clce_values)) if clce_values else 0.0
     total_forbidden = int(sum(c.get("violation_forbidden", 0) for c in per_case))
     total_required = int(sum(c.get("violation_required", 0) for c in per_case))
 
@@ -978,6 +983,9 @@ def evaluate(args: argparse.Namespace) -> Dict:
         "mean_rve": mean_rve,
         "mean_symmetry": mean_sym,
         "mean_spec_distance": mean_spec,
+        "mean_cldice": mean_cldice,
+        "mean_cbdice": mean_cbdice,
+        "mean_clce": mean_clce,
         "total_violations_forbidden": total_forbidden,
         "total_violations_required": total_required,
         "per_class_dice": per_class_scores,
@@ -997,6 +1005,23 @@ def main():
     DEBUG = args.debug_mode
     _debug("Debug mode enabled")
     metrics = evaluate(args)
+    print("=" * 40)
+    print(f"Evaluation Results (N={len(metrics.get('cases', []))}):")
+    print(f"  Mean Dice:          {metrics.get('mean_dice', 0.0):.4f}")
+    print(f"  Mean HD95:          {metrics.get('mean_hd95', 0.0):.4f}")
+    print(f"  Mean ASSD:          {metrics.get('mean_assd', 0.0):.4f}")
+    print(f"  Mean clDice:        {metrics.get('mean_cldice', 0.0):.4f}")
+    print(f"  Mean cbDice:        {metrics.get('mean_cbdice', 0.0):.4f}")
+    print(f"  Mean clCE:          {metrics.get('mean_clce', 0.0):.4f}")
+    print(f"  Mean RVE:           {metrics.get('mean_rve', 0.0):.4f}")
+    print(f"  Mean Symmetry:      {metrics.get('mean_symmetry', 0.0):.4f}")
+    print(f"  Mean Spec Dist:     {metrics.get('mean_spec_distance', 0.0):.4f}")
+    print(
+        f"  Struct Violations:  F={metrics.get('total_violations_forbidden')}, "
+        f"R={metrics.get('total_violations_required')}"
+    )
+    print("=" * 40)
+
     print(json.dumps({"mean_dice": metrics.get("mean_dice", 0.0), "cases": len(metrics.get("cases", []))}, indent=2))
 
 
