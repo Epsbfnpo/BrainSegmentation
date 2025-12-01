@@ -552,11 +552,8 @@ def main():
     model = build_model(args, device)
     # --- L2-SP Setup: freeze reference starting point ---
     ref_model = build_model(args, device)
-    if args.pretrained_checkpoint:
-        load_model_weights_only(ref_model, Path(args.pretrained_checkpoint))
-    else:
-        if is_main:
-            print("⚠️ Warning: No pretrained checkpoint provided for L2-SP! Regularizing towards random init.")
+    if not args.pretrained_checkpoint and is_main:
+        print("⚠️ Warning: No pretrained checkpoint provided for L2-SP! Regularizing towards random init.")
     for param in ref_model.parameters():
         param.requires_grad = False
     ref_model.eval()
