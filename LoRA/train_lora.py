@@ -393,7 +393,8 @@ def load_checkpoint(path: Path,
     payload = torch.load(path, map_location="cpu")
     model_state = payload.get("state_dict", payload)
     target = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
-    target.load_state_dict(model_state, strict=True)
+    # Use non-strict loading to allow resumes from LoRA-only checkpoints.
+    target.load_state_dict(model_state, strict=False)
 
     if "optimizer" in payload:
         optimizer.load_state_dict(payload["optimizer"])
