@@ -19,16 +19,16 @@ echo "TENT ADAPTATION JOB STARTED"
 echo "Job $SLURM_JOB_ID started at $(date)"
 echo "=============================================================="
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-RUN_SCRIPT="${SCRIPT_DIR}/run_tent.sh"
+# 固定绝对路径，避免依赖未知环境变量或 Slurm 暂存目录
+WORKDIR="/datasets/work/hb-nhmrc-dhcp/work/liu275/tent"
+RUN_SCRIPT="${WORKDIR}/run_tent.sh"
 
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export TORCH_ALLOW_TF32=1
 
-cd "${SCRIPT_DIR}"
+cd "${WORKDIR}"
 
 if [ ! -f "${RUN_SCRIPT}" ]; then
     echo "❌ Missing run script: ${RUN_SCRIPT}"
@@ -43,10 +43,10 @@ if command -v conda >/dev/null 2>&1; then
     conda activate brainseg || true
 fi
 
-RESULTS_DIR="${RESULTS_DIR:-${REPO_ROOT}/results/target_tent}"
+RESULTS_DIR="${RESULTS_DIR:-${WORKDIR}/../results/target_tent}"
 FINAL_MODEL="${RESULTS_DIR}/best_model.pt"
 LATEST_MODEL="${RESULTS_DIR}/latest_model.pt"
-SCRIPT_PATH="${SCRIPT_DIR}/run_tent.sbatch"
+SCRIPT_PATH="${WORKDIR}/run_tent.sbatch"
 
 set +e
 bash "${RUN_SCRIPT}"
