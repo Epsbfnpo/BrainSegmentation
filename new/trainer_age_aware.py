@@ -5,13 +5,16 @@ import itertools
 import contextlib
 from typing import Dict, Optional, Sequence
 
+import numpy as np
 import torch
 import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 from monai.losses import DiceLoss
-from monai.metrics import DiceMetric
+from monai.metrics import DiceMetric, HausdorffDistanceMetric, SurfaceDistanceMetric
 from monai.inferers import sliding_window_inference
+
+from extra_metrics import compute_cbdice, compute_clce, compute_cldice, compute_rve
 
 
 def is_dist() -> bool:
@@ -492,7 +495,15 @@ def validate_epoch(model: nn.Module,
                    prior_loss=None,
                    return_per_class: bool = False) -> Dict[str, float]:
     model.eval()
+
     dice_metric = DiceMetric(include_background=not foreground_only, reduction="mean_batch")
+    hd95_metric = HausdorffDistanceMetric(
+        include_background=not foreground_only, percentile=95, reduction="mean_batch"
+    )
+    assd_metric = SurfaceDistanceMetric(
+        include_background=not foreground_only, symmetric=True, reduction="mean_batch"
+    )
+
     per_class_metric = None
     if return_per_class:
         per_class_metric = DiceMetric(
@@ -514,6 +525,8 @@ def validate_epoch(model: nn.Module,
         "age_weight": 0.0,
     }
     struct_steps = 0
+
+    extra_totals = {"cldice": 0.0, "cbdice": 0.0, "clce": 0.0, "rve": 0.0}
 
     tta_axes = tuple(sorted({int(ax) for ax in (tta_axes or []) if ax in (0, 1, 2)}))
 
@@ -572,7 +585,7 @@ def validate_epoch(model: nn.Module,
                 brain_mask = brain_mask.squeeze(1)
 
             if eval_tta and tta_axes:
-                combos = [()]  # include identity
+                combos = [()]
                 for r in range(1, len(tta_axes) + 1):
                     combos.extend(itertools.combinations(tta_axes, r))
                 logits_list = []
@@ -586,25 +599,72 @@ def validate_epoch(model: nn.Module,
                 logits = _run_inference(images)
 
             probs = torch.softmax(logits, dim=1)
-
             pred_labels = torch.argmax(probs, dim=1)
             pred_labels = torch.where(brain_mask, pred_labels, torch.zeros_like(pred_labels))
-            preds = F.one_hot(pred_labels, num_classes=num_classes)
-            preds = preds.permute(0, 4, 1, 2, 3).to(dtype=probs.dtype)
 
-            preds = preds * brain_mask.unsqueeze(1)
+            preds_onehot = F.one_hot(pred_labels, num_classes=num_classes)
+            preds_onehot = preds_onehot.permute(0, 4, 1, 2, 3).to(dtype=probs.dtype)
+            preds_onehot = preds_onehot * brain_mask.unsqueeze(1)
 
             labels_eval_wo_channel = labels_eval
             if labels_eval_wo_channel.ndim == 5 and labels_eval_wo_channel.shape[1] == 1:
                 labels_eval_wo_channel = labels_eval_wo_channel.squeeze(1)
-            target = F.one_hot(labels_eval_wo_channel, num_classes=num_classes)
-            target = target.permute(0, 4, 1, 2, 3).to(dtype=probs.dtype)
+            target_onehot = F.one_hot(labels_eval_wo_channel, num_classes=num_classes)
+            target_onehot = target_onehot.permute(0, 4, 1, 2, 3).to(dtype=probs.dtype)
+            target_onehot = target_onehot * brain_mask.unsqueeze(1)
 
-            target = target * brain_mask.unsqueeze(1)
+            dice_metric(y_pred=preds_onehot, y=target_onehot)
+            hd95_metric(y_pred=preds_onehot, y=target_onehot)
+            assd_metric(y_pred=preds_onehot, y=target_onehot)
 
-            dice_metric(y_pred=preds, y=target)
             if per_class_metric is not None:
-                per_class_metric(y_pred=preds, y=target)
+                per_class_metric(y_pred=preds_onehot, y=target_onehot)
+
+            pred_np_batch = pred_labels.cpu().numpy()
+            target_np_batch = labels_eval_wo_channel.cpu().numpy()
+
+            batch_cldice = 0.0
+            batch_cbdice = 0.0
+            batch_rve = 0.0
+
+            for b_idx in range(len(pred_np_batch)):
+                p_vol = pred_np_batch[b_idx]
+                t_vol = target_np_batch[b_idx]
+                b_mask = brain_mask[b_idx].cpu()
+
+                batch_rve += compute_rve(
+                    torch.from_numpy(p_vol),
+                    torch.from_numpy(t_vol),
+                    b_mask,
+                    include_background=not foreground_only,
+                )
+
+                cldice_sum = 0.0
+                cbdice_sum = 0.0
+                valid_class_count = 0
+                start_idx = 1 if foreground_only else 0
+
+                for c in range(start_idx, num_classes):
+                    t_c = (t_vol == c)
+                    if np.sum(t_c) > 0:
+                        p_c = (p_vol == c)
+                        cldice_sum += compute_cldice(p_c, t_c)
+                        cbdice_sum += compute_cbdice(p_c, t_c)
+                        valid_class_count += 1
+
+                if valid_class_count > 0:
+                    batch_cldice += cldice_sum / valid_class_count
+                    batch_cbdice += cbdice_sum / valid_class_count
+
+            extra_totals["rve"] += batch_rve / max(1, len(pred_np_batch))
+            extra_totals["cldice"] += batch_cldice / max(1, len(pred_np_batch))
+            extra_totals["cbdice"] += batch_cbdice / max(1, len(pred_np_batch))
+
+            labels_for_clce = torch.where(
+                brain_mask.unsqueeze(1), labels_eval, torch.zeros_like(labels_eval)
+            )
+            extra_totals["clce"] += compute_clce(logits, labels_for_clce)
+
             steps += 1
 
             if prior_loss is not None and "age" in batch:
@@ -618,8 +678,24 @@ def validate_epoch(model: nn.Module,
                 partial = dice_metric.aggregate().detach().cpu().numpy()
                 print(f"[Val][Step {step:03d}] running dice mean={partial.mean():.4f}", flush=True)
 
-    dice = dice_metric.aggregate()
+    dice = float(reduce_mean(dice_metric.aggregate().mean()))
+    hd95 = float(reduce_mean(hd95_metric.aggregate().mean()))
+    assd = float(reduce_mean(assd_metric.aggregate().mean()))
+
     dice_metric.reset()
+    hd95_metric.reset()
+    assd_metric.reset()
+
+    val_steps = max(steps, 1)
+    mean_cldice = extra_totals["cldice"] / val_steps
+    mean_cbdice = extra_totals["cbdice"] / val_steps
+    mean_clce = extra_totals["clce"] / val_steps
+    mean_rve = extra_totals["rve"] / val_steps
+
+    mean_cldice = float(reduce_mean(torch.tensor(mean_cldice, device=device)))
+    mean_cbdice = float(reduce_mean(torch.tensor(mean_cbdice, device=device)))
+    mean_clce = float(reduce_mean(torch.tensor(mean_clce, device=device)))
+    mean_rve = float(reduce_mean(torch.tensor(mean_rve, device=device)))
 
     per_class_scores: Optional[torch.Tensor] = None
     per_class_valid: Optional[torch.Tensor] = None
@@ -659,30 +735,23 @@ def validate_epoch(model: nn.Module,
             per_class_valid = per_class_valid.to(dtype=torch.float32)
 
         if per_class_scores is not None and per_class_valid is not None:
-            # Guard against classes that never appear in the validation set.
             valid_mask = per_class_valid > 0.5
             if valid_mask.numel() == per_class_scores.numel():
                 per_class_scores = torch.where(valid_mask, per_class_scores, torch.zeros_like(per_class_scores))
             else:
                 per_class_valid = None
 
-    if isinstance(dice, torch.Tensor):
-        if dice.numel() == 0:
-            dice = torch.tensor(0.0, device=device, dtype=torch.float32)
-        elif dice.numel() > 1:
-            dice = dice.mean()
-        dice = dice.to(device)
-    elif isinstance(dice, (list, tuple)):
-        if len(dice) == 0:
-            dice = torch.tensor(0.0, device=device, dtype=torch.float32)
-        else:
-            dice = torch.as_tensor(dice, device=device, dtype=torch.float32).mean()
-    else:
-        dice = torch.tensor(float(dice), device=device, dtype=torch.float32)
+    result = {
+        "dice": dice,
+        "hd95": hd95,
+        "assd": assd,
+        "cldice": mean_cldice,
+        "cbdice": mean_cbdice,
+        "clce": mean_clce,
+        "rve": mean_rve,
+        "steps": steps,
+    }
 
-    dice = float(reduce_mean(dice))
-
-    result = {"dice": dice, "steps": steps}
     if per_class_scores is not None:
         per_class_scores = reduce_mean(per_class_scores)
         result["per_class_dice"] = per_class_scores.detach().cpu().tolist()
@@ -693,6 +762,7 @@ def validate_epoch(model: nn.Module,
             missing = [idx for idx, count in enumerate(valid_counts) if count <= 0.5]
             if missing:
                 result["per_class_missing_labels"] = missing
+
     if struct_steps > 0:
         avg = {k: v / struct_steps for k, v in struct_totals.items()}
         result["structural_violations"] = {
@@ -704,7 +774,11 @@ def validate_epoch(model: nn.Module,
             "spectral_distance": avg["spec_gap"],
         }
         result["symmetry_scores"] = [max(0.0, 1.0 - avg["symmetry_gap"])]
+        result["val_spec_dist"] = avg["spec_gap"]
+        result["val_sym_score"] = max(0.0, 1.0 - avg["symmetry_gap"])
+        result["val_adj_mae"] = avg["adj_mae"]
         result["prior_dyn_lambda"] = avg["dyn_lambda"]
         result["prior_qap_mismatch"] = avg["qap_mismatch"]
         result["prior_age_weight"] = avg["age_weight"]
+
     return result

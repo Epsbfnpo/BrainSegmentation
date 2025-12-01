@@ -1,6 +1,8 @@
+from typing import Optional
+
+import numpy as np
 import torch
 import torch.nn.functional as F
-import numpy as np
 from skimage.morphology import skeletonize
 from scipy.ndimage import distance_transform_edt
 
@@ -159,3 +161,49 @@ def compute_clce(y_pred_logits: torch.Tensor, y_true: torch.Tensor) -> float:
         return 0.0
 
     return total_loss / valid_classes
+
+
+def compute_rve(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    brain_mask: Optional[torch.Tensor] = None,
+    *,
+    include_background: bool = False,
+) -> float:
+    """Compute Relative Volume Error (RVE).
+
+    Args:
+        pred: Predicted labels (B, H, W, D) or (H, W, D).
+        target: Ground-truth labels (B, H, W, D) or (H, W, D).
+        brain_mask: Optional boolean mask restricting computation.
+        include_background: Whether to include background (0) voxels.
+    """
+
+    if brain_mask is not None:
+        pred_eff = torch.where(brain_mask, pred, torch.full_like(pred, -1))
+        target_eff = torch.where(brain_mask, target, torch.full_like(target, -1))
+    else:
+        pred_eff = pred
+        target_eff = target
+
+    if not include_background:
+        pred_eff = torch.where(pred_eff <= 0, torch.full_like(pred_eff, -1), pred_eff)
+        target_eff = torch.where(target_eff <= 0, torch.full_like(target_eff, -1), target_eff)
+
+    classes = torch.unique(target_eff)
+    classes = classes[classes >= 0]
+
+    if classes.numel() == 0:
+        return 0.0
+
+    errors = []
+    for cls in classes.tolist():
+        vol_pred = torch.count_nonzero(pred_eff == cls).item()
+        vol_gt = torch.count_nonzero(target_eff == cls).item()
+        if vol_gt > 0:
+            errors.append(abs(vol_pred - vol_gt) / float(vol_gt))
+
+    if not errors:
+        return 0.0
+
+    return float(sum(errors) / len(errors))
