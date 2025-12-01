@@ -237,6 +237,26 @@ def generate_training_plots(history: Dict[str, list], results_dir: Path) -> bool
         "Loss",
     ):
         generated = True
+
+    val_metric_groups = [
+        (["dice", "cldice", "cbdice"], "Overlap Metrics (Dice)", "Score (0-1)"),
+        (["hd95", "assd", "clce"], "Distance and CE Metrics", "Value (lower is better)"),
+        (["rve", "val_adj_mae", "val_spec_dist"], "Geometric and Spectral Errors", "Error"),
+        (["val_sym_score"], "Symmetry Score", "Score (0-1)"),
+    ]
+
+    if val_entries:
+        for keys, title, ylabel in val_metric_groups:
+            safe_filename = (
+                title.lower()
+                .replace(" ", "_")
+                .replace("(", "")
+                .replace(")", "")
+                .replace("&", "and")
+            )
+            if _plot_series(val_entries, keys, plot_dir / f"val_{safe_filename}.png", title, ylabel):
+                generated = True
+
     if train_entries or val_entries:
         if plt is not None:
             plt.figure(figsize=(10, 5))
@@ -831,21 +851,33 @@ def main():
                 best_model_epoch = epoch
             if is_main:
                 extra_msgs = []
+                extra_msgs.append(f"hd95={val_metrics.get('hd95', 0.0):.2f}")
+                extra_msgs.append(f"assd={val_metrics.get('assd', 0.0):.2f}")
+                extra_msgs.append(f"rve={val_metrics.get('rve', 0.0):.3f}")
+                extra_msgs.append(f"cldice={val_metrics.get('cldice', 0.0):.3f}")
+                extra_msgs.append(f"cbdice={val_metrics.get('cbdice', 0.0):.3f}")
+                extra_msgs.append(f"clce={val_metrics.get('clce', 0.0):.3f}")
                 adj_errors = val_metrics.get("adjacency_errors")
                 if adj_errors:
-                    extra_msgs.append(f"adj_mae={adj_errors.get('mean_adj_error', 0.0):.4f}")
-                    extra_msgs.append(f"spec={adj_errors.get('spectral_distance', 0.0):.4f}")
+                    extra_msgs.append(f"adj={adj_errors.get('mean_adj_error', 0.0):.3f}")
+                    extra_msgs.append(f"spec={adj_errors.get('spectral_distance', 0.0):.3f}")
                 struct = val_metrics.get("structural_violations")
                 if struct:
                     extra_msgs.append(f"req_miss={struct.get('required_missing', 0.0):.2f}")
                     extra_msgs.append(f"forb={struct.get('forbidden_present', 0.0):.2f}")
                 sym_scores = val_metrics.get("symmetry_scores")
                 if sym_scores:
-                    extra_msgs.append(f"sym={sym_scores[0]:.4f}")
+                    extra_msgs.append(f"sym={sym_scores[0]:.3f}")
                 msg_extra = " ".join(extra_msgs)
                 print(f"  Validation dice={val_metrics['dice']:.4f} {msg_extra}".strip())
                 if writer is not None:
                     writer.add_scalar("val/dice", val_metrics["dice"], epoch)
+                    writer.add_scalar("val/hd95", val_metrics.get("hd95", 0.0), epoch)
+                    writer.add_scalar("val/assd", val_metrics.get("assd", 0.0), epoch)
+                    writer.add_scalar("val/cldice", val_metrics.get("cldice", 0.0), epoch)
+                    writer.add_scalar("val/cbdice", val_metrics.get("cbdice", 0.0), epoch)
+                    writer.add_scalar("val/rve", val_metrics.get("rve", 0.0), epoch)
+                    writer.add_scalar("val/clce", val_metrics.get("clce", 0.0), epoch)
                     if adj_errors:
                         writer.add_scalar("val/adjacency_mae", adj_errors.get("mean_adj_error", 0.0), epoch)
                         writer.add_scalar("val/spectral_gap", adj_errors.get("spectral_distance", 0.0), epoch)
