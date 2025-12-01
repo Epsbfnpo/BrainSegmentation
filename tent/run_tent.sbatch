@@ -36,10 +36,10 @@ if [ ! -f "${RUN_SCRIPT}" ]; then
     exit 127
 fi
 
-if [ -f "${HOME}/miniconda3/bin/activate" ]; then
-    source "${HOME}/miniconda3/bin/activate"
-fi
-if command -v conda >/dev/null 2>&1; then
+# 明确指定 Conda 路径，避免依赖 $HOME 等环境变量
+CONDA_SETUP="/datasets/work/hb-nhmrc-dhcp/work/liu275/miniconda3/bin/activate"
+if [ -f "${CONDA_SETUP}" ]; then
+    source "${CONDA_SETUP}"
     conda activate brainseg || true
 fi
 

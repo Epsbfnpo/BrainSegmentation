@@ -14,7 +14,7 @@ from monai.networks.nets import SwinUNETR
 from monai.inferers import sliding_window_inference
 from monai.metrics import DiceMetric
 
-# Local imports (copies in tent folder)
+# Local imports
 from age_aware_modules import SimplifiedDAUnetModule
 from data_loader_age_aware import get_target_dataloaders
 from tent_core import configure_model_for_tent, softmax_entropy
@@ -25,10 +25,10 @@ def parse_args():
     parser.add_argument("--split_json", required=True)
     parser.add_argument("--results_dir", default="./results_tent")
     parser.add_argument("--pretrained_checkpoint", required=True)
-    parser.add_argument("--lr", default=1e-4, type=float, help="Learning rate for TENT")
-    parser.add_argument("--epochs", default=50, type=int, help="Number of TENT adaptation epochs")
-    parser.add_argument("--save_interval", default=10, type=int, help="How often to save checkpoints")
-    parser.add_argument("--eval_interval", default=5, type=int, help="Validation interval in epochs")
+    parser.add_argument("--lr", default=1e-4, type=float)
+    parser.add_argument("--epochs", default=50, type=int)
+    parser.add_argument("--save_interval", default=10, type=int)
+    parser.add_argument("--eval_interval", default=5, type=int)
     parser.add_argument("--batch_size", default=1, type=int)
     parser.add_argument("--roi_x", default=96, type=int)
     parser.add_argument("--roi_y", default=96, type=int)
@@ -64,6 +64,10 @@ def init_distributed():
     return False, 0, 1, 0
 
 
+def is_main_process():
+    return not dist.is_initialized() or dist.get_rank() == 0
+
+
 def save_checkpoint(path, model, optimizer, epoch, best_dice):
     state = {
         "epoch": epoch,
@@ -74,6 +78,49 @@ def save_checkpoint(path, model, optimizer, epoch, best_dice):
         "optimizer": optimizer.state_dict(),
     }
     torch.save(state, path)
+
+
+def load_weights_precise(model, checkpoint_path, rank):
+    """
+    Align checkpoint keys to SimplifiedDAUnetModule by prefixing `backbone.` when missing.
+    This matches checkpoints that store SwinUNETR weights without the wrapper prefix.
+    """
+    if rank == 0:
+        print(f"📦 Loading weights from {checkpoint_path} ...")
+
+    ckpt = torch.load(checkpoint_path, map_location="cpu")
+
+    if "model_state_dict" in ckpt:
+        state_dict = ckpt["model_state_dict"]
+    elif "state_dict" in ckpt:
+        state_dict = ckpt["state_dict"]
+    else:
+        state_dict = ckpt
+
+    new_state = {}
+    for key, val in state_dict.items():
+        if key.startswith("backbone."):
+            new_state[key] = val
+        else:
+            new_state[f"backbone.{key}"] = val
+
+    msg = model.load_state_dict(new_state, strict=False)
+    if rank == 0:
+        if msg.missing_keys:
+            print(f"⚠️  Missing keys ({len(msg.missing_keys)}): {msg.missing_keys[:5]} ...")
+        if msg.unexpected_keys:
+            print(f"⚠️  Unexpected keys ({len(msg.unexpected_keys)}): {msg.unexpected_keys[:5]} ...")
+
+        probe_key = "backbone.swinViT.patch_embed.proj.weight"
+        if probe_key in new_state:
+            model_val = model.state_dict()[probe_key].flatten()[0].item()
+            ckpt_val = new_state[probe_key].flatten()[0].item()
+            if abs(model_val - ckpt_val) < 1e-5:
+                print("✅ Weight Verification PASSED: Backbone weights loaded correctly.")
+            else:
+                print(f"❌ Weight Verification FAILED: Model: {model_val}, Ckpt: {ckpt_val}")
+        else:
+            print("⚠️  Probe key not found for verification.")
 
 
 def validate(model, loader, device, args):
@@ -130,21 +177,7 @@ def main():
     model = SimplifiedDAUnetModule(backbone, num_classes=args.out_channels).to(device)
 
     if args.pretrained_checkpoint:
-        ckpt = torch.load(args.pretrained_checkpoint, map_location="cpu")
-        state = ckpt.get("state_dict", ckpt)
-        new_state = {}
-        for k, v in state.items():
-            key = k.replace("module.", "")
-            if not key.startswith("backbone."):
-                key = "backbone." + key
-            new_state[key] = v
-        missing, unexpected = model.load_state_dict(new_state, strict=False)
-        if rank == 0:
-            print(f"Loaded source weights from {args.pretrained_checkpoint}")
-            if missing:
-                print(f"Missing keys: {missing}")
-            if unexpected:
-                print(f"Unexpected keys: {unexpected}")
+        load_weights_precise(model, args.pretrained_checkpoint, rank)
 
     tent_params, param_names = configure_model_for_tent(model)
     if rank == 0:
@@ -154,7 +187,10 @@ def main():
 
     if is_distributed:
         model = torch.nn.parallel.DistributedDataParallel(
-            model, device_ids=[local_rank], output_device=local_rank
+            model,
+            device_ids=[local_rank],
+            output_device=local_rank,
+            find_unused_parameters=True,
         )
 
     optimizer = torch.optim.AdamW(tent_params, lr=args.lr)
@@ -238,6 +274,9 @@ def main():
 
     if writer:
         writer.close()
+
+    if dist.is_initialized():
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":
