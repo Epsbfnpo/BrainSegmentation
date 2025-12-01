@@ -21,6 +21,7 @@ echo "=============================================================="
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+RUN_SCRIPT="${SCRIPT_DIR}/run_tent.sh"
 
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK}
@@ -28,6 +29,12 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export TORCH_ALLOW_TF32=1
 
 cd "${SCRIPT_DIR}"
+
+if [ ! -f "${RUN_SCRIPT}" ]; then
+    echo "❌ Missing run script: ${RUN_SCRIPT}"
+    echo "Make sure run_tent.sh is present next to run_tent.sbatch on the compute node."
+    exit 127
+fi
 
 if [ -f "${HOME}/miniconda3/bin/activate" ]; then
     source "${HOME}/miniconda3/bin/activate"
@@ -42,7 +49,7 @@ LATEST_MODEL="${RESULTS_DIR}/latest_model.pt"
 SCRIPT_PATH="${SCRIPT_DIR}/run_tent.sbatch"
 
 set +e
-bash ./run_tent.sh
+bash "${RUN_SCRIPT}"
 STATUS=$?
 set -e
 
