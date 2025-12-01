@@ -333,7 +333,7 @@ def save_per_class_report(per_class_scores, class_mapping: Dict[int, int], resul
 def load_model_weights_only(model: torch.nn.Module, checkpoint_path: Path) -> None:
     """Robustly load weights, handling different key formats and prefixes."""
     payload = torch.load(checkpoint_path, map_location="cpu")
-
+    
     # 1. Identify the actual state dict
     if "model_state_dict" in payload:
         state = payload["model_state_dict"]
@@ -344,7 +344,7 @@ def load_model_weights_only(model: torch.nn.Module, checkpoint_path: Path) -> No
 
     # 2. Get the target model (handle DDP wrapper)
     target = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
-
+    
     # 3. Adjust keys to match SimplifiedDAUnetModule structure
     # The SimplifiedDAUnetModule wraps the network in 'backbone'.
     # If the checkpoint is raw SwinUNETR, keys won't have 'backbone.'.
@@ -352,13 +352,13 @@ def load_model_weights_only(model: torch.nn.Module, checkpoint_path: Path) -> No
     for k, v in state.items():
         # Remove DDP prefix if present in checkpoint
         k = k.replace("module.", "")
-
+        
         # Add backbone prefix if missing and target expects it
         if hasattr(target, "backbone") and not k.startswith("backbone."):
             k = f"backbone.{k}"
-
+            
         new_state[k] = v
-
+    
     # 4. Load weights (strict=False ensures we can load a base model even if heads mismatch slightly)
     msg = target.load_state_dict(new_state, strict=False)
     print(f"✅ Loaded pretrained weights from {checkpoint_path}")
@@ -421,7 +421,8 @@ def load_checkpoint(path: Path,
     payload = torch.load(path, map_location="cpu")
     model_state = payload.get("state_dict", payload)
     target = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
-    # Use non-strict loading to allow resumes from LoRA-only checkpoints.
+    
+    # Use strict=False for resume to tolerate LoRA parameters mismatch
     target.load_state_dict(model_state, strict=False)
 
     if "optimizer" in payload:
@@ -581,7 +582,8 @@ def main():
         lora_dropout=args.lora_dropout,
         bias="none",
         target_modules=["qkv", "proj", "linear1", "linear2"],
-        modules_to_save=["out"],
+        # CHANGE: Use specific submodule path to avoid matching unwanted ModuleDicts
+        modules_to_save=["backbone.out"],
     )
 
     model = get_peft_model(model, peft_config)
@@ -770,6 +772,7 @@ def main():
                 debug_mode=args.debug_mode,
                 debug_step_limit=args.debug_val_limit,
                 is_main=is_main,
+                return_per_class=True,
             )
             val_metrics["epoch"] = epoch
             if ema_helper is not None:
