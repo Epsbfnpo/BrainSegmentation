@@ -331,10 +331,38 @@ def save_per_class_report(per_class_scores, class_mapping: Dict[int, int], resul
 
 
 def load_model_weights_only(model: torch.nn.Module, checkpoint_path: Path) -> None:
+    """Robustly load weights, handling different key formats and prefixes."""
     payload = torch.load(checkpoint_path, map_location="cpu")
-    state = payload.get("state_dict", payload)
+
+    # 1. Identify the actual state dict
+    if "model_state_dict" in payload:
+        state = payload["model_state_dict"]
+    elif "state_dict" in payload:
+        state = payload["state_dict"]
+    else:
+        state = payload
+
+    # 2. Get the target model (handle DDP wrapper)
     target = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
-    target.load_state_dict(state, strict=True)
+
+    # 3. Adjust keys to match SimplifiedDAUnetModule structure
+    # The SimplifiedDAUnetModule wraps the network in 'backbone'.
+    # If the checkpoint is raw SwinUNETR, keys won't have 'backbone.'.
+    new_state = {}
+    for k, v in state.items():
+        # Remove DDP prefix if present in checkpoint
+        k = k.replace("module.", "")
+
+        # Add backbone prefix if missing and target expects it
+        if hasattr(target, "backbone") and not k.startswith("backbone."):
+            k = f"backbone.{k}"
+
+        new_state[k] = v
+
+    # 4. Load weights (strict=False ensures we can load a base model even if heads mismatch slightly)
+    msg = target.load_state_dict(new_state, strict=False)
+    print(f"✅ Loaded pretrained weights from {checkpoint_path}")
+    print(f"   Load status: {msg}")
 
 
 def build_model(args, device: torch.device) -> SimplifiedDAUnetModule:
