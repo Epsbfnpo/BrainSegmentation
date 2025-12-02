@@ -24,8 +24,9 @@ export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export TORCH_ALLOW_TF32=1
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# 固定绝对路径，拒绝通过命令查询路径
+SCRIPT_DIR="/datasets/work/hb-nhmrc-dhcp/work/liu275/shot"
+REPO_ROOT="/datasets/work/hb-nhmrc-dhcp/work/liu275"
 cd "${SCRIPT_DIR}"
 
 # Activate environment if available

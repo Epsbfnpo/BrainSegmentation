@@ -1,8 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# 固定绝对路径，拒绝通过命令查询路径
+SCRIPT_DIR="/datasets/work/hb-nhmrc-dhcp/work/liu275/shot"
+REPO_ROOT="/datasets/work/hb-nhmrc-dhcp/work/liu275"
 
 # ------------ Configurable defaults ------------
 NUM_GPUS=${NUM_GPUS:-4}
