@@ -102,7 +102,7 @@ class MedNeXt(nn.Module):
         self.head = ConvHead(channels[0], n_classes, dim=self.dim)
         if deep_supervision:
             self.aux_heads = nn.ModuleList(
-                [ConvHead(channels[i], n_classes, dim=self.dim) for i in range(1, 4)]
+                [ConvHead(channels[i], n_classes, dim=self.dim) for i in reversed(range(1, 4))]
             )
         else:
             self.aux_heads = None
