@@ -126,25 +126,38 @@ def load_weights_precise(model, checkpoint_path, rank):
 
 
 def validate(model, loader, device, args):
+    """Run validation with foreground-only labels.
+
+    The dataloader can emit labels in [-1, 86] when ``foreground_only`` is set,
+    which breaks ``F.one_hot`` on CUDA. Shift both labels and predictions by +1
+    so background maps to 0 and classes map to 1..87, then ignore background via
+    ``include_background=False``.
+    """
+
     model.eval()
+    num_classes_expanded = args.out_channels + 1  # +1 for shifted background
     dice_metric = DiceMetric(include_background=False, reduction="mean")
 
     with torch.no_grad():
         for batch in loader:
             val_images = batch["image"].to(device)
-            val_labels = batch["label"].to(device)
+            val_labels = batch["label"].to(device)  # labels may contain -1 for background
 
             val_outputs = sliding_window_inference(
                 val_images, (args.roi_x, args.roi_y, args.roi_z), 1, model, overlap=0.25
             )
 
-            val_outputs = torch.argmax(val_outputs, dim=1, keepdim=True)
+            # Predictions are 0..86; shift to 1..87
+            val_outputs = torch.argmax(val_outputs, dim=1, keepdim=True) + 1
+            # Labels are -1..86; shift to 0..87
+            val_labels = val_labels + 1
+
             val_outputs_onehot = F.one_hot(
-                val_outputs.squeeze(1).long(), num_classes=args.out_channels
+                val_outputs.squeeze(1).long(), num_classes=num_classes_expanded
             ).permute(0, 4, 1, 2, 3)
 
             val_labels_onehot = F.one_hot(
-                val_labels.squeeze(1).long(), num_classes=args.out_channels
+                val_labels.squeeze(1).long(), num_classes=num_classes_expanded
             ).permute(0, 4, 1, 2, 3)
 
             dice_metric(y_pred=val_outputs_onehot, y=val_labels_onehot)
