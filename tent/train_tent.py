@@ -82,9 +82,12 @@ def save_checkpoint(path, model, optimizer, epoch, best_dice):
 
 
 def load_weights_precise(model, checkpoint_path, rank):
-    """
-    Align checkpoint keys to SimplifiedDAUnetModule by prefixing `backbone.` when missing.
-    This matches checkpoints that store SwinUNETR weights without the wrapper prefix.
+    """Load source weights with classifier head remapping.
+
+    The pretrained checkpoint stores the output head as ``out.conv.weight`` / ``out.conv.bias``
+    but the current model expects ``backbone.out.conv.conv.*`` because of the extra ``Conv``
+    wrapper. Without this remap the classifier stays randomly initialised and TENT cannot
+    adapt. All other keys are prefixed with ``backbone.`` when missing as before.
     """
     if rank == 0:
         print(f"📦 Loading weights from {checkpoint_path} ...")
@@ -100,6 +103,15 @@ def load_weights_precise(model, checkpoint_path, rank):
 
     new_state = {}
     for key, val in state_dict.items():
+        # Remap classifier head names
+        if key.endswith("out.conv.weight"):
+            new_state["backbone.out.conv.conv.weight"] = val
+            continue
+        if key.endswith("out.conv.bias"):
+            new_state["backbone.out.conv.conv.bias"] = val
+            continue
+
+        # Standard backbone prefixing
         if key.startswith("backbone."):
             new_state[key] = val
         else:
@@ -112,7 +124,9 @@ def load_weights_precise(model, checkpoint_path, rank):
         if msg.unexpected_keys:
             print(f"⚠️  Unexpected keys ({len(msg.unexpected_keys)}): {msg.unexpected_keys[:5]} ...")
 
+        # Verify backbone and classifier head mapping
         probe_key = "backbone.swinViT.patch_embed.proj.weight"
+        head_key = "backbone.out.conv.conv.weight"
         if probe_key in new_state:
             model_val = model.state_dict()[probe_key].flatten()[0].item()
             ckpt_val = new_state[probe_key].flatten()[0].item()
@@ -122,6 +136,16 @@ def load_weights_precise(model, checkpoint_path, rank):
                 print(f"❌ Weight Verification FAILED: Model: {model_val}, Ckpt: {ckpt_val}")
         else:
             print("⚠️  Probe key not found for verification.")
+
+        if head_key in new_state:
+            head_model_val = model.state_dict()[head_key].flatten()[0].item()
+            head_ckpt_val = new_state[head_key].flatten()[0].item()
+            if abs(head_model_val - head_ckpt_val) < 1e-5:
+                print("✅ Classifier head loaded correctly.")
+            else:
+                print("❌ Classifier head mismatch after loading.")
+        else:
+            print("⚠️  Classifier head key missing from remapped checkpoint; head may be random.")
 
 
 def validate(model, loader, device, args):
