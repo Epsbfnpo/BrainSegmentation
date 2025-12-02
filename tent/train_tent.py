@@ -50,6 +50,8 @@ def parse_args():
     parser.add_argument("--apply_spacing", action="store_true", default=True)
     parser.add_argument("--apply_orientation", action="store_true", default=True)
     parser.add_argument("--use_swin_checkpoint", action="store_true", default=True)
+    # Disable Swin gradient checkpointing (fixes DDP + checkpointing conflict)
+    parser.add_argument("--no_swin_checkpoint", action="store_true", help="Disable Swin gradient checkpointing")
     return parser.parse_args()
 
 
@@ -167,12 +169,16 @@ def main():
         args, is_distributed=is_distributed, world_size=world_size, rank=rank
     )
 
+    use_checkpoint = args.use_swin_checkpoint and not args.no_swin_checkpoint
+    if rank == 0:
+        print(f"Building SwinUNETR (use_checkpoint={use_checkpoint})...")
+
     backbone = SwinUNETR(
         img_size=(args.roi_x, args.roi_y, args.roi_z),
         in_channels=1,
         out_channels=args.out_channels,
         feature_size=args.feature_size,
-        use_checkpoint=args.use_swin_checkpoint,
+        use_checkpoint=use_checkpoint,
     ).to(device)
     model = SimplifiedDAUnetModule(backbone, num_classes=args.out_channels).to(device)
 
@@ -191,6 +197,7 @@ def main():
             device_ids=[local_rank],
             output_device=local_rank,
             find_unused_parameters=True,
+            static_graph=True,
         )
 
     optimizer = torch.optim.AdamW(tent_params, lr=args.lr)

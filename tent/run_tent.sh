@@ -34,6 +34,7 @@ CMD=(
     --lr "${LR}"
     --eval_interval "${EVAL_INTERVAL}"
     --save_interval "${SAVE_INTERVAL}"
+    --no_swin_checkpoint
 )
 
 RESUME_FILE="${RESULTS_DIR}/latest_model.pt"
