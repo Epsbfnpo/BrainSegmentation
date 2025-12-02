@@ -12,7 +12,6 @@ from datetime import timedelta
 from torch.utils.tensorboard import SummaryWriter
 from monai.networks.nets import SwinUNETR
 from monai.inferers import sliding_window_inference
-from monai.metrics import DiceMetric
 
 # Local imports
 from age_aware_modules import SimplifiedDAUnetModule
@@ -136,7 +135,9 @@ def validate(model, loader, device, args):
 
     model.eval()
     num_classes_expanded = args.out_channels + 1  # +1 for shifted background
-    dice_metric = DiceMetric(include_background=False, reduction="mean")
+    # Local accumulators
+    local_dice_sum = torch.tensor(0.0, device=device)
+    local_steps = torch.tensor(0.0, device=device)
 
     with torch.no_grad():
         for batch in loader:
@@ -160,11 +161,27 @@ def validate(model, loader, device, args):
                 val_labels.squeeze(1).long(), num_classes=num_classes_expanded
             ).permute(0, 4, 1, 2, 3)
 
-            dice_metric(y_pred=val_outputs_onehot, y=val_labels_onehot)
+            # Remove background channel (index 0)
+            pred_fg = val_outputs_onehot[:, 1:, ...]
+            label_fg = val_labels_onehot[:, 1:, ...]
 
-    result = dice_metric.aggregate().item()
-    dice_metric.reset()
-    return result
+            dims = (2, 3, 4)
+            intersection = (pred_fg * label_fg).sum(dim=dims)
+            cardinality = pred_fg.sum(dim=dims) + label_fg.sum(dim=dims)
+            dice_batch = (2.0 * intersection + 1e-5) / (cardinality + 1e-5)
+            dice_score = dice_batch.mean()
+
+            local_dice_sum += dice_score
+            local_steps += 1
+
+    if dist.is_initialized():
+        dist.all_reduce(local_dice_sum, op=dist.ReduceOp.SUM)
+        dist.all_reduce(local_steps, op=dist.ReduceOp.SUM)
+
+    if local_steps.item() == 0:
+        return 0.0
+
+    return (local_dice_sum / local_steps).item()
 
 
 def main():
@@ -243,9 +260,10 @@ def main():
         if job_deadline and time.time() > job_deadline:
             if rank == 0:
                 print("Time limit reached. Saving and exiting for requeue.")
-            save_checkpoint(
-                os.path.join(args.results_dir, "latest_model.pt"), model, optimizer, epoch - 1, best_dice
-            )
+            if rank == 0:
+                save_checkpoint(
+                    os.path.join(args.results_dir, "latest_model.pt"), model, optimizer, epoch - 1, best_dice
+                )
             break
 
         if is_distributed:
@@ -275,17 +293,18 @@ def main():
             if writer:
                 writer.add_scalar("train/entropy", avg_loss, epoch)
 
-        if rank == 0 and (epoch % args.eval_interval == 0 or epoch == args.epochs):
+        if epoch % args.eval_interval == 0 or epoch == args.epochs:
             dice = validate(model, val_loader, device, args)
-            print(f"Epoch {epoch} Val Dice: {dice:.4f}")
-            if writer:
-                writer.add_scalar("val/dice", dice, epoch)
+            if rank == 0:
+                print(f"Epoch {epoch} Val Dice: {dice:.4f}")
+                if writer:
+                    writer.add_scalar("val/dice", dice, epoch)
 
-            if dice > best_dice:
-                best_dice = dice
-                save_checkpoint(
-                    os.path.join(args.results_dir, "best_model.pt"), model, optimizer, epoch, best_dice
-                )
+                if dice > best_dice:
+                    best_dice = dice
+                    save_checkpoint(
+                        os.path.join(args.results_dir, "best_model.pt"), model, optimizer, epoch, best_dice
+                    )
 
         if rank == 0 and (epoch % args.save_interval == 0 or epoch == args.epochs):
             save_checkpoint(
