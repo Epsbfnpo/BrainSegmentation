@@ -56,11 +56,22 @@ class CombinedLoss(nn.Module):
         self.ce = nn.CrossEntropyLoss(ignore_index=-1)
 
     def forward(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        # Ensure labels are channel-first for interpolation if deep supervision outputs differ in size
+        if labels.ndim == 4:
+            labels = labels.unsqueeze(1)
+
+        # If logits come from an auxiliary head (downsampled), match label spatial dims
+        if logits.shape[2:] != labels.shape[2:]:
+            labels = F.interpolate(labels.float(), size=logits.shape[2:], mode="nearest")
+
+        # Flatten channel dim for CE while retaining ignore_index handling
         if labels.ndim == 5:
             labels = labels.squeeze(1)
+        labels = labels.long()
         valid_mask = labels >= 0
         labels_safe = labels.clone()
         labels_safe[~valid_mask] = 0
+
         loss_ce = self.ce(logits, labels)
         loss_dice = self.dice(logits, labels_safe.unsqueeze(1))
         return 0.5 * loss_ce + 0.5 * loss_dice
