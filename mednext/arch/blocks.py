@@ -56,7 +56,7 @@ class MedNeXtBlock(nn.Module):
         self.drop_path = DropPath(drop_path)
         self.use_grn = use_grn
         if use_grn:
-            self.gamma = nn.Parameter(torch.zeros(1, channels, 1, 1, 1) if dim == 3 else torch.zeros(1, channels, 1, 1))
+            self.gamma = nn.Parameter(torch.zeros(1, hidden, 1, 1, 1) if dim == 3 else torch.zeros(1, hidden, 1, 1))
             self.beta = nn.Parameter(torch.zeros_like(self.gamma))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
