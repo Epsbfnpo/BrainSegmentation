@@ -44,7 +44,8 @@ if [ -f "${CONDA_SETUP}" ]; then
 fi
 
 RESULTS_DIR="${RESULTS_DIR:-${WORKDIR}/../results/target_tent}"
-FINAL_MODEL="${RESULTS_DIR}/best_model.pt"
+# Completion is determined by the presence of the final checkpoint, not the best one
+FINAL_MODEL="${RESULTS_DIR}/final_model.pt"
 LATEST_MODEL="${RESULTS_DIR}/latest_model.pt"
 SCRIPT_PATH="${WORKDIR}/run_tent.sbatch"
 
@@ -58,9 +59,9 @@ echo "Job finished with status $STATUS"
 echo "=============================================================="
 
 if [ -f "$FINAL_MODEL" ]; then
-    echo "🏁 Training appears complete (found best_model)."
+    echo "🏁 Training appears complete (found final_model)."
 elif [ -f "$LATEST_MODEL" ]; then
-    echo "🔁 Checkpoint found but training not explicitly marked done. Requeuing..."
+    echo "🔁 Checkpoint found but final_model missing. Requeuing..."
     sbatch "$SCRIPT_PATH"
 else
     echo "⚠️  No checkpoint found. Job failed or first run crashed."
