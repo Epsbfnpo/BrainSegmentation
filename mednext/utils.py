@@ -1,33 +1,49 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.distributed as dist
 import numpy as np
 from monai.losses import DiceLoss
 from monai.metrics import HausdorffDistanceMetric
 from monai.inferers import sliding_window_inference
+import contextlib
 
-
+# --- Local HD95 metric that avoids DDP sync and robustly flattens buffers ---
 class LocalHausdorffDistanceMetric(HausdorffDistanceMetric):
-    """
-    HD95 metric that skips DDP all-gather but still concatenates local buffers
-    so aggregate() receives a Tensor instead of a list.
-    """
+    """Hausdorff metric that concatenates local buffers without all-gather."""
 
     def _sync(self):
-        if len(self._buffers) > 0:
-            # Concatenate buffered tensors locally; no cross-rank communication.
-            self._synced_tensors = torch.cat(self._buffers, dim=0)
+        all_tensors = []
+
+        def recursive_extract(item):
+            if isinstance(item, torch.Tensor):
+                all_tensors.append(item)
+            elif isinstance(item, (list, tuple)):
+                for sub in item:
+                    recursive_extract(sub)
+
+        for buf in self._buffers:
+            recursive_extract(buf)
+
+        if len(all_tensors) > 0:
+            try:
+                self._synced_tensors = torch.stack(all_tensors)
+            except Exception:
+                try:
+                    self._synced_tensors = torch.cat(all_tensors, dim=0)
+                except Exception:
+                    print("[LocalMetric] Failed to stack/cat HD95 buffers; returning empty.")
+                    self._synced_tensors = torch.empty(0, device="cpu")
         else:
             self._synced_tensors = torch.empty(0, device="cpu")
 
 
+# --- DIY Dice computation ---
 def compute_dice_score(y_pred: torch.Tensor, y: torch.Tensor, smooth: float = 1e-5) -> torch.Tensor:
-    """Compute per-sample, per-class Dice on one-hot tensors."""
-
     dims = tuple(range(2, y_pred.ndim))
-    intersection = torch.sum(y_pred * y, dim=dims)
-    cardinality = torch.sum(y_pred + y, dim=dims)
-    return (2.0 * intersection + smooth) / (cardinality + smooth)
+    intersect = (y_pred * y).sum(dim=dims)
+    union = y_pred.sum(dim=dims) + y.sum(dim=dims)
+    return (2.0 * intersect + smooth) / (union + smooth)
 
 
 def check_finite(name: str, tensor) -> bool:
@@ -81,7 +97,6 @@ class CombinedLoss(nn.Module):
         if labels.ndim == 4:
             labels = labels.unsqueeze(1)
 
-        # Deep supervision label resize to match logits
         if logits.shape[2:] != labels.shape[2:]:
             labels = F.interpolate(labels.float(), size=logits.shape[2:], mode="nearest")
 
@@ -173,7 +188,7 @@ def validate(model, loader, device, roi_size):
             hd95_metric(y_pred=pred_oh, y=labels_oh)
             hd95_result = hd95_metric.aggregate()
             if isinstance(hd95_result, torch.Tensor):
-                val = hd95_result.item()
+                val = hd95_result.mean().item()
                 if np.isfinite(val):
                     total_hd95 += val
                     count_hd95 += 1
