@@ -4,8 +4,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from monai.losses import DiceLoss
-from monai.metrics import DiceMetric
 from monai.inferers import sliding_window_inference
+from monai.metrics import compute_hausdorff_distance, compute_meandice
+import numpy as np
 
 
 def check_finite(name: str, tensor) -> bool:
@@ -115,7 +116,11 @@ def train_one_epoch(model, loader, optimizer, loss_fn, device, scaler, ema=None)
 
 def validate(model, loader, device, roi_size):
     model.eval()
-    dice_metric = DiceMetric(include_background=False, reduction="mean")
+
+    total_dice = 0.0
+    total_hd95 = 0.0
+    count_dice = 0
+    count_hd95 = 0
 
     # Sliding window cannot handle deep-supervision lists; wrap model to return only full-res output.
     def _predictor(x):
@@ -131,12 +136,29 @@ def validate(model, loader, device, roi_size):
             labels[labels < 0] = 0
 
             logits = sliding_window_inference(images, roi_size, 1, _predictor, overlap=0.25, mode="gaussian")
+            if isinstance(logits, (list, tuple)):
+                logits = logits[-1]
+
             pred = torch.argmax(torch.softmax(logits, dim=1), dim=1, keepdim=True)
 
             num_classes = logits.shape[1]
             pred_oh = F.one_hot(pred.squeeze(1), num_classes).permute(0, 4, 1, 2, 3)
             labels_oh = F.one_hot(labels.squeeze(1), num_classes).permute(0, 4, 1, 2, 3)
 
-            dice_metric(y_pred=pred_oh[:, 1:], y=labels_oh[:, 1:])
+            dice_batch = compute_meandice(y_pred=pred_oh[:, 1:], y=labels_oh[:, 1:], include_background=False)
+            hd95_batch = compute_hausdorff_distance(
+                y_pred=pred_oh[:, 1:], y=labels_oh[:, 1:], include_background=False, percentile=95
+            )
 
-    return dice_metric.aggregate().item()
+            total_dice += dice_batch.mean().item()
+            count_dice += 1
+
+            hd95_val = hd95_batch.mean().item()
+            if np.isfinite(hd95_val):
+                total_hd95 += hd95_val
+                count_hd95 += 1
+
+    avg_dice = total_dice / max(count_dice, 1)
+    avg_hd95 = total_hd95 / max(count_hd95, 1)
+
+    return avg_dice, avg_hd95

@@ -97,9 +97,9 @@ def main():
 
             if epoch % args.val_interval == 0:
                 ema.apply_shadow()
-                dice = validate(model, val_loader, device, (args.roi_x, args.roi_y, args.roi_z))
+                dice, hd95 = validate(model, val_loader, device, (args.roi_x, args.roi_y, args.roi_z))
                 ema.restore()
-                print(f"  Validation Dice: {dice:.4f}")
+                print(f"  Validation Dice: {dice:.4f}, HD95: {hd95:.4f}")
 
                 if dice > best_dice:
                     best_dice = dice
