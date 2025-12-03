@@ -330,12 +330,15 @@ def _save_probability_gap_map(
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Labels from the dataloader are already remapped: background=-1, tissue=0..86
     target_idx = labels.clone().long()
-    if foreground_only_model:
-        target_idx = target_idx - 1
+
+    # Replace background (-1) with a valid channel index to avoid gather errors; will
+    # be zeroed out by the brain mask later.
+    target_idx[target_idx < 0] = 0
 
     num_classes = probs.shape[1]
-    target_idx = target_idx.clamp(min=0, max=max(0, num_classes - 1))
+    target_idx = target_idx.clamp(max=max(0, num_classes - 1))
 
     gt_probs = torch.gather(probs, 1, target_idx)
     gap_map = 1.0 - gt_probs
