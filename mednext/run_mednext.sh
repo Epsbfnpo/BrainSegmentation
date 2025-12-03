@@ -9,7 +9,7 @@ export MKL_NUM_THREADS=4
 
 NUM_GPUS=${NUM_GPUS:-4}
 BATCH_SIZE=${BATCH_SIZE:-2}
-EPOCHS=${EPOCHS:-1000}
+EPOCHS=${EPOCHS:-2000}
 RESULTS_DIR="${REPO_ROOT}/results/target_mednext_baseline"
 SPLIT_JSON="${REPO_ROOT}/PPREMOPREBO_split.json"
 
@@ -26,4 +26,5 @@ torchrun --nproc_per_node="${NUM_GPUS}" \
     --batch_size "${BATCH_SIZE}" \
     --out_channels 87 \
     --roi_x 128 --roi_y 128 --roi_z 128 \
-    --lr 1e-4
+    --lr 1e-4 \
+    --val_interval 5

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import argparse
 import os
 import time
@@ -22,12 +20,12 @@ def parse_args():
     parser.add_argument("--roi_x", type=int, default=128)
     parser.add_argument("--roi_y", type=int, default=128)
     parser.add_argument("--roi_z", type=int, default=128)
-    parser.add_argument("--epochs", type=int, default=1000)
+    parser.add_argument("--epochs", type=int, default=2000)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--batch_size", type=int, default=2)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--cache_rate", type=float, default=0.2)
-    parser.add_argument("--val_interval", type=int, default=10)
+    parser.add_argument("--val_interval", type=int, default=5)
     parser.add_argument("--slurm_time_buffer", type=float, default=300.0)
     return parser.parse_args()
 
@@ -57,6 +55,9 @@ def main():
         grn=True,
     ).to(device)
 
+    if is_main:
+        print("🚀 Initializing MedNeXt from scratch (Target-Only Training)...")
+
     if dist.is_initialized():
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank])
 
@@ -78,10 +79,27 @@ def main():
     if "SLURM_JOB_END_TIME" in os.environ:
         job_deadline = float(os.environ["SLURM_JOB_END_TIME"]) - args.slurm_time_buffer
 
-    for epoch in range(1, args.epochs + 1):
+    # Resume support
+    resume_path = os.path.join(args.results_dir, "latest_model.pt")
+    start_epoch = 1
+    if os.path.exists(resume_path):
+        if is_main:
+            print(f"🔄 Resuming from {resume_path}...")
+        ckpt = torch.load(resume_path, map_location="cpu")
+        state_dict = ckpt.get("state_dict", ckpt)
+        if dist.is_initialized():
+            model.module.load_state_dict(state_dict)
+        else:
+            model.load_state_dict(state_dict)
+        start_epoch = ckpt.get("epoch", 0) + 1
+        for _ in range(start_epoch - 1):
+            scheduler.step()
+
+    for epoch in range(start_epoch, args.epochs + 1):
         if job_deadline and time.time() > job_deadline:
             if is_main:
-                torch.save({"epoch": epoch, "state_dict": model.state_dict()}, os.path.join(args.results_dir, "latest_model.pt"))
+                state = model.module.state_dict() if dist.is_initialized() else model.state_dict()
+                torch.save({"epoch": epoch, "state_dict": state}, resume_path)
                 print("⏳ SLURM time limit reached. Saving checkpoint and exiting.")
             break
 
@@ -99,15 +117,22 @@ def main():
                 ema.apply_shadow()
                 dice, hd95 = validate(model, val_loader, device, (args.roi_x, args.roi_y, args.roi_z))
                 ema.restore()
-                print(f"  Validation Dice: {dice:.4f}, HD95: {hd95:.4f}")
+                print(f"  Validation - Dice: {dice:.4f}, HD95: {hd95:.4f}")
 
                 if dice > best_dice:
                     best_dice = dice
-                    torch.save(model.state_dict(), os.path.join(args.results_dir, "best_model.pt"))
+                    state = model.module.state_dict() if dist.is_initialized() else model.state_dict()
+                    torch.save(state, os.path.join(args.results_dir, "best_model.pt"))
                     print("  🔥 New best model saved!")
 
+            # Periodic latest checkpoint
+            if epoch % 10 == 0:
+                state = model.module.state_dict() if dist.is_initialized() else model.state_dict()
+                torch.save({"epoch": epoch, "state_dict": state}, resume_path)
+
     if is_main:
-        torch.save(model.state_dict(), os.path.join(args.results_dir, "final_model.pt"))
+        state = model.module.state_dict() if dist.is_initialized() else model.state_dict()
+        torch.save(state, os.path.join(args.results_dir, "final_model.pt"))
         print("Training complete. Final model saved.")
 
 
