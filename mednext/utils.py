@@ -5,7 +5,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 from monai.losses import DiceLoss
 from monai.inferers import sliding_window_inference
-from monai.metrics import compute_hausdorff_distance, compute_meandice
+
+# Prefer top-level functional metrics; fall back to submodule paths for older MONAI versions.
+try:  # pragma: no cover - import shim
+    from monai.metrics import compute_meandice, compute_hausdorff_distance
+except ImportError:  # pragma: no cover - older MONAI
+    from monai.metrics.meandice import compute_meandice
+    from monai.metrics.hausdorff_distance import compute_hausdorff_distance
+
 import numpy as np
 
 
