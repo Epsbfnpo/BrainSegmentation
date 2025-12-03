@@ -316,6 +316,38 @@ def _save_prediction(
     return out_path
 
 
+def _save_probability_gap_map(
+    probs: torch.Tensor,
+    labels: torch.Tensor,
+    brain_mask: Optional[torch.Tensor],
+    affine: np.ndarray,
+    output_dir: Path,
+    case_id: str,
+    *,
+    foreground_only_model: bool = True,
+) -> None:
+    """Generate and persist a probability gap map (1 - P_gt) as NIfTI."""
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    target_idx = labels.clone().long()
+    if foreground_only_model:
+        target_idx = target_idx - 1
+
+    num_classes = probs.shape[1]
+    target_idx = target_idx.clamp(min=0, max=max(0, num_classes - 1))
+
+    gt_probs = torch.gather(probs, 1, target_idx)
+    gap_map = 1.0 - gt_probs
+
+    if brain_mask is not None:
+        gap_map = gap_map * brain_mask
+
+    gap_np = gap_map.squeeze().detach().cpu().numpy().astype(np.float32)
+    out_path = output_dir / f"{case_id}_gap.nii.gz"
+    nib.save(nib.Nifti1Image(gap_np, affine), str(out_path))
+
+
 def _select_meta(batch: Dict) -> Dict:
     """Robustly fetch the metadata dictionary for the first sample in a batch."""
 
@@ -868,8 +900,6 @@ def evaluate(args: argparse.Namespace) -> Dict:
             case_clce = compute_clce(logits, labels_for_clce)
 
             case_id = _compute_case_id(batch)
-            meta_dict = _select_meta(batch)
-            label_meta = _select_label_meta(batch)
 
             inference_affine: Optional[np.ndarray] = None
             if hasattr(images, "affine"):
@@ -879,6 +909,29 @@ def evaluate(args: argparse.Namespace) -> Dict:
                     inference_affine = affine_np[0]
                 elif affine_np.shape == (4, 4):
                     inference_affine = affine_np
+            if inference_affine is None:
+                inference_affine = np.eye(4, dtype=np.float32)
+
+            labels_gap_in = labels_eval.clone()
+            if labels_gap_in.ndim == 4:
+                labels_gap_in = labels_gap_in.unsqueeze(1)
+
+            mask_gap_in = brain_mask.float()
+            if mask_gap_in.ndim == 4:
+                mask_gap_in = mask_gap_in.unsqueeze(1)
+
+            _save_probability_gap_map(
+                probs=probs,
+                labels=labels_gap_in,
+                brain_mask=mask_gap_in,
+                affine=inference_affine,
+                output_dir=predictions_dir,
+                case_id=case_id,
+                foreground_only_model=args.foreground_only,
+            )
+
+            meta_dict = _select_meta(batch)
+            label_meta = _select_label_meta(batch)
 
             inference_spacing: Optional[np.ndarray] = None
             image_meta = getattr(images, "meta", None)
