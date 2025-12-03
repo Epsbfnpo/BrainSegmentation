@@ -7,7 +7,23 @@ from monai.metrics import HausdorffDistanceMetric
 from monai.inferers import sliding_window_inference
 
 
-# --- NaN / Inf guard ---------------------------------------------------------
+class LocalHausdorffDistanceMetric(HausdorffDistanceMetric):
+    """HD95 metric that skips DDP all-gather to avoid buffer overflows."""
+
+    def _sync(self):
+        # Override to disable distributed sync; we validate per-rank locally.
+        return
+
+
+def compute_dice_score(y_pred: torch.Tensor, y: torch.Tensor, smooth: float = 1e-5) -> torch.Tensor:
+    """Compute per-sample, per-class Dice on one-hot tensors (background excluded upstream)."""
+
+    dims = tuple(range(2, y_pred.ndim))
+    intersection = torch.sum(y_pred * y, dim=dims)
+    cardinality = torch.sum(y_pred + y, dim=dims)
+    return (2.0 * intersection + smooth) / (cardinality + smooth)
+
+
 def check_finite(name: str, tensor) -> bool:
     if tensor is None:
         return True
@@ -17,7 +33,6 @@ def check_finite(name: str, tensor) -> bool:
     return False
 
 
-# --- EMA ---------------------------------------------------------------------
 class ExponentialMovingAverage:
     def __init__(self, model: nn.Module, decay: float = 0.999):
         self.decay = decay
@@ -50,7 +65,6 @@ class ExponentialMovingAverage:
         self.backup = {}
 
 
-# --- Combined loss with DS label auto-resize ---------------------------------
 class CombinedLoss(nn.Module):
     def __init__(self, num_classes: int):
         super().__init__()
@@ -61,7 +75,6 @@ class CombinedLoss(nn.Module):
         if labels.ndim == 4:
             labels = labels.unsqueeze(1)
 
-        # Match deep-supervision logits spatial size
         if logits.shape[2:] != labels.shape[2:]:
             labels = F.interpolate(labels.float(), size=logits.shape[2:], mode="nearest")
 
@@ -77,16 +90,6 @@ class CombinedLoss(nn.Module):
         return 0.5 * loss_ce + 0.5 * loss_dice
 
 
-# --- DIY Dice (no MONAI dependency) ------------------------------------------
-def compute_dice_score(y_pred: torch.Tensor, y: torch.Tensor, smooth: float = 1e-5) -> torch.Tensor:
-    """Compute per-sample, per-class Dice on one-hot tensors without background."""
-    dims = tuple(range(2, y_pred.ndim))
-    intersection = torch.sum(y_pred * y, dim=dims)
-    cardinality = torch.sum(y_pred + y, dim=dims)
-    return (2.0 * intersection + smooth) / (cardinality + smooth)
-
-
-# --- Training loop -----------------------------------------------------------
 def train_one_epoch(model, loader, optimizer, loss_fn, device, scaler, ema=None):
     model.train()
     total_loss = 0.0
@@ -123,7 +126,6 @@ def train_one_epoch(model, loader, optimizer, loss_fn, device, scaler, ema=None)
     return total_loss / max(steps, 1)
 
 
-# --- Validation loop ---------------------------------------------------------
 def validate(model, loader, device, roi_size):
     model.eval()
 
@@ -132,8 +134,7 @@ def validate(model, loader, device, roi_size):
     count_dice = 0
     count_hd95 = 0
 
-    # HD95 metric: use class API with per-batch reset to avoid buffer blow-up
-    hd95_metric = HausdorffDistanceMetric(include_background=False, percentile=95, reduction="mean")
+    hd95_metric = LocalHausdorffDistanceMetric(include_background=False, percentile=95, reduction="mean")
 
     def _predictor(x):
         out = model(x)
@@ -157,12 +158,10 @@ def validate(model, loader, device, roi_size):
             pred_oh = F.one_hot(pred.squeeze(1), num_classes).permute(0, 4, 1, 2, 3)
             labels_oh = F.one_hot(labels.squeeze(1), num_classes).permute(0, 4, 1, 2, 3)
 
-            # Dice (drop background)
             dice_tensor = compute_dice_score(pred_oh[:, 1:], labels_oh[:, 1:])
             total_dice += dice_tensor.mean().item()
             count_dice += 1
 
-            # HD95 (reset each batch to avoid accumulation)
             hd95_metric.reset()
             hd95_metric(y_pred=pred_oh, y=labels_oh)
             hd95_result = hd95_metric.aggregate()
