@@ -117,15 +117,20 @@ def validate(model, loader, device, roi_size):
     model.eval()
     dice_metric = DiceMetric(include_background=False, reduction="mean")
 
+    # Sliding window cannot handle deep-supervision lists; wrap model to return only full-res output.
+    def _predictor(x):
+        out = model(x)
+        if isinstance(out, (list, tuple)):
+            return out[-1]
+        return out
+
     with torch.no_grad():
         for batch in loader:
             images = batch["image"].to(device)
             labels = batch["label"].to(device).long()
             labels[labels < 0] = 0
 
-            logits = sliding_window_inference(images, roi_size, 1, model, overlap=0.25, mode="gaussian")
-            if isinstance(logits, (list, tuple)):
-                logits = logits[-1]
+            logits = sliding_window_inference(images, roi_size, 1, _predictor, overlap=0.25, mode="gaussian")
             pred = torch.argmax(torch.softmax(logits, dim=1), dim=1, keepdim=True)
 
             num_classes = logits.shape[1]
