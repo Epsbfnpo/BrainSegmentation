@@ -8,15 +8,21 @@ from monai.inferers import sliding_window_inference
 
 
 class LocalHausdorffDistanceMetric(HausdorffDistanceMetric):
-    """HD95 metric that skips DDP all-gather to avoid buffer overflows."""
+    """
+    HD95 metric that skips DDP all-gather but still concatenates local buffers
+    so aggregate() receives a Tensor instead of a list.
+    """
 
     def _sync(self):
-        # Override to disable distributed sync; we validate per-rank locally.
-        return
+        if len(self._buffers) > 0:
+            # Concatenate buffered tensors locally; no cross-rank communication.
+            self._synced_tensors = torch.cat(self._buffers, dim=0)
+        else:
+            self._synced_tensors = torch.empty(0, device="cpu")
 
 
 def compute_dice_score(y_pred: torch.Tensor, y: torch.Tensor, smooth: float = 1e-5) -> torch.Tensor:
-    """Compute per-sample, per-class Dice on one-hot tensors (background excluded upstream)."""
+    """Compute per-sample, per-class Dice on one-hot tensors."""
 
     dims = tuple(range(2, y_pred.ndim))
     intersection = torch.sum(y_pred * y, dim=dims)
@@ -75,6 +81,7 @@ class CombinedLoss(nn.Module):
         if labels.ndim == 4:
             labels = labels.unsqueeze(1)
 
+        # Deep supervision label resize to match logits
         if logits.shape[2:] != labels.shape[2:]:
             labels = F.interpolate(labels.float(), size=logits.shape[2:], mode="nearest")
 

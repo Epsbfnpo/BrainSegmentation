@@ -11,47 +11,47 @@ from data_loader import get_loader
 from utils import CombinedLoss, ExponentialMovingAverage, train_one_epoch, validate
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="MedNeXt baseline training on PPREMO/PREBO")
-    parser.add_argument("--split_json", required=True, help="Path to split JSON with training/validation entries")
-    parser.add_argument("--results_dir", default="./results_mednext", help="Directory to store checkpoints")
-    parser.add_argument("--in_channels", type=int, default=1)
-    parser.add_argument("--out_channels", type=int, default=87)
-    parser.add_argument("--roi_x", type=int, default=128)
-    parser.add_argument("--roi_y", type=int, default=128)
-    parser.add_argument("--roi_z", type=int, default=128)
-    parser.add_argument("--epochs", type=int, default=2000)
-    parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--batch_size", type=int, default=2)
-    parser.add_argument("--num_workers", type=int, default=4)
-    parser.add_argument("--cache_rate", type=float, default=0.2)
-    parser.add_argument("--val_interval", type=int, default=5)
-    parser.add_argument("--slurm_time_buffer", type=float, default=300.0)
-    return parser.parse_args()
-
-
 def main():
-    args = parse_args()
-    os.makedirs(args.results_dir, exist_ok=True)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--split_json', required=True)
+    parser.add_argument('--results_dir', default='./results_mednext')
+    parser.add_argument('--in_channels', type=int, default=1)
+    parser.add_argument('--out_channels', type=int, default=87)
+    parser.add_argument('--roi_x', type=int, default=128)
+    parser.add_argument('--roi_y', type=int, default=128)
+    parser.add_argument('--roi_z', type=int, default=128)
+    parser.add_argument('--epochs', type=int, default=2000)
+    parser.add_argument('--lr', type=float, default=1e-4)
+    parser.add_argument('--batch_size', type=int, default=2)
+    parser.add_argument('--num_workers', type=int, default=4)
+    parser.add_argument('--cache_rate', type=float, default=0.2)
+    parser.add_argument('--val_interval', type=int, default=5)
+    parser.add_argument('--slurm_time_buffer', type=float, default=300)
+    args = parser.parse_args()
 
-    if "RANK" in os.environ:
-        dist.init_process_group(backend="nccl", timeout=timedelta(minutes=30))
-        local_rank = int(os.environ["LOCAL_RANK"])
+    if 'RANK' in os.environ:
+        dist.init_process_group(backend='nccl', timeout=timedelta(minutes=30))
+        local_rank = int(os.environ['LOCAL_RANK'])
         torch.cuda.set_device(local_rank)
-        device = torch.device(f"cuda:{local_rank}")
+        device = torch.device(f'cuda:{local_rank}')
         is_main = dist.get_rank() == 0
     else:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         is_main = True
+
+    os.makedirs(args.results_dir, exist_ok=True)
 
     model = MedNeXt(
         in_channels=args.in_channels,
         n_channels=32,
         n_classes=args.out_channels,
         exp_r=2,
-        drop_path_rate=0.05,
+        kernel_size=3,
         deep_supervision=True,
-        dim="3d",
+        do_res=True,
+        do_res_up_down=True,
+        block_counts=[2, 2, 2, 2, 2, 2, 2, 2, 2],
+        dim='3d',
         grn=True,
     ).to(device)
 
@@ -76,22 +76,21 @@ def main():
 
     best_dice = 0.0
     job_deadline = None
-    if "SLURM_JOB_END_TIME" in os.environ:
-        job_deadline = float(os.environ["SLURM_JOB_END_TIME"]) - args.slurm_time_buffer
+    if 'SLURM_JOB_END_TIME' in os.environ:
+        job_deadline = float(os.environ['SLURM_JOB_END_TIME']) - args.slurm_time_buffer
 
-    # Resume support
-    resume_path = os.path.join(args.results_dir, "latest_model.pt")
+    resume_path = os.path.join(args.results_dir, 'latest_model.pt')
     start_epoch = 1
     if os.path.exists(resume_path):
         if is_main:
             print(f"🔄 Resuming from {resume_path}...")
-        ckpt = torch.load(resume_path, map_location="cpu")
-        state_dict = ckpt.get("state_dict", ckpt)
+        ckpt = torch.load(resume_path, map_location='cpu')
+        state_dict = ckpt.get('state_dict', ckpt)
         if dist.is_initialized():
             model.module.load_state_dict(state_dict)
         else:
             model.load_state_dict(state_dict)
-        start_epoch = ckpt.get("epoch", 0) + 1
+        start_epoch = ckpt.get('epoch', 0) + 1
         for _ in range(start_epoch - 1):
             scheduler.step()
 
@@ -99,7 +98,7 @@ def main():
         if job_deadline and time.time() > job_deadline:
             if is_main:
                 state = model.module.state_dict() if dist.is_initialized() else model.state_dict()
-                torch.save({"epoch": epoch, "state_dict": state}, resume_path)
+                torch.save({'epoch': epoch, 'state_dict': state}, resume_path)
                 print("⏳ SLURM time limit reached. Saving checkpoint and exiting.")
             break
 
@@ -110,31 +109,31 @@ def main():
         scheduler.step()
 
         if is_main:
-            lr = optimizer.param_groups[0]["lr"]
+            lr = optimizer.param_groups[0]['lr']
             print(f"Epoch {epoch}/{args.epochs} - Loss: {loss:.4f} - LR: {lr:.6f}")
 
             if epoch % args.val_interval == 0:
                 ema.apply_shadow()
                 dice, hd95 = validate(model, val_loader, device, (args.roi_x, args.roi_y, args.roi_z))
                 ema.restore()
+
                 print(f"  Validation - Dice: {dice:.4f}, HD95: {hd95:.4f}")
 
                 if dice > best_dice:
                     best_dice = dice
                     state = model.module.state_dict() if dist.is_initialized() else model.state_dict()
-                    torch.save(state, os.path.join(args.results_dir, "best_model.pt"))
+                    torch.save(state, os.path.join(args.results_dir, 'best_model.pt'))
                     print("  🔥 New best model saved!")
 
-            # Periodic latest checkpoint
             if epoch % 10 == 0:
                 state = model.module.state_dict() if dist.is_initialized() else model.state_dict()
-                torch.save({"epoch": epoch, "state_dict": state}, resume_path)
+                torch.save({'epoch': epoch, 'state_dict': state}, resume_path)
 
     if is_main:
         state = model.module.state_dict() if dist.is_initialized() else model.state_dict()
-        torch.save(state, os.path.join(args.results_dir, "final_model.pt"))
+        torch.save(state, os.path.join(args.results_dir, 'final_model.pt'))
         print("Training complete. Final model saved.")
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
