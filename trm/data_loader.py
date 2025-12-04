@@ -36,6 +36,63 @@ from torch.utils.data import DataLoader as TorchDataLoader
 from torch.utils.data import DistributedSampler, Sampler, WeightedRandomSampler
 
 
+def prepare_class_ratios(
+    prior_data: Dict,
+    expected_num_classes: int,
+    foreground_only: bool,
+) -> np.ndarray:
+    """Lightweight helper to extract class ratios without external dependencies.
+
+    The function attempts the following, in order:
+    1) Directly read an explicit "class_ratios" field.
+    2) Aggregate "means" from any nested volume stats entries.
+    3) Fall back to a generic "ratios" field.
+
+    Args:
+        prior_data: Parsed JSON dictionary containing class prior information.
+        expected_num_classes: Number of target classes (excluding background if foreground_only=True).
+        foreground_only: Whether to drop an explicit background entry from the ratios.
+
+    Returns:
+        np.ndarray of shape (expected_num_classes,) with per-class ratios.
+        Returns a uniform vector if no usable statistics are found.
+    """
+
+    ratios = np.asarray(prior_data.get("class_ratios", []), dtype=np.float64)
+    if ratios.size == 0:
+        # Try aggregating volume stats if available
+        volume_keys = [k for k, v in prior_data.items() if isinstance(v, dict) and "means" in v]
+        if volume_keys:
+            accum = np.zeros(expected_num_classes, dtype=np.float64)
+            counts = np.zeros(expected_num_classes, dtype=np.float64)
+            for key in volume_keys:
+                entry = prior_data[key]
+                means = np.asarray(entry.get("means", []), dtype=np.float64)
+                n = np.asarray(entry.get("n", []), dtype=np.float64)
+                means = np.pad(means, (0, max(0, expected_num_classes - means.size)))[:expected_num_classes]
+                n = np.pad(n, (0, max(0, expected_num_classes - n.size)))[:expected_num_classes]
+                accum += means * n
+                counts += n
+            valid = counts > 0
+            ratios = np.zeros(expected_num_classes, dtype=np.float64)
+            ratios[valid] = accum[valid] / counts[valid]
+        else:
+            ratios = np.asarray(prior_data.get("ratios", []), dtype=np.float64)
+
+    if ratios.size == 0:
+        return np.ones(expected_num_classes, dtype=np.float64)
+
+    if foreground_only and ratios.size == expected_num_classes + 1:
+        ratios = ratios[1:]
+
+    if ratios.size > expected_num_classes:
+        ratios = ratios[:expected_num_classes]
+    elif ratios.size < expected_num_classes:
+        ratios = np.pad(ratios, (0, expected_num_classes - ratios.size))
+
+    return ratios
+
+
 class DistributedWeightedSampler(Sampler[int]):
     """Weighted sampler compatible with DistributedDataParallel."""
 
@@ -359,27 +416,7 @@ def _load_class_ratios(args, *, is_main: bool) -> Optional[List[float]]:
     with open(stats_path, "r") as f:
         prior_data = json.load(f)
 
-    ratios = np.asarray(prior_data.get("class_ratios", prior_data.get("ratios", [])), dtype=np.float64)
-    if ratios.size == 0:
-        volume_keys = [k for k, v in prior_data.items() if isinstance(v, dict) and "means" in v]
-        if volume_keys:
-            accum = np.zeros(args.out_channels, dtype=np.float64)
-            counts = np.zeros(args.out_channels, dtype=np.float64)
-            for key in volume_keys:
-                entry = prior_data[key]
-                means = np.asarray(entry.get("means", []), dtype=np.float64)
-                n = np.asarray(entry.get("n", []), dtype=np.float64)
-                means = np.pad(means, (0, max(0, args.out_channels - means.size)))[: args.out_channels]
-                n = np.pad(n, (0, max(0, args.out_channels - n.size)))[: args.out_channels]
-                accum += means * n
-                counts += np.where(n > 0, n, 1.0)
-            valid = counts > 0
-            ratios = np.zeros(args.out_channels, dtype=np.float64)
-            ratios[valid] = accum[valid] / counts[valid]
-    if args.foreground_only and ratios.size == args.out_channels + 1:
-        ratios = ratios[1:]
-    if ratios.size != args.out_channels:
-        ratios = np.pad(ratios, (0, max(0, args.out_channels - ratios.size)))[: args.out_channels]
+    ratios = prepare_class_ratios(prior_data, expected_num_classes=args.out_channels, foreground_only=args.foreground_only)
 
     if ratios.sum() <= 0:
         if is_main:
