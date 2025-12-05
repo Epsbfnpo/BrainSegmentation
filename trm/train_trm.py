@@ -14,10 +14,10 @@ import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from trm.data_loader import get_target_dataloaders
-from trm.modules import SwinUNETRWrapper, load_pretrained_weights
-from trm.trainer_trm import reduce_tensor, train_epoch, validate_epoch
-from trm.trm_core import TransferRiskManager
+from data_loader import get_target_dataloaders
+from modules import SwinUNETRWrapper, load_pretrained_weights
+from trainer_trm import reduce_tensor, train_epoch, validate_epoch
+from trm_core import TransferRiskManager
 
 
 def init_distributed(args) -> bool:
@@ -127,7 +127,6 @@ def main():
 
     if distributed:
         target_model = DDP(target_model, device_ids=[args.local_rank], output_device=args.local_rank)
-        source_model = DDP(source_model, device_ids=[args.local_rank], output_device=args.local_rank)
 
     optimizer = torch.optim.AdamW(target_model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)

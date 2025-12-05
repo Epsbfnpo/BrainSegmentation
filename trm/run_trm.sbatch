@@ -21,7 +21,7 @@ echo "=============================================================="
 
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK}
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
 export NCCL_SOCKET_IFNAME=^docker0,lo
 export TORCH_ALLOW_TF32=1
 export CUBLAS_ALLOW_TF32=1

@@ -6,7 +6,7 @@ import torch.distributed as dist
 from monai.metrics import DiceMetric
 from monai.transforms import AsDiscrete
 
-from trm.trm_core import TRMWeightedLoss
+from trm_core import TRMWeightedLoss
 
 
 def is_finite(tensor: torch.Tensor) -> bool:
