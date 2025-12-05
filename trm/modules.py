@@ -26,7 +26,8 @@ def load_pretrained_weights(model: nn.Module, checkpoint_path: str) -> None:
     if not checkpoint_path:
         return
     print(f"📦 Loading weights from {checkpoint_path}")
-    ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    # Allow full checkpoint contents because source checkpoints include argparse.Namespace metadata.
+    ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     if "model_state_dict" in ckpt:
         state_dict = ckpt["model_state_dict"]
     else:

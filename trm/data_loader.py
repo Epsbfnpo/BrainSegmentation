@@ -350,7 +350,7 @@ def _base_transforms(
     laterality_pairs: Optional[Sequence[Tuple[int, int]]] = None,
 ) -> Compose:
     transforms = [
-        LoadImaged(keys=["image", "label"]),
+        LoadImaged(keys=["image", "label"], image_only=False),
         EnsureChannelFirstd(keys=["image", "label"]),
     ]
     if getattr(args, "apply_spacing", True):
@@ -392,7 +392,7 @@ def _base_transforms(
 
 def _inference_transforms(args, *, keep_meta: bool = True) -> Compose:
     transforms = [
-        LoadImaged(keys=["image", "label"]),
+        LoadImaged(keys=["image", "label"], image_only=False),
         EnsureChannelFirstd(keys=["image", "label"]),
     ]
     if getattr(args, "apply_spacing", True):
