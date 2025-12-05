@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from monai.losses import DiceLoss
 
 
 class TransferRiskManager:
@@ -58,6 +59,7 @@ class TransferRiskManager:
             labels[labels < 0] = 0
             if labels.ndim == 4:
                 labels = labels.unsqueeze(1)
+
             leep_probs = torch.gather(expected_y_probs, 1, labels.long())
             leep_score = torch.log(leep_probs.clamp(min=1e-6))
             hardness = -leep_score
@@ -74,9 +76,12 @@ class TRMWeightedLoss(nn.Module):
     def __init__(self, num_classes: int):
         super().__init__()
         self.ce = nn.CrossEntropyLoss(reduction="none", ignore_index=-1)
-        from monai.losses import DiceLoss
-
-        self.dice = DiceLoss(to_onehot_y=True, softmax=True, include_background=False)
+        self.dice = DiceLoss(
+            to_onehot_y=True,
+            softmax=True,
+            include_background=False,
+            squared_pred=True,
+        )
         self.num_classes = num_classes
 
     def forward(self, target_logits: torch.Tensor, target_labels: torch.Tensor, risk_map: torch.Tensor) -> torch.Tensor:
@@ -85,9 +90,14 @@ class TRMWeightedLoss(nn.Module):
             risk_map = risk_map.squeeze(1)
 
         weighted_ce = ce_loss * risk_map
-        foreground_mask = (target_labels.squeeze(1) > 0).float()
+        foreground_mask = (target_labels.squeeze(1) >= 0).float()
         denom = foreground_mask.sum().clamp(min=1.0)
         loss_ce = weighted_ce.sum() / denom
 
-        loss_dice = self.dice(target_logits, target_labels)
+        labels_for_dice = target_labels.clone()
+        labels_for_dice[labels_for_dice < 0] = 0
+        if labels_for_dice.ndim == 4:
+            labels_for_dice = labels_for_dice.unsqueeze(1)
+
+        loss_dice = self.dice(target_logits, labels_for_dice)
         return loss_ce + loss_dice
