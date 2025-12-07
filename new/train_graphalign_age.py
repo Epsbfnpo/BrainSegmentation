@@ -373,6 +373,9 @@ def build_model(args, device: torch.device) -> SimplifiedDAUnetModule:
         enhanced_class_weights=args.enhanced_class_weights,
         use_age_conditioning=False,
         debug_mode=args.debug_mode,
+        use_freqfit=args.use_freqfit,
+        roi_size=(args.roi_x, args.roi_y, args.roi_z),
+        in_channels=args.in_channels,
     )
     return wrapper
 
@@ -467,6 +470,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--roi_x", default=96, type=int)
     parser.add_argument("--roi_y", default=96, type=int)
     parser.add_argument("--roi_z", default=96, type=int)
+    parser.add_argument("--use_freqfit", action="store_true", default=False,
+                        help="Enable frequency-domain adapter for texture alignment")
     parser.add_argument("--apply_spacing", dest="apply_spacing", action="store_true", default=True)
     parser.add_argument("--no_apply_spacing", dest="apply_spacing", action="store_false")
     parser.add_argument("--apply_orientation", dest="apply_orientation", action="store_true", default=True)

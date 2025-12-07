@@ -46,6 +46,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--roi_x", default=128, type=int)
     parser.add_argument("--roi_y", default=128, type=int)
     parser.add_argument("--roi_z", default=128, type=int)
+    parser.add_argument("--use_freqfit", action="store_true", default=False,
+                        help="Enable frequency-domain adapter for texture alignment")
     parser.add_argument("--apply_spacing", dest="apply_spacing", action="store_true", default=True)
     parser.add_argument("--no_apply_spacing", dest="apply_spacing", action="store_false")
     parser.add_argument("--apply_orientation", dest="apply_orientation", action="store_true", default=True)
