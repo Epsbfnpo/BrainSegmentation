@@ -15,6 +15,7 @@ python -u "${SCRIPT_DIR}/test_graphalign_age.py" \
   --out_channels 87 \
   --feature_size 48 \
   --roi_x 128 --roi_y 128 --roi_z 128 \
+  --use_freqfit \
   --target_spacing 0.8 0.8 0.8 \
   --resample_to_native \
   --foreground_only \

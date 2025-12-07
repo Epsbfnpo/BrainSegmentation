@@ -26,6 +26,7 @@ PRETRAINED_CHECKPOINT=${PRETRAINED_CHECKPOINT:-/datasets/work/hb-nhmrc-dhcp/work
 OUT_CHANNELS=${OUT_CHANNELS:-87}
 DISABLE_PRIOR=${DISABLE_PRIOR:-0}
 USE_AMP=${USE_AMP:-1}
+USE_FREQFIT=${USE_FREQFIT:-1}
 PRIOR_PROFILE=${PRIOR_PROFILE:-volume_shape_edge_sym_reqforb_spec_dyn}
 
 ROI_X=${ROI_X:-128}
@@ -356,6 +357,10 @@ fi
 
 if [ "${USE_AMP}" -eq 0 ]; then
     CMD+=(--no_amp)
+fi
+
+if [ "${USE_FREQFIT}" -ne 0 ]; then
+    CMD+=(--use_freqfit)
 fi
 
 printf 'Running command:\n  %s\n' "${CMD[*]}"

@@ -10,6 +10,49 @@ import torch.nn as nn
 import torch.distributed as dist
 
 
+def init_ssf_scale_shift(dim: int):
+    scale = nn.Parameter(torch.ones(dim))
+    shift = nn.Parameter(torch.zeros(dim))
+    nn.init.normal_(scale, mean=1.0, std=0.02)
+    nn.init.normal_(shift, mean=0.0, std=0.02)
+    return scale, shift
+
+
+def ssf_ada(x: torch.Tensor, scale: torch.Tensor, shift: torch.Tensor) -> torch.Tensor:
+    return x * scale + shift
+
+
+class GlobalFilter3D(nn.Module):
+    """Frequency-domain filter adapted from FreqFiT for 3D volumes."""
+
+    def __init__(self, dim: int, h: int = 96, w: int = 96, d: int = 96):
+        super().__init__()
+        self.complex_weight = nn.Parameter(
+            torch.randn(h, w, d // 2 + 1, dim, 2, dtype=torch.float32) * 0.02
+        )
+        self.dim = dim
+        self.ssf_scale, self.ssf_shift = init_ssf_scale_shift(dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, C, H, W, D)
+        _, _, h, w, d = x.shape
+        x = x.permute(0, 2, 3, 4, 1).contiguous()
+
+        residual = x
+        x = x.to(torch.float32)
+        x_fft = torch.fft.rfftn(x, dim=(1, 2, 3), norm="ortho")
+
+        weight = torch.view_as_complex(self.complex_weight)
+        x_fft = x_fft * weight
+
+        x = torch.fft.irfftn(x_fft, s=(h, w, d), dim=(1, 2, 3), norm="ortho")
+        x = ssf_ada(x, self.ssf_scale, self.ssf_shift)
+        x = x + residual
+
+        x = x.permute(0, 4, 1, 2, 3).contiguous()
+        return x
+
+
 def prepare_class_ratios(prior_data: Dict,
                          expected_num_classes: int,
                          foreground_only: bool,
@@ -141,17 +184,33 @@ class SimplifiedDAUnetModule(nn.Module):
                  foreground_only: bool = True,
                  enhanced_class_weights: bool = True,
                  use_age_conditioning: bool = False,
-                 debug_mode: bool = False):
+                 debug_mode: bool = False,
+                 use_freqfit: bool = False,
+                 roi_size: tuple = (96, 96, 96),
+                 in_channels: int = 1):
         super().__init__()
         self.backbone = backbone
         self.num_classes = num_classes
         self.foreground_only = foreground_only
         self.use_age_conditioning = use_age_conditioning
         self.debug_mode = debug_mode
+        self.use_freqfit = use_freqfit
         self._age_strength = torch.tensor(1.0)
+
+        self.freq_filter: Optional[GlobalFilter3D] = None
 
         is_main = (not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0
         device = next(backbone.parameters()).device
+
+        if self.use_freqfit:
+            if is_main:
+                print("🌊 FreqFiT frequency adapter enabled")
+            self.freq_filter = GlobalFilter3D(
+                dim=in_channels,
+                h=roi_size[0],
+                w=roi_size[1],
+                d=roi_size[2],
+            ).to(device)
         self.class_weights = _load_class_weights(
             volume_stats_path,
             num_classes=num_classes,
@@ -173,6 +232,8 @@ class SimplifiedDAUnetModule(nn.Module):
     def forward(self, x: torch.Tensor, age: Optional[torch.Tensor] = None) -> torch.Tensor:
         # Age conditioning can be added here if desired. The placeholder keeps
         # the interface compatible with previous experiments.
+        if self.use_freqfit and self.freq_filter is not None:
+            x = self.freq_filter(x)
         return self.backbone(x)
 
     def get_class_weights(self) -> Optional[torch.Tensor]:
