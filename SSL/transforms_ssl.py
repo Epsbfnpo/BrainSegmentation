@@ -1,12 +1,12 @@
 """
-Data transforms for SSL pretraining on dHCP dataset
+Data transforms for SSL pretraining (adapted for AMOS abdominal CT)
 Includes resolution adjustment and appropriate preprocessing
 """
 import torch
 import numpy as np
 from monai.transforms import (
     Compose, LoadImaged, EnsureChannelFirstd,
-    Spacingd, SpatialPadd, CenterSpatialCropd,
+    Spacingd, Orientationd, SpatialPadd, CenterSpatialCropd,
     RandSpatialCropd, RandFlipd, RandRotated,
     RandGaussianNoised, RandGaussianSmoothd,
     RandScaleIntensityd, RandShiftIntensityd,
@@ -134,48 +134,62 @@ class IntensityClipd(MapTransform):
         return d
 
 
+def _parse_target_spacing(target_spacing: Optional[List[float]]):
+    if isinstance(target_spacing, str):
+        return [float(v) for v in target_spacing.split()]
+    return target_spacing
+
+
 def get_ssl_transforms(
         args,
         mode: str = 'train',
-        target_spacing: List[float] = [0.8, 0.8, 0.8]
+        target_spacing: Optional[List[float]] = None
 ) -> Compose:
     """Get transforms for SSL pretraining
-
-    Args:
-        args: Arguments containing ROI size and other parameters
-        mode: 'train' or 'val'
-        target_spacing: Target voxel spacing in mm
+    ADAPTED FOR AMOS CT DATASET
     """
 
-    # Base transforms - always applied
-    base_transforms = [
-        LoadImaged(keys=["image"]),
-        EnsureChannelFirstd(keys=["image"]),
+    keys = ["image"]
+    spacing = _parse_target_spacing(target_spacing or args.target_spacing)
 
-        # Resolution standardization (from 0.5mm to 0.8mm)
+    transforms = [
+        LoadImaged(keys=keys),
+        EnsureChannelFirstd(keys=keys),
+
+        # --- [CRITICAL CHANGE 1] Spacing ---
+        # Abdominal CT typically uses ~1.5mm spacing
         Spacingd(
-            keys=["image"],
-            pixdim=target_spacing,
-            mode="bilinear",
+            keys=keys,
+            pixdim=spacing,
+            mode="bilinear"
         ),
 
-        # Intensity preprocessing
-        IntensityClipd(keys=["image"], percentile=99.5),
-        PercentileNormalizationd(
-            keys=["image"],
-            lower=1,
-            upper=99,
+        # --- [CRITICAL CHANGE 2] Orientation ---
+        Orientationd(keys=keys, axcodes="RAS"),
+
+        # --- [CRITICAL CHANGE 3] CT Normalization ---
+        ScaleIntensityRanged(
+            keys=keys,
+            a_min=-175.0,
+            a_max=250.0,
             b_min=0.0,
-            b_max=1.0
+            b_max=1.0,
+            clip=True,
+        ),
+
+        # Spatial padding before cropping
+        SpatialPadd(
+            keys=keys,
+            spatial_size=(args.roi_x, args.roi_y, args.roi_z),
+            mode="constant",
+            constant_values=0,
         ),
     ]
 
     if mode == 'train':
-        # Training transforms with augmentation
-        transforms = base_transforms + [
-            # Spatial transforms
+        transforms += [
             RandSpatialCropd(
-                keys=["image"],
+                keys=keys,
                 roi_size=(args.roi_x, args.roi_y, args.roi_z),
                 random_center=True,
                 random_size=False,
@@ -183,85 +197,73 @@ def get_ssl_transforms(
 
             # Spatial augmentations (moderate for SSL)
             RandFlipd(
-                keys=["image"],
+                keys=keys,
                 spatial_axis=[0],
                 prob=0.5,
             ),
             RandFlipd(
-                keys=["image"],
+                keys=keys,
                 spatial_axis=[1],
                 prob=0.5,
             ),
             RandFlipd(
-                keys=["image"],
+                keys=keys,
                 spatial_axis=[2],
                 prob=0.5,
             ),
 
-            # Small rotations
             RandRotated(
-                keys=["image"],
-                range_x=0.2,  # Reduced from 0.5
+                keys=keys,
+                range_x=0.2,
                 range_y=0.2,
                 range_z=0.2,
                 prob=0.3,
                 mode="bilinear",
             ),
 
-            # Intensity augmentations (mild for SSL)
             RandScaleIntensityd(
-                keys=["image"],
-                factors=0.1,  # Reduced from 0.3
+                keys=keys,
+                factors=0.1,
                 prob=0.3,
             ),
             RandShiftIntensityd(
-                keys=["image"],
-                offsets=0.05,  # Reduced from 0.1
+                keys=keys,
+                offsets=0.05,
                 prob=0.3,
             ),
 
-            # Mild contrast adjustment
             RandAdjustContrastd(
-                keys=["image"],
+                keys=keys,
                 prob=0.2,
-                gamma=(0.9, 1.1)  # Reduced range
+                gamma=(0.9, 1.1)
             ),
 
-            # Mild noise
             RandGaussianNoised(
-                keys=["image"],
+                keys=keys,
                 prob=0.2,
                 mean=0.0,
-                std=0.02,  # Reduced from 0.05
+                std=0.02,
             ),
 
-            # Mild smoothing
             RandGaussianSmoothd(
-                keys=["image"],
+                keys=keys,
                 sigma_x=(0.5, 1.0),
                 sigma_y=(0.5, 1.0),
                 sigma_z=(0.5, 1.0),
                 prob=0.2,
             ),
 
-            ToTensord(keys=["image"]),
+            ToTensord(keys=keys),
         ]
     else:
-        # Validation transforms - no augmentation
-        transforms = base_transforms + [
-            # Pad if needed
-            SpatialPadd(
-                keys=["image"],
-                spatial_size=(args.roi_x, args.roi_y, args.roi_z),
-                mode="constant",
-                constant_values=0,
-            ),
-            # Center crop
-            CenterSpatialCropd(
-                keys=["image"],
+        transforms += [
+            RandSpatialCropd(
+                keys=keys,
                 roi_size=(args.roi_x, args.roi_y, args.roi_z),
+                random_center=True,
+                random_size=False,
             ),
-            ToTensord(keys=["image"]),
+            ToTensord(keys=keys),
         ]
 
     return Compose(transforms)

@@ -119,7 +119,7 @@ def get_parser():
 
     # Resolution parameters
     parser.add_argument('--target_spacing', nargs=3, type=float,
-                        default=[0.8, 0.8, 0.8],
+                        default=[1.5, 1.5, 1.5],
                         help='Target voxel spacing in mm')
 
     # LR scheduler
