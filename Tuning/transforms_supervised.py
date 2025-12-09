@@ -1,5 +1,6 @@
 """
 Data transforms for supervised fine-tuning (AMOS CT adaptation)
+FIXED: Added explicit memory copying to resolve DataLoader storage resize errors
 """
 import torch
 import numpy as np
@@ -18,7 +19,10 @@ from monai.data import MetaTensor
 
 
 class ForceContiguousd(MapTransform):
-    """Force tensors/arrays to own memory to avoid shared-storage issues."""
+    """
+    Force tensors/arrays to own their memory to avoid shared-storage issues.
+    CRITICAL FIX: Uses copy=True to ensure data is not a view of a larger array.
+    """
 
     def __init__(self, keys):
         super().__init__(keys)
@@ -27,17 +31,27 @@ class ForceContiguousd(MapTransform):
         d = dict(data)
         for key in self.key_iterator(d):
             value = d[key]
+
+            # Handle MetaTensor (MONAI wrapper)
             if isinstance(value, MetaTensor):
-                # Re-wrap with contiguous array
+                # If underlying data is numpy, force a deep copy and contiguous memory
                 if isinstance(value.array, np.ndarray):
-                    new_array = np.ascontiguousarray(value.array)
-                else:
-                    new_array = value.array
-                d[key] = MetaTensor(new_array, meta=value.meta.copy())
+                    new_array = np.array(value.array, copy=True)
+                    new_array = np.ascontiguousarray(new_array)
+                    # Re-wrap in MetaTensor preserving metadata
+                    d[key] = MetaTensor(new_array, meta=value.meta.copy())
+                elif isinstance(value.array, torch.Tensor):
+                    # If it's already a tensor, clone it
+                    d[key] = value.clone().detach().contiguous()
+
+            # Handle standard PyTorch Tensor
             elif isinstance(value, torch.Tensor):
-                d[key] = value.contiguous()
+                d[key] = value.clone().detach().contiguous()
+            
+            # Handle standard Numpy array
             elif isinstance(value, np.ndarray):
-                d[key] = np.ascontiguousarray(value)
+                new_array = np.array(value, copy=True)
+                d[key] = np.ascontiguousarray(new_array)
         return d
 
 
@@ -134,11 +148,12 @@ class RandCropByLabelClassesd(MapTransform):
                     crop_start[2]:crop_end[2]
                 ]
 
-            # break view relationship to avoid DataLoader shared-memory resize errors
-            if isinstance(cropped, torch.Tensor):
-                cropped = cropped.clone().detach()
-            elif isinstance(cropped, np.ndarray):
+            # [FIX] Force deep copy immediately after slicing to break view reference
+            if isinstance(cropped, np.ndarray):
+                cropped = np.array(cropped, copy=True)
                 cropped = np.ascontiguousarray(cropped)
+            elif isinstance(cropped, torch.Tensor):
+                cropped = cropped.clone().detach().contiguous()
 
             if isinstance(img, MetaTensor):
                 d[key] = MetaTensor(cropped, meta=meta_dict)
@@ -181,10 +196,12 @@ class RandCropByLabelClassesd(MapTransform):
                     crop_start[2]:crop_end[2]
                 ]
 
-            if isinstance(cropped, torch.Tensor):
-                cropped = cropped.clone().detach()
-            elif isinstance(cropped, np.ndarray):
+            # [FIX] Force deep copy
+            if isinstance(cropped, np.ndarray):
+                cropped = np.array(cropped, copy=True)
                 cropped = np.ascontiguousarray(cropped)
+            elif isinstance(cropped, torch.Tensor):
+                cropped = cropped.clone().detach().contiguous()
 
             d[key] = cropped
 
