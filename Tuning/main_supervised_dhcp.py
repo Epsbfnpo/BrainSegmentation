@@ -204,7 +204,8 @@ def validate_configuration(args):
     # Check class prior file
     if args.class_aware_sampling and not os.path.exists(args.class_prior_json):
         print(f"⚠️ WARNING: Class prior file not found: {args.class_prior_json}")
-        print(f"   Class-aware sampling will use uniform weights")
+        print(f"   --> Disabling class-aware sampling. Using uniform sampling.")
+        args.class_aware_sampling = False
 
     # Validate rotation angle
     if args.max_rotation_angle > 0.2:  # ~11 degrees

@@ -8,9 +8,9 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # 项目路径
 REPO_ROOT="/datasets/work/hb-nhmrc-dhcp/work/liu275"
-CODE_DIR="${REPO_ROOT}/Supervised_Finetune" # 假设你把代码放在这
+CODE_DIR="${REPO_ROOT}/Tuning"
 # 结果输出路径
-RESULTS_DIR="${REPO_ROOT}/results/amos_supervised_finetune"
+RESULTS_DIR="${CODE_DIR}/results_fixed/amos_supervised_finetune"
 mkdir -p "${RESULTS_DIR}"
 
 # 关键输入路径
@@ -18,7 +18,7 @@ mkdir -p "${RESULTS_DIR}"
 DATA_SPLIT_JSON="${REPO_ROOT}/AMOS_pretrain_split.json"
 # 2. 预训练模型 (SSL阶段的产出)
 # 请确保这个路径指向你上一阶段实际生成的 final_model.pth
-PRETRAINED_MODEL="${REPO_ROOT}/results/amos_ssl_pretrain/final_model.pth"
+PRETRAINED_MODEL="${REPO_ROOT}/SSL/results_ssl/amos_ssl_pretrain/ssl_dHCP_distributed_20251209_010441/best_model.pth"
 
 # 训练配置
 EXPERIMENT_NAME="AMOS_CT_Finetune_From_SSL"
