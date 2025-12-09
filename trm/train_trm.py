@@ -6,6 +6,9 @@ import json
 import math
 import os
 import random
+import signal
+import sys
+import time
 from pathlib import Path
 from typing import Dict
 
@@ -94,10 +97,39 @@ def parse_args():
     return parser.parse_args()
 
 
+# --- 新增：Slurm 信号与时间管理 ---
+class TerminationHandler:
+    def __init__(self):
+        self.stop_requested = False
+        signal.signal(signal.SIGTERM, self._handler)
+        signal.signal(signal.SIGINT, self._handler)
+
+    def _handler(self, signum, frame):
+        print(f"🛑 接收到 Slurm 信号 ({signum})，准备优雅退出...", flush=True)
+        self.stop_requested = True
+
+
+def check_slurm_deadline(buffer_seconds=600):
+    """检查是否接近 Slurm 时间限制"""
+    end_time_str = os.environ.get("SLURM_JOB_END_TIME")
+    if end_time_str:
+        try:
+            remaining = float(end_time_str) - time.time()
+            if remaining < buffer_seconds:
+                print(f"⏳ 剩余时间 ({remaining:.1f}s) 不足，准备优雅退出...", flush=True)
+                return True
+        except ValueError:
+            pass
+    return False
+
+
 def main():
     args = parse_args()
     torch.backends.cudnn.benchmark = True
     set_seed(args.seed)
+
+    # 1. 初始化监听器
+    terminator = TerminationHandler()
 
     distributed = init_distributed(args)
     device = torch.device(f"cuda:{args.local_rank}" if torch.cuda.is_available() else "cpu")
@@ -136,8 +168,49 @@ def main():
 
     best_dice = -math.inf
 
+    # --- 新增：自动加载断点 ---
+    latest_ckpt = results_dir / "latest_model.pt"
+    start_epoch = 1
+    if latest_ckpt.exists():
+        if is_main:
+            print(f"🔄 发现断点，正在恢复: {latest_ckpt}")
+        ckpt = torch.load(latest_ckpt, map_location=device)
+
+        target_model_unwrap = target_model.module if isinstance(target_model, DDP) else target_model
+        target_model_unwrap.load_state_dict(ckpt["model_state_dict"])
+
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        best_dice = ckpt["best_val_dice"]
+        start_epoch = ckpt["epoch"] + 1
+
+        if is_main:
+            print(f"   -> 恢复至 Epoch {start_epoch}, Best Dice: {best_dice:.4f}")
+    # ------------------------
+
     try:
-        for epoch in range(1, args.epochs + 1):
+        for epoch in range(start_epoch, args.epochs + 1):
+            # 2. 【插入点】检查时间或信号
+            if terminator.stop_requested or check_slurm_deadline(buffer_seconds=600):
+                if is_main:
+                    print(f"💾 正在因超时保存 Latest Checkpoint (Epoch {epoch-1})...")
+                    ckpt_path = results_dir / "latest_model.pt"
+                    save_checkpoint(
+                        {
+                            "epoch": epoch - 1,
+                            "model_state_dict": (target_model.module if isinstance(target_model, DDP) else target_model).state_dict(),
+                            "optimizer_state_dict": optimizer.state_dict(),
+                            "best_val_dice": best_dice,
+                            "args": vars(args),
+                        },
+                        ckpt_path,
+                        is_main=True,
+                    )
+                    print("👋 优雅退出 (Exit 0)，等待 Bash 脚本续交...")
+
+                if distributed:
+                    dist.barrier()
+                sys.exit(0)
+
             if distributed:
                 if hasattr(train_loader.sampler, "set_epoch"):
                     train_loader.sampler.set_epoch(epoch)
@@ -192,6 +265,20 @@ def main():
                     },
                     results_dir / f"epoch-{epoch:03d}.ckpt",
                     is_main=is_main,
+                )
+
+            # 3. 【补充】每个 epoch 结束也保存一份 latest_model.pt
+            if is_main:
+                save_checkpoint(
+                    {
+                        "epoch": epoch,
+                        "model_state_dict": (target_model.module if isinstance(target_model, DDP) else target_model).state_dict(),
+                        "optimizer_state_dict": optimizer.state_dict(),
+                        "best_val_dice": best_dice,
+                        "args": vars(args),
+                    },
+                    results_dir / "latest_model.pt",
+                    is_main=True,
                 )
     finally:
         cleanup_distributed()

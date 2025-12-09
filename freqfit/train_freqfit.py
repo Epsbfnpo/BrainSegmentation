@@ -2,6 +2,9 @@
 import argparse
 import os
 import random
+import signal
+import sys
+import time
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -47,6 +50,37 @@ def parse_args():
     parser.add_argument("--apply_orientation", action="store_true")
     parser.add_argument("--foreground_only", action="store_true")
     return parser.parse_args()
+
+
+# --- 从 L2-SP 移植的逻辑 ---
+class TerminationHandler:
+    def __init__(self):
+        self.stop_requested = False
+        self.triggered_by_signal = False
+        # 注册信号，模仿 train_l2sp.py
+        signal.signal(signal.SIGTERM, self._handler)
+        signal.signal(signal.SIGINT, self._handler)
+
+    def _handler(self, signum, frame):
+        print(f"🛑 接收到 Slurm 信号 ({signum})，准备优雅退出...", flush=True)
+        self.stop_requested = True
+        self.triggered_by_signal = True
+
+
+def check_slurm_deadline(buffer_seconds=300):
+    """检查是否接近 Slurm 时间限制"""
+    end_time_str = os.environ.get("SLURM_JOB_END_TIME")
+    if end_time_str:
+        try:
+            # SLURM_JOB_END_TIME 通常是 unix timestamp
+            remaining = float(end_time_str) - time.time()
+            if remaining < buffer_seconds:
+                print(f"⏳ 剩余时间 ({remaining:.1f}s) 不足，准备优雅退出...", flush=True)
+                return True
+        except ValueError:
+            pass
+    return False
+# ---------------------------
 
 
 def train(args, model, loader, optimizer, scaler, device, epoch):
@@ -128,6 +162,9 @@ def validate(model, loader, device, args):
 def main():
     args = parse_args()
 
+    # 1. 初始化监听器
+    terminator = TerminationHandler()
+
     if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
         args.rank = int(os.environ["RANK"])
         args.world_size = int(os.environ["WORLD_SIZE"])
@@ -203,6 +240,28 @@ def main():
         if is_main: print(f"   -> Resumed at Epoch {start_epoch}, Best Dice: {best_dice:.4f}")
 
     for epoch in range(start_epoch, args.epochs + 1):
+        # 2. 【新增】在 epoch 开始前检查是否该停了
+        # 检查信号标记 OR 检查 Slurm 倒计时
+        if terminator.stop_requested or check_slurm_deadline(buffer_seconds=600):  # 留 10 分钟缓冲
+            if is_main:
+                print(f"💾 正在因时间限制保存 Latest Checkpoint (Epoch {epoch-1})...")
+                torch.save({
+                    'epoch': epoch - 1,  # 保存上一轮完成的状态
+                    'model_state_dict': model.module.state_dict() if dist.is_initialized() else model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'scheduler_state_dict': scheduler.state_dict(),
+                    'best_val_dice': best_dice
+                }, os.path.join(args.results_dir, "latest_model.pt"))
+
+                print("👋 优雅退出，等待 Bash 脚本续交...")
+
+            # 确保所有进程都安全退出
+            if dist.is_initialized():
+                dist.barrier()
+
+            # 关键：退出码必须是 0
+            sys.exit(0)
+
         if dist.is_initialized():
             train_loader.sampler.set_epoch(epoch)
 
