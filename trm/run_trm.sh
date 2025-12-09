@@ -13,7 +13,7 @@ NUM_GPUS=${NUM_GPUS:-1}
 
 # 数据路径
 SPLIT_JSON=${SPLIT_JSON:-"${REPO_ROOT}/PPREMOPREBO_split.json"}
-RESULTS_DIR=${RESULTS_DIR:-"${REPO_ROOT}/results/target_trm"}
+RESULTS_DIR=${RESULTS_DIR:-"${SCRIPT_DIR}/results/target_trm"}
 
 # 关键输入：源域模型权重
 # 已更新为您指定的 dHCP 预训练模型路径
@@ -21,7 +21,7 @@ DEFAULT_PRETRAINED="/datasets/work/hb-nhmrc-dhcp/work/liu275/Tuning/results_fixe
 PRETRAINED_CHECKPOINT=${PRETRAINED_CHECKPOINT:-"${DEFAULT_PRETRAINED}"}
 
 # 训练超参
-EPOCHS=${EPOCHS:-100}
+EPOCHS=${EPOCHS:-2000}
 WARMUP_EPOCHS=${WARMUP_EPOCHS:-5}   # TRM 特有：前 N 个 epoch 在线统计分布，之后冻结
 BATCH_SIZE=${BATCH_SIZE:-1}
 VAL_BATCH_SIZE=${VAL_BATCH_SIZE:-1}
