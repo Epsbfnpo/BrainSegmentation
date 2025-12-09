@@ -17,6 +17,22 @@ from monai.transforms import (
 from monai.data import MetaTensor
 
 
+class ForceContiguousd(MapTransform):
+    """Force tensors/arrays to own memory to avoid shared-storage issues."""
+
+    def __init__(self, keys):
+        super().__init__(keys)
+
+    def __call__(self, data):
+        d = dict(data)
+        for key in self.key_iterator(d):
+            if isinstance(d[key], torch.Tensor):
+                d[key] = d[key].clone()
+            elif isinstance(d[key], np.ndarray):
+                d[key] = d[key].copy()
+        return d
+
+
 class RandCropByLabelClassesd(MapTransform):
     """Random crop centered on different label classes based on class ratios"""
 
@@ -249,12 +265,14 @@ def get_supervised_transforms(args, mode: str = None):
         ])
     else:
         # 验证/推理阶段仍需固定尺寸以便 DataLoader stack
-        transforms.append(
+        transforms.extend([
             CenterSpatialCropd(
                 keys=keys,
                 roi_size=(args.roi_x, args.roi_y, args.roi_z)
-            )
-        )
+            ),
+            # Break view relationships to avoid shared-storage issues in DataLoader workers
+            ForceContiguousd(keys=keys),
+        ])
 
     # 3. 格式转换
     transforms.append(ToTensord(keys=keys))
