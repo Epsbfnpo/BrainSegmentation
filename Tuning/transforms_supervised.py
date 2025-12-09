@@ -28,11 +28,16 @@ class ForceContiguousd(MapTransform):
         for key in self.key_iterator(d):
             value = d[key]
             if isinstance(value, MetaTensor):
-                d[key] = MetaTensor(value.clone(), meta=value.meta.copy())
+                # Re-wrap with contiguous array
+                if isinstance(value.array, np.ndarray):
+                    new_array = np.ascontiguousarray(value.array)
+                else:
+                    new_array = value.array
+                d[key] = MetaTensor(new_array, meta=value.meta.copy())
             elif isinstance(value, torch.Tensor):
-                d[key] = value.clone()
+                d[key] = value.contiguous()
             elif isinstance(value, np.ndarray):
-                d[key] = value.copy()
+                d[key] = np.ascontiguousarray(value)
         return d
 
 
@@ -131,9 +136,9 @@ class RandCropByLabelClassesd(MapTransform):
 
             # break view relationship to avoid DataLoader shared-memory resize errors
             if isinstance(cropped, torch.Tensor):
-                cropped = cropped.clone()
+                cropped = cropped.clone().detach()
             elif isinstance(cropped, np.ndarray):
-                cropped = cropped.copy()
+                cropped = np.ascontiguousarray(cropped)
 
             if isinstance(img, MetaTensor):
                 d[key] = MetaTensor(cropped, meta=meta_dict)
@@ -177,9 +182,9 @@ class RandCropByLabelClassesd(MapTransform):
                 ]
 
             if isinstance(cropped, torch.Tensor):
-                cropped = cropped.clone()
+                cropped = cropped.clone().detach()
             elif isinstance(cropped, np.ndarray):
-                cropped = cropped.copy()
+                cropped = np.ascontiguousarray(cropped)
 
             d[key] = cropped
 
@@ -273,11 +278,13 @@ def get_supervised_transforms(args, mode: str = None):
                 keys=keys,
                 roi_size=(args.roi_x, args.roi_y, args.roi_z)
             ),
-            # Break view relationships to avoid shared-storage issues in DataLoader workers
-            ForceContiguousd(keys=keys),
         ])
 
-    # 3. 格式转换
+    # 3. [修复] 强制内存连续 (Force Contiguous) 必须应用于所有模式 (Train & Val)
+    # 并且必须在 ToTensord 之前执行
+    transforms.append(ForceContiguousd(keys=keys))
+
+    # 4. 格式转换
     transforms.append(ToTensord(keys=keys))
 
     return Compose(transforms)
