@@ -26,10 +26,13 @@ class ForceContiguousd(MapTransform):
     def __call__(self, data):
         d = dict(data)
         for key in self.key_iterator(d):
-            if isinstance(d[key], torch.Tensor):
-                d[key] = d[key].clone()
-            elif isinstance(d[key], np.ndarray):
-                d[key] = d[key].copy()
+            value = d[key]
+            if isinstance(value, MetaTensor):
+                d[key] = MetaTensor(value.clone(), meta=value.meta.copy())
+            elif isinstance(value, torch.Tensor):
+                d[key] = value.clone()
+            elif isinstance(value, np.ndarray):
+                d[key] = value.copy()
         return d
 
 
