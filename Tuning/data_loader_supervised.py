@@ -384,6 +384,9 @@ def get_supervised_dataloaders(args) -> Tuple[DataLoader, DataLoader]:
     else:
         shuffle = True
 
+    # [CRITICAL FIX] Set pin_memory=False to avoid storage resizing errors with MetaTensors
+    pin_memory = False
+
     # Training data loader
     train_loader = DataLoader(
         train_dataset,
@@ -391,7 +394,7 @@ def get_supervised_dataloaders(args) -> Tuple[DataLoader, DataLoader]:
         shuffle=shuffle,
         sampler=train_sampler,
         num_workers=args.num_workers,
-        pin_memory=True,
+        pin_memory=pin_memory,
         drop_last=True,
         persistent_workers=True if args.num_workers > 0 else False,
     )
@@ -402,7 +405,7 @@ def get_supervised_dataloaders(args) -> Tuple[DataLoader, DataLoader]:
         batch_size=1,  # Use batch_size=1 for validation to handle different image sizes
         shuffle=False,
         num_workers=max(2, args.num_workers // 2),
-        pin_memory=True,
+        pin_memory=pin_memory,
         persistent_workers=True if args.num_workers > 0 else False,
     )
 
