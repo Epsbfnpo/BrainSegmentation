@@ -7,7 +7,7 @@ from typing import Dict, List, Tuple, Optional
 
 from monai.transforms import (
     Compose, LoadImaged, EnsureChannelFirstd,
-    Spacingd, Orientationd,
+    Spacingd, Orientationd, CenterSpatialCropd,
     RandRotated, RandZoomd, RandFlipd,
     RandGaussianNoised, RandGaussianSmoothd,
     RandAdjustContrastd,
@@ -236,6 +236,14 @@ def get_supervised_transforms(args, mode: str = None):
             RandAdjustContrastd(keys=["image"], prob=0.1, gamma=(0.7, 1.3)),
             RandGaussianSmoothd(keys=["image"], prob=0.1, sigma_x=(0.5, 1.0)),
         ])
+    else:
+        # 验证/推理阶段仍需固定尺寸以便 DataLoader stack
+        transforms.append(
+            CenterSpatialCropd(
+                keys=keys,
+                roi_size=(args.roi_x, args.roi_y, args.roi_z)
+            )
+        )
 
     # 3. 格式转换
     transforms.append(ToTensord(keys=keys))
