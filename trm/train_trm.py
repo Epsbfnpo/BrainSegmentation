@@ -180,8 +180,16 @@ def main():
         target_model_unwrap.load_state_dict(ckpt["model_state_dict"])
 
         optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-        best_dice = ckpt["best_val_dice"]
+
         start_epoch = ckpt["epoch"] + 1
+        scheduler_state = ckpt.get("scheduler_state_dict")
+        if scheduler_state is not None:
+            scheduler.load_state_dict(scheduler_state)
+        elif start_epoch > 1:
+            for _ in range(start_epoch - 1):
+                scheduler.step()
+
+        best_dice = ckpt["best_val_dice"]
 
         if is_main:
             print(f"   -> 恢复至 Epoch {start_epoch}, Best Dice: {best_dice:.4f}")
@@ -199,6 +207,7 @@ def main():
                             "epoch": epoch - 1,
                             "model_state_dict": (target_model.module if isinstance(target_model, DDP) else target_model).state_dict(),
                             "optimizer_state_dict": optimizer.state_dict(),
+                            "scheduler_state_dict": scheduler.state_dict(),
                             "best_val_dice": best_dice,
                             "args": vars(args),
                         },
@@ -248,6 +257,7 @@ def main():
                         "epoch": epoch,
                         "model_state_dict": (target_model.module if isinstance(target_model, DDP) else target_model).state_dict(),
                         "optimizer_state_dict": optimizer.state_dict(),
+                        "scheduler_state_dict": scheduler.state_dict(),
                         "best_val_dice": best_dice,
                         "args": vars(args),
                     },
@@ -260,6 +270,7 @@ def main():
                         "epoch": epoch,
                         "model_state_dict": (target_model.module if isinstance(target_model, DDP) else target_model).state_dict(),
                         "optimizer_state_dict": optimizer.state_dict(),
+                        "scheduler_state_dict": scheduler.state_dict(),
                         "best_val_dice": best_dice,
                         "args": vars(args),
                     },
@@ -274,6 +285,7 @@ def main():
                         "epoch": epoch,
                         "model_state_dict": (target_model.module if isinstance(target_model, DDP) else target_model).state_dict(),
                         "optimizer_state_dict": optimizer.state_dict(),
+                        "scheduler_state_dict": scheduler.state_dict(),
                         "best_val_dice": best_dice,
                         "args": vars(args),
                     },
