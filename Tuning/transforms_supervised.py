@@ -110,6 +110,12 @@ class RandCropByLabelClassesd(MapTransform):
                     crop_start[2]:crop_end[2]
                 ]
 
+            # break view relationship to avoid DataLoader shared-memory resize errors
+            if isinstance(cropped, torch.Tensor):
+                cropped = cropped.clone()
+            elif isinstance(cropped, np.ndarray):
+                cropped = cropped.copy()
+
             if isinstance(img, MetaTensor):
                 d[key] = MetaTensor(cropped, meta=meta_dict)
             else:
@@ -150,6 +156,11 @@ class RandCropByLabelClassesd(MapTransform):
                     crop_start[1]:crop_end[1],
                     crop_start[2]:crop_end[2]
                 ]
+
+            if isinstance(cropped, torch.Tensor):
+                cropped = cropped.clone()
+            elif isinstance(cropped, np.ndarray):
+                cropped = cropped.copy()
 
             d[key] = cropped
 

@@ -54,5 +54,5 @@ torchrun --nproc_per_node=${NUM_GPUS} \
     --roi_x ${ROI_X} --roi_y ${ROI_Y} --roi_z ${ROI_Z} \
     --target_spacing ${TARGET_SPACING} \
     --num_workers 8 \
-    --cache_rate 0.1 \
+    --cache_rate 0.0 \
     --use_amp
