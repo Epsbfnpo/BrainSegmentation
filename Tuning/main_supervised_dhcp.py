@@ -49,8 +49,10 @@ def get_parser():
     # Model parameters
     parser.add_argument('--in_channels', default=1, type=int,
                         help='Number of input channels (T2w only)')
-    parser.add_argument('--out_channels', default=87, type=int,
-                        help='Number of output channels (87 brain regions)')
+    parser.add_argument('--out_channels', default=15, type=int,
+                        help='Number of output channels (including background)')
+    parser.add_argument('--num_classes', default=15, type=int,
+                        help='Num classes (including background)')
     parser.add_argument('--feature_size', default=48, type=int,
                         help='Feature size for transformer')
     parser.add_argument('--roi_x', default=96, type=int,
@@ -68,8 +70,6 @@ def get_parser():
     parser.add_argument('--class_prior_json',
                         default='/datasets/work/hb-nhmrc-dhcp/work/liu275/dHCP_registered_class_prior_standard.json',
                         type=str, help='Path to class prior JSON file')
-    parser.add_argument('--laterality_pairs_json', default='./dhcp_lr_swap.json',
-                        type=str, help='Path to LR swap pairs JSON file')
     parser.add_argument('--num_workers', default=4, type=int,
                         help='Number of data loading workers')
     parser.add_argument('--cache_rate', default=0.1, type=float,
@@ -141,7 +141,7 @@ def get_parser():
 
     # Resolution parameters
     parser.add_argument('--target_spacing', nargs=3, type=float,
-                        default=[0.5, 0.5, 0.5],
+                        default=[1.5, 1.5, 1.5],
                         help='Target voxel spacing in mm')
 
     # LR scheduler
@@ -197,11 +197,6 @@ def get_parser():
 def validate_configuration(args):
     """Validate configuration and print warnings"""
 
-    # Check if LR swap file exists
-    if args.laterality_pairs_json and not os.path.exists(args.laterality_pairs_json):
-        print(f"⚠️ WARNING: LR swap file not found: {args.laterality_pairs_json}")
-        print(f"   LR flip augmentation will be disabled")
-
     # Validate spacing
     if min(args.target_spacing) < 0.4:
         print(f"⚠️ WARNING: Very fine spacing {args.target_spacing} may require more GPU memory")
@@ -209,7 +204,8 @@ def validate_configuration(args):
     # Check class prior file
     if args.class_aware_sampling and not os.path.exists(args.class_prior_json):
         print(f"⚠️ WARNING: Class prior file not found: {args.class_prior_json}")
-        print(f"   Class-aware sampling will use uniform weights")
+        print(f"   --> Disabling class-aware sampling. Using uniform sampling.")
+        args.class_aware_sampling = False
 
     # Validate rotation angle
     if args.max_rotation_angle > 0.2:  # ~11 degrees
@@ -222,6 +218,9 @@ def main():
     # Parse arguments
     parser = get_parser()
     args = parser.parse_args()
+
+    # Keep out_channels in sync with num_classes for downstream components
+    args.out_channels = args.num_classes
 
     # Validate configuration
     validate_configuration(args)
