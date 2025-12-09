@@ -29,15 +29,14 @@ class RandCropByLabelClassesd(MapTransform):
 
         # Set sampling probabilities based on class ratios
         if class_ratios is not None:
-            # Inverse frequency with smoothing
-            weights = np.array([1.0 / (r + 1e-6) for r in class_ratios[1:88]])  # Skip background
-            # Apply sqrt for stability
-            weights = np.sqrt(weights)
-            # Normalize
+            # Inverse frequency with smoothing (skip background)
+            ratios = np.asarray(class_ratios[1:self.num_classes], dtype=float)
+            weights = np.array([1.0 / (r + 1e-6) for r in ratios])
+            weights = np.sqrt(weights)  # Apply sqrt for stability
             self.class_probs = weights / weights.sum()
         else:
             # Uniform sampling
-            self.class_probs = np.ones(num_classes) / num_classes
+            self.class_probs = np.ones(self.num_classes, dtype=float) / float(self.num_classes)
 
     def __call__(self, data):
         d = dict(data)
@@ -51,6 +50,7 @@ class RandCropByLabelClassesd(MapTransform):
         # Find available classes in this sample
         unique_classes = np.unique(label_np)
         unique_classes = unique_classes[unique_classes >= 0]  # Exclude background (-1)
+        unique_classes = unique_classes.astype(int, copy=False)
 
         if len(unique_classes) == 0:
             # No valid classes, do center crop
