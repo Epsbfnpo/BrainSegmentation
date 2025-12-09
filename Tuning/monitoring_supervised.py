@@ -22,6 +22,20 @@ class SupervisedMonitor:
         os.makedirs(self.monitor_dir, exist_ok=True)
         self.num_classes = num_classes
 
+        if num_classes == 15:
+            # AMOS 14 Organs + Background
+            self.class_names = [
+                "Background",
+                "Spleen", "R_Kidney", "L_Kidney", "Gallbladder", "Esophagus",
+                "Liver", "Stomach", "Aorta", "IVC", "Pancreas",
+                "R_Adrenal", "L_Adrenal", "Duodenum", "Bladder"
+            ]
+        elif num_classes == 87:
+            # Keep legacy dHCP support
+            self.class_names = [f"Region_{i}" for i in range(num_classes)]
+        else:
+            self.class_names = [f"Class_{i}" for i in range(num_classes)]
+
         # Initialize history
         self.history = defaultdict(list)
         self.best_metrics = {
