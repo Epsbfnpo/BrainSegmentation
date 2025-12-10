@@ -261,3 +261,10 @@ class MedSeqFTLoss(nn.Module):
             l_kd = torch.tensor(0.0, device=pred.device, dtype=pred.dtype)
 
         return l_seg + self.lambda_kd * l_kd, l_seg, l_kd
+
+
+class MedSeqFTLoss(SafeDiceFocalLoss):
+    """KD-enhanced segmentation loss with ignore-index handling for labels."""
+
+    def __init__(self, num_classes: int, lambda_kd: float = 1.0):
+        super().__init__(num_classes=num_classes, ignore_index=-1, lambda_kd=lambda_kd)
