@@ -25,6 +25,20 @@ class SignalHandler:
         print(f"🚩 Signal {signum} received. Requesting stop.")
         self.stop_requested = True
 
+
+def check_slurm_deadline(buffer_seconds=600):
+    """检查是否接近 Slurm 时间限制"""
+    end_time_str = os.environ.get("SLURM_JOB_END_TIME")
+    if end_time_str:
+        try:
+            remaining = float(end_time_str) - time.time()
+            if remaining < buffer_seconds:
+                print(f"⏳ 剩余时间 ({remaining:.1f}s) 不足，准备优雅退出...", flush=True)
+                return True
+        except ValueError:
+            pass
+    return False
+
 def main():
     parser = argparse.ArgumentParser()
     # Data params
@@ -107,15 +121,21 @@ def main():
         epoch_loss = 0
         epoch_seg = 0
         epoch_kd = 0
-        
-        # Check time limit (e.g., SLURM 6h limit with 5min buffer)
-        # Using environment variable if available, else manual check
-        # Assuming run via sbatch script which handles hard kills, we check sig_handler
-        if sig_handler.stop_requested:
-            print("🛑 Stopping early due to signal.")
-            break
-            
+
         for batch in train_loader:
+            if sig_handler.stop_requested or check_slurm_deadline(buffer_seconds=600):
+                print(f"🛑 检测到退出信号或超时 (Epoch {epoch})，保存断点并退出...")
+                state = {
+                    'model': student.state_dict(),
+                    'optimizer': optimizer.state_dict(),
+                    'scheduler': scheduler.state_dict(),
+                    'epoch': epoch - 1,
+                    'best_dice': best_dice
+                }
+                torch.save(state, ckpt_path)
+                print("👋 优雅退出 (Exit 0)")
+                sys.exit(0)
+
             img = batch["image"].to(device)
             label = batch["label"].to(device)
             
