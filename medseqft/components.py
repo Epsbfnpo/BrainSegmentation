@@ -215,6 +215,54 @@ class SafeDiceFocalLoss(nn.Module):
         return l_seg + self.lambda_kd * l_kd, l_seg, l_kd
 
 
+class MedSeqFTLoss(nn.Module):
+    """
+    内存优化版 Loss：支持 Ignore Index (-1)，避免 OOM。
+    """
+
+    def __init__(self, num_classes: int, lambda_kd: float = 1.0):
+        super().__init__()
+        self.num_classes = num_classes
+        self.ignore_index = -1
+        self.lambda_kd = lambda_kd
+
+        self.seg_loss = DiceFocalLoss(
+            include_background=True,
+            softmax=True,
+            to_onehot_y=False,
+            batch=True,
+            gamma=2.0,
+        )
+        self.kd_loss = nn.MSELoss()
+
+    def forward(
+        self, pred: torch.Tensor, target: torch.Tensor, teacher_pred: Optional[torch.Tensor]
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        # pred: [B, C, H, W, D]
+        # target: [B, 1, H, W, D]
+
+        valid_mask = target != self.ignore_index
+
+        target_safe = target.clone().long()
+        target_safe.masked_fill_(~valid_mask, 0)
+
+        target_onehot = one_hot(target_safe, num_classes=self.num_classes)
+        target_onehot.masked_fill_(~valid_mask, 0)
+
+        valid_mask_float = valid_mask.to(dtype=pred.dtype)
+        pred_masked = pred * valid_mask_float
+
+        l_seg = self.seg_loss(pred_masked, target_onehot)
+
+        if teacher_pred is not None:
+            teacher_pred_masked = teacher_pred * valid_mask_float
+            l_kd = self.kd_loss(pred_masked, teacher_pred_masked)
+        else:
+            l_kd = torch.tensor(0.0, device=pred.device, dtype=pred.dtype)
+
+        return l_seg + self.lambda_kd * l_kd, l_seg, l_kd
+
+
 class MedSeqFTLoss(SafeDiceFocalLoss):
     """KD-enhanced segmentation loss with ignore-index handling for labels."""
 
