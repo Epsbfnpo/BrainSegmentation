@@ -63,6 +63,7 @@ def main():
     parser.add_argument("--num_workers", default=4, type=int)
     parser.add_argument("--cache_rate", default=0.0, type=float)
     parser.add_argument("--lambda_kd", default=1.0, type=float, help="Weight for KD loss")
+    parser.add_argument("--grad_accum_steps", default=2, type=int, help="Gradient accumulation steps")
     
     # Flags matching bash script
     parser.add_argument("--apply_spacing", action="store_true", default=True)
@@ -121,6 +122,9 @@ def main():
         epoch_loss = 0
         epoch_seg = 0
         epoch_kd = 0
+        steps = 0
+
+        optimizer.zero_grad()
 
         for batch in train_loader:
             if sig_handler.stop_requested or check_slurm_deadline(buffer_seconds=600):
@@ -138,27 +142,37 @@ def main():
 
             img = batch["image"].to(device)
             label = batch["label"].to(device)
-            
-            optimizer.zero_grad()
-            
+
             with autocast():
                 # Student forward
                 pred = student(img)
                 # Teacher forward (Source knowledge)
                 with torch.no_grad():
                     teacher_pred = teacher(img)
-                
-                loss, l_seg, l_kd = loss_fn(pred, label, teacher_pred)
-            
+
+                total_loss, l_seg, l_kd = loss_fn(pred, label, teacher_pred)
+                loss = total_loss / args.grad_accum_steps
+
             scaler.scale(loss).backward()
+
+            if (steps + 1) % args.grad_accum_steps == 0:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(student.parameters(), 12.0)
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
+
+            epoch_loss += total_loss.item()
+            epoch_seg += l_seg.item()
+            epoch_kd += l_kd.item()
+            steps += 1
+
+        if steps % args.grad_accum_steps != 0:
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(student.parameters(), 12.0)
             scaler.step(optimizer)
             scaler.update()
-            
-            epoch_loss += loss.item()
-            epoch_seg += l_seg.item()
-            epoch_kd += l_kd.item()
+            optimizer.zero_grad()
             
         scheduler.step()
         

@@ -6,7 +6,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # --- Configuration (Matching GraphAlign) ---
 NUM_GPUS=${NUM_GPUS:-4}
-BATCH_SIZE=${BATCH_SIZE:-2}
+BATCH_SIZE=${BATCH_SIZE:-1}
 EPOCHS=${EPOCHS:-2000}
 RESULTS_DIR=${RESULTS_DIR:-${REPO_ROOT}/results/target_medseqft}
 TARGET_SPLIT_JSON=${TARGET_SPLIT_JSON:-${REPO_ROOT}/PPREMOPREBO_split.json}
