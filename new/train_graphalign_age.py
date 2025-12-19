@@ -15,6 +15,7 @@ from typing import Dict, Optional
 import numpy as np
 import torch
 import torch.distributed as dist
+import torch.nn as nn
 from monai.networks.nets import SwinUNETR
 from torch.utils.tensorboard import SummaryWriter
 
@@ -30,8 +31,9 @@ from age_aware_modules import SimplifiedDAUnetModule
 from data_loader_age_aware import get_target_dataloaders
 from graph_prior_loss import AgeConditionedGraphPriorLoss
 from prior_validator import check_prior_directory
-from trainer_age_aware import (CombinedSegmentationLoss, ExponentialMovingAverage,
-                               train_epoch, validate_epoch)
+from trainer_age_aware import (AutomaticWeightedLoss, CombinedSegmentationLoss,
+                               ExponentialMovingAverage, train_epoch,
+                               validate_epoch)
 
 
 def parse_slurm_timelimit(raw: Optional[str]) -> Optional[float]:
@@ -392,7 +394,8 @@ def save_checkpoint(path: Path,
                     epoch: int,
                     global_step: int,
                     best_dice: float,
-                    ema_state: Optional[dict] = None) -> None:
+                    ema_state: Optional[dict] = None,
+                    awl: Optional[nn.Module] = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
@@ -403,6 +406,11 @@ def save_checkpoint(path: Path,
             "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict(),
             "ema_state_dict": ema_state,
+            "awl_state_dict": (
+                awl.module.state_dict()
+                if isinstance(awl, torch.nn.parallel.DistributedDataParallel)
+                else awl.state_dict() if awl else None
+            ),
         },
         path,
     )
@@ -412,7 +420,8 @@ def load_checkpoint(path: Path,
                     *,
                     model: torch.nn.Module,
                     optimizer: torch.optim.Optimizer,
-                    scheduler):
+                    scheduler,
+                    awl: Optional[nn.Module] = None):
     payload = torch.load(path, map_location="cpu")
     model_state = payload.get("state_dict", payload)
     target = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
@@ -422,6 +431,10 @@ def load_checkpoint(path: Path,
         optimizer.load_state_dict(payload["optimizer"])
     if "scheduler" in payload:
         scheduler.load_state_dict(payload["scheduler"])
+    if awl is not None and payload.get("awl_state_dict") is not None:
+        target_awl = awl.module if isinstance(awl, torch.nn.parallel.DistributedDataParallel) else awl
+        target_awl.load_state_dict(payload["awl_state_dict"])
+        print("✅ Restored AWL state")
 
     return (
         payload.get("epoch", 0),
@@ -613,6 +626,7 @@ def main():
 
     model = build_model(args, device)
     class_weights = model.get_class_weights()
+    awl: Optional[AutomaticWeightedLoss] = AutomaticWeightedLoss(num_losses=8).to(device)
 
     if distributed:
         model = torch.nn.parallel.DistributedDataParallel(
@@ -621,6 +635,11 @@ def main():
             output_device=args.local_rank,
             find_unused_parameters=False,
         )
+        awl = torch.nn.parallel.DistributedDataParallel(
+            awl,
+            device_ids=[args.local_rank],
+            output_device=args.local_rank,
+        )
 
     ema_helper: Optional[ExponentialMovingAverage] = None
     if args.ema_decay > 0.0:
@@ -628,7 +647,13 @@ def main():
             print(f"📈 EMA enabled with decay={args.ema_decay}")
         ema_helper = ExponentialMovingAverage(model, decay=args.ema_decay)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    optimizer = torch.optim.AdamW(
+        [
+            {"params": model.parameters(), "weight_decay": args.weight_decay},
+            {"params": awl.parameters(), "weight_decay": 0.0},
+        ],
+        lr=args.lr,
+    )
 
     warmup_epochs = max(0, int(args.lr_warmup_epochs))
     if warmup_epochs > 0:
@@ -717,6 +742,7 @@ def main():
                 model=model,
                 optimizer=optimizer,
                 scheduler=scheduler,
+                awl=awl,
             )
             start_epoch = resume_epoch + 1
             global_step = resume_step
@@ -783,6 +809,7 @@ def main():
             debug_mode=args.debug_mode,
             debug_step_limit=args.debug_step_limit,
             ema_helper=ema_helper,
+            awl=awl,
         )
         scheduler.step()
         global_step = int(train_metrics.get("global_step", global_step))
@@ -814,6 +841,16 @@ def main():
                 f"grad={train_metrics.get('grad_norm', 0.0):.3f} time={duration:.1f}s lr={current_lr:.6f}",
                 flush=True,
             )
+            if awl is not None:
+                curr_awl = awl.module if isinstance(awl, torch.nn.parallel.DistributedDataParallel) else awl
+                s = curr_awl.params.detach().cpu()
+                eff = torch.exp(-s)
+                print(
+                    f"  ⚖️ [AWL Weights] Seg={eff[0]:.4f} Vol={eff[1]:.4f} Shape={eff[2]:.4f} "
+                    f"Edge={eff[3]:.4f} Spec={eff[4]:.4f} Req={eff[5]:.4f} "
+                    f"Forb={eff[6]:.4f} Sym={eff[7]:.4f}",
+                    flush=True,
+                )
             if writer is not None:
                 writer.add_scalar("train/lr", current_lr, epoch)
             update_metrics_history(history, "train", train_metrics, history_path, True)
@@ -902,6 +939,7 @@ def main():
                         global_step=global_step,
                         best_dice=best_dice,
                         ema_state=ema_helper.state_dict() if ema_helper is not None else None,
+                        awl=awl,
                     )
                     record_resume_checkpoint(results_dir, best_path)
                     last_checkpoint_path = best_path
@@ -919,6 +957,7 @@ def main():
                 global_step=global_step,
                 best_dice=best_dice,
                 ema_state=ema_helper.state_dict() if ema_helper is not None else None,
+                awl=awl,
             )
             checkpoint_history.append(ckpt_path)
             record_resume_checkpoint(results_dir, ckpt_path)
@@ -940,6 +979,7 @@ def main():
                 global_step=global_step,
                 best_dice=best_dice,
                 ema_state=ema_helper.state_dict() if ema_helper is not None else None,
+                awl=awl,
             )
             print(f"  💾 Signal-triggered checkpoint saved to {emergency_path}")
             checkpoint_history.append(emergency_path)
@@ -969,6 +1009,7 @@ def main():
             global_step=global_step,
             best_dice=best_dice,
             ema_state=ema_helper.state_dict() if ema_helper is not None else None,
+            awl=awl,
         )
         record_resume_checkpoint(results_dir, latest_model_path)
         print(f"💾 Latest checkpoint saved to {latest_model_path}")
@@ -985,6 +1026,7 @@ def main():
                 global_step=global_step,
                 best_dice=best_dice,
                 ema_state=ema_helper.state_dict() if ema_helper is not None else None,
+                awl=awl,
             )
             if latest_model_path.exists():
                 latest_model_path.unlink()
