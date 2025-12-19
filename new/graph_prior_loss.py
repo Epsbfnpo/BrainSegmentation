@@ -449,6 +449,14 @@ class AgeConditionedGraphPriorLoss(nn.Module):
         forbidden_losses: List[torch.Tensor] = []
         symmetry_losses: List[torch.Tensor] = []
 
+        acc_rel_volume = zero.clone()
+        acc_rel_shape = zero.clone()
+        acc_rel_edge = zero.clone()
+        acc_rel_spec = zero.clone()
+        acc_rel_required = zero.clone()
+        acc_rel_forbidden = zero.clone()
+        acc_rel_symmetry = zero.clone()
+
         age_weights: List[float] = []
         dyn_scales: List[float] = []
         qap_mismatches: List[float] = []
@@ -465,6 +473,7 @@ class AgeConditionedGraphPriorLoss(nn.Module):
             age_weights.append(reliability)
             lambda_factor = warmup * reliability
             lambda_factor_tensor = torch.tensor(lambda_factor, device=device, dtype=dtype)
+            rel_tensor = torch.tensor(reliability, device=device, dtype=dtype)
 
             flat = probs[b].view(C, -1)
             flat = _safe_tensor(flat, "flat_probs", age_value=age)
@@ -480,6 +489,7 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                 vol_loss = _safe_tensor(vol_loss, "volume_loss", age_value=age)
                 weighted_volume = weighted_volume + self._base_lambda_volume * lambda_factor_tensor * vol_loss
                 volume_losses.append(vol_loss)
+                acc_rel_volume = acc_rel_volume + rel_tensor * vol_loss
 
             if self._base_lambda_shape > 0 and self.sdf_templates is not None:
                 tmpl = self._interp_sdf(age, device, (X, Y, Z))
@@ -496,6 +506,7 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                     shape_loss = _safe_tensor(shape_loss, "shape_loss", age_value=age)
                     weighted_shape = weighted_shape + self._base_lambda_shape * lambda_factor_tensor * shape_loss
                     shape_losses.append(shape_loss)
+                    acc_rel_shape = acc_rel_shape + rel_tensor * shape_loss
 
             prior = self._interp_adj(age, device) if self.adj_templates is not None else None
             if prior is not None:
@@ -510,6 +521,7 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                 edge_loss = _safe_tensor(edge_loss, "edge_loss", age_value=age)
                 weighted_edge = weighted_edge + self._base_lambda_edge * lambda_factor_tensor * edge_loss
                 edge_losses.append(edge_loss)
+                acc_rel_edge = acc_rel_edge + rel_tensor * edge_loss
 
                 adj_mae = diff.abs().mean().detach().cpu().item()
                 adj_mae_vals.append(adj_mae)
@@ -555,6 +567,7 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                                 self._base_lambda_spec * lambda_factor_tensor * float(dyn_scale) * spec_loss
                             )
                             spectral_losses.append(spec_loss)
+                            acc_rel_spec = acc_rel_spec + rel_tensor * float(dyn_scale) * spec_loss
                             spec_gap_vals.append(float(spec_loss.detach().cpu().item()))
 
                 if self.required_edges:
@@ -571,6 +584,7 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                         req_loss = _safe_tensor(req_loss, "required_loss", age_value=age)
                         weighted_required = weighted_required + self.lambda_required * lambda_factor_tensor * req_loss
                         required_losses.append(req_loss)
+                        acc_rel_required = acc_rel_required + rel_tensor * req_loss
 
                 if self.forbidden_edges:
                     penalties = []
@@ -586,6 +600,7 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                         forb_loss = _safe_tensor(forb_loss, "forbidden_loss", age_value=age)
                         weighted_forbidden = weighted_forbidden + self.lambda_forbidden * lambda_factor_tensor * forb_loss
                         forbidden_losses.append(forb_loss)
+                        acc_rel_forbidden = acc_rel_forbidden + rel_tensor * forb_loss
 
                 if self.lr_pairs:
                     pair_losses = []
@@ -604,6 +619,7 @@ class AgeConditionedGraphPriorLoss(nn.Module):
                         sym_loss = _safe_tensor(sym_loss, "symmetry_loss", age_value=age)
                         weighted_symmetry = weighted_symmetry + self.lambda_symmetry * lambda_factor_tensor * sym_loss
                         symmetry_losses.append(sym_loss)
+                        acc_rel_symmetry = acc_rel_symmetry + rel_tensor * sym_loss
                         symmetry_gap_vals.append(pair_gap / max(len(self.lr_pairs), 1))
 
         denom = max(B, 1)
@@ -653,6 +669,13 @@ class AgeConditionedGraphPriorLoss(nn.Module):
             "required": required_loss,
             "forbidden": forbidden_loss,
             "symmetry": symmetry_loss,
+            "awl_volume": acc_rel_volume / denom,
+            "awl_shape": acc_rel_shape / denom,
+            "awl_edge": acc_rel_edge / denom,
+            "awl_spectral": acc_rel_spec / denom,
+            "awl_required": acc_rel_required / denom,
+            "awl_forbidden": acc_rel_forbidden / denom,
+            "awl_symmetry": acc_rel_symmetry / denom,
             "warmup": torch.tensor(warmup, device=device, dtype=dtype),
             "dyn_lambda": torch.tensor(avg_dyn, device=device, dtype=dtype),
             "qap_mismatch": torch.tensor(avg_qap, device=device, dtype=dtype),
