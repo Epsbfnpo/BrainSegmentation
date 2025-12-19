@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import itertools
 import contextlib
-from typing import Dict, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -100,6 +100,33 @@ class ExponentialMovingAverage:
         if not state_dict:
             return
         self.shadow = {name: tensor.to(next(self.model.parameters()).device) for name, tensor in state_dict.items()}
+
+
+class AutomaticWeightedLoss(nn.Module):
+    """
+    Precision-based Multi-Task Loss Weighting.
+    Loss = 0.5 * exp(-s) * L + 0.5 * s, where s = log(sigma^2).
+    """
+
+    def __init__(self, num_losses: int):
+        super().__init__()
+        self.params = nn.Parameter(torch.zeros(num_losses))
+
+    def forward(self, loss_list: Sequence[torch.Tensor]) -> Tuple[torch.Tensor, List[float]]:
+        if len(loss_list) != len(self.params):
+            raise ValueError(f"Expected {len(self.params)} losses, got {len(loss_list)}")
+
+        total_loss = 0.0
+        effective_weights = []
+
+        for i, loss in enumerate(loss_list):
+            s = self.params[i]
+            precision = 0.5 * torch.exp(-s)
+            weighted = precision * loss + 0.5 * s
+            total_loss += weighted
+            effective_weights.append(precision.detach().item() * 2.0)
+
+        return total_loss, effective_weights
 
 
 class CombinedSegmentationLoss(nn.Module):
@@ -249,7 +276,8 @@ def train_epoch(model: nn.Module,
                 log_interval: int = 20,
                 debug_mode: bool = False,
                 debug_step_limit: int = 2,
-                ema_helper: Optional[ExponentialMovingAverage] = None) -> Dict[str, float]:
+                ema_helper: Optional[ExponentialMovingAverage] = None,
+                awl: Optional[AutomaticWeightedLoss] = None) -> Dict[str, float]:
     model.train()
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
@@ -270,6 +298,14 @@ def train_epoch(model: nn.Module,
         "symmetry": 0.0,
         "warmup": 0.0,
         "dyn_lambda": 0.0,
+        "awl_w_seg": 0.0,
+        "awl_w_volume": 0.0,
+        "awl_w_shape": 0.0,
+        "awl_w_edge": 0.0,
+        "awl_w_spec": 0.0,
+        "awl_w_required": 0.0,
+        "awl_w_forbidden": 0.0,
+        "awl_w_symmetry": 0.0,
         "qap_mismatch": 0.0,
         "age_weight": 0.0,
         "adj_mae": 0.0,
@@ -301,37 +337,67 @@ def train_epoch(model: nn.Module,
                 logits_aug = model(images_aug)
                 seg_losses = loss_fn(logits_aug, labels_aug)
 
-            seg_loss_for_backward = seg_losses["total"] / grad_accum_steps
-            # retain_graph=True ensures the shared computation graph remains for the clean
-            # stream backward that follows in the same iteration.
-            scaler.scale(seg_loss_for_backward).backward(retain_graph=True)
+                if prior_loss is not None:
+                    images_clean = batch.get("image_clean")
+                    if images_clean is None:
+                        raise RuntimeError("Data loader must provide 'image_clean' for canonical prior loss")
+                    images_clean = images_clean.to(device)
+                    logits_clean = model(images_clean)
+                    probs_clean = torch.softmax(logits_clean, dim=1)
+                    prior_dict = prior_loss(probs_clean, ages)
+                else:
+                    zeros = torch.zeros_like(seg_losses["total"])
+                    prior_dict = {
+                        "total": zeros,
+                        "volume": zeros,
+                        "shape": zeros,
+                        "edge": zeros,
+                        "spectral": zeros,
+                        "warmup": torch.tensor(1.0, device=seg_losses["total"].device, dtype=zeros.dtype),
+                    }
 
-        with torch.cuda.amp.autocast(enabled=use_amp):
-            if prior_loss is not None:
-                images_clean = batch.get("image_clean")
-                if images_clean is None:
-                    raise RuntimeError("Data loader must provide 'image_clean' for canonical prior loss")
-                images_clean = images_clean.to(device)
-                logits_clean = model(images_clean)
-                probs_clean = torch.softmax(logits_clean, dim=1)
-                prior_dict = prior_loss(probs_clean, ages)
-                prior_loss_for_backward = prior_dict["total"] / grad_accum_steps
+            if awl is not None and prior_loss is not None:
+                l_seg = seg_losses["total"]
+                zero_t = l_seg.new_tensor(0.0)
+                l_vol = prior_dict.get("awl_volume", zero_t)
+                l_shape = prior_dict.get("awl_shape", zero_t)
+                l_edge = prior_dict.get("awl_edge", zero_t)
+                l_spec = prior_dict.get("awl_spectral", zero_t)
+                l_req = prior_dict.get("awl_required", zero_t)
+                l_forb = prior_dict.get("awl_forbidden", zero_t)
+                l_sym = prior_dict.get("awl_symmetry", zero_t)
+
+                loss_inputs = [l_seg, l_vol, l_shape, l_edge, l_spec, l_req, l_forb, l_sym]
+                awl_loss, eff_weights = awl(loss_inputs)
+
+                if isinstance(awl, torch.nn.parallel.DistributedDataParallel):
+                    raw_awl = awl.module
+                else:
+                    raw_awl = awl
+
+                params = raw_awl.params
+
+                def w(idx, val):
+                    return 0.5 * torch.exp(-params[idx]) * val + 0.5 * params[idx]
+
+                loss_seg_w = w(0, l_seg)
+                loss_p_vol = w(1, l_vol)
+                loss_p_shape = w(2, l_shape)
+                loss_p_edge = w(3, l_edge)
+                loss_p_spec = w(4, l_spec)
+                loss_p_req = w(5, l_req)
+                loss_p_forb = w(6, l_forb)
+                loss_p_sym = w(7, l_sym)
+
+                current_warmup = prior_dict.get("warmup", torch.tensor(1.0, device=device))
+                loss = loss_seg_w + current_warmup * (
+                    loss_p_vol + loss_p_shape + loss_p_edge + loss_p_spec + loss_p_req + loss_p_forb + loss_p_sym
+                )
             else:
-                zeros = torch.zeros_like(seg_losses["total"])
-                prior_dict = {
-                    "total": zeros,
-                    "volume": zeros,
-                    "shape": zeros,
-                    "edge": zeros,
-                    "spectral": zeros,
-                    "warmup": torch.tensor(1.0, device=seg_losses["total"].device, dtype=zeros.dtype),
-                }
-                prior_loss_for_backward = None
+                loss = seg_losses["total"] + prior_dict["total"]
 
-        if prior_loss_for_backward is not None:
-            scaler.scale(prior_loss_for_backward).backward()
-
-        loss = seg_losses["total"] + prior_dict["total"]
+            loss_for_backward = loss / grad_accum_steps
+            scaler.scale(loss_for_backward).backward()
 
         check_targets = {
             "seg_total": seg_losses["total"],
@@ -382,6 +448,14 @@ def train_epoch(model: nn.Module,
             "symmetry": prior_dict.get("symmetry", torch.zeros(1, device=device)).detach().item(),
             "warmup": float(prior_dict.get("warmup", torch.tensor(1.0, device=device)).detach().item()),
             "dyn_lambda": float(prior_dict.get("dyn_lambda", torch.tensor(1.0, device=device)).detach().item()),
+            "awl_w_seg": 0.0,
+            "awl_w_volume": 0.0,
+            "awl_w_shape": 0.0,
+            "awl_w_edge": 0.0,
+            "awl_w_spec": 0.0,
+            "awl_w_required": 0.0,
+            "awl_w_forbidden": 0.0,
+            "awl_w_symmetry": 0.0,
             "qap_mismatch": float(prior_dict.get("qap_mismatch", torch.tensor(0.0, device=device)).detach().item()),
             "age_weight": float(prior_dict.get("age_weight", torch.tensor(1.0, device=device)).detach().item()),
             "adj_mae": float(prior_dict.get("adj_mae", torch.tensor(0.0, device=device)).detach().item()),
@@ -390,6 +464,21 @@ def train_epoch(model: nn.Module,
             "required_missing": float(prior_dict.get("required_missing", torch.tensor(0.0, device=device)).detach().item()),
             "forbidden_present": float(prior_dict.get("forbidden_present", torch.tensor(0.0, device=device)).detach().item()),
         }
+        if awl is not None and prior_loss is not None:
+            if isinstance(awl, torch.nn.parallel.DistributedDataParallel):
+                raw_awl = awl.module
+            else:
+                raw_awl = awl
+
+            params = raw_awl.params
+            per_batch["awl_w_seg"] = math.exp(-params[0].item())
+            per_batch["awl_w_volume"] = math.exp(-params[1].item())
+            per_batch["awl_w_shape"] = math.exp(-params[2].item())
+            per_batch["awl_w_edge"] = math.exp(-params[3].item())
+            per_batch["awl_w_spec"] = math.exp(-params[4].item())
+            per_batch["awl_w_required"] = math.exp(-params[5].item())
+            per_batch["awl_w_forbidden"] = math.exp(-params[6].item())
+            per_batch["awl_w_symmetry"] = math.exp(-params[7].item())
         for key, value in per_batch.items():
             sum_metrics[key] += value
             accum_metrics[key] += value
