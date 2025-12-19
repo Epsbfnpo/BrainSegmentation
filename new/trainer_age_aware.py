@@ -370,7 +370,12 @@ def train_epoch(model: nn.Module,
                 loss_inputs = [l_seg, l_vol, l_shape, l_edge, l_spec, l_req, l_forb, l_sym]
                 awl_loss, eff_weights = awl(loss_inputs)
 
-                params = awl.params
+                if isinstance(awl, torch.nn.parallel.DistributedDataParallel):
+                    raw_awl = awl.module
+                else:
+                    raw_awl = awl
+
+                params = raw_awl.params
 
                 def w(idx, val):
                     return 0.5 * torch.exp(-params[idx]) * val + 0.5 * params[idx]
