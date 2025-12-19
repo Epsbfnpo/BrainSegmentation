@@ -465,7 +465,12 @@ def train_epoch(model: nn.Module,
             "forbidden_present": float(prior_dict.get("forbidden_present", torch.tensor(0.0, device=device)).detach().item()),
         }
         if awl is not None and prior_loss is not None:
-            params = awl.params
+            if isinstance(awl, torch.nn.parallel.DistributedDataParallel):
+                raw_awl = awl.module
+            else:
+                raw_awl = awl
+
+            params = raw_awl.params
             per_batch["awl_w_seg"] = math.exp(-params[0].item())
             per_batch["awl_w_volume"] = math.exp(-params[1].item())
             per_batch["awl_w_shape"] = math.exp(-params[2].item())
