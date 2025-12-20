@@ -20,8 +20,11 @@ DATA_SPLIT_JSON="${REPO_ROOT}/AMOS_pretrain_split.json"
 # 请确保这个路径指向你上一阶段实际生成的 final_model.pth
 PRETRAINED_MODEL="${REPO_ROOT}/SSL/results_ssl/amos_ssl_pretrain/ssl_dHCP_distributed_20251209_010441/best_model.pth"
 
+# ✅ [修复1] 指向刚才生成的正确 AMOS Prior 文件
+CLASS_PRIOR_JSON="/datasets/work/hb-nhmrc-dhcp/work/liu275/AMOS_class_prior_standard.json"
+
 # 训练配置
-EXPERIMENT_NAME="AMOS_CT_Finetune_From_SSL"
+EXPERIMENT_NAME="AMOS_CT_Finetune_Fixed"
 EPOCHS=300
 BATCH_SIZE=2
 NUM_GPUS=4
@@ -37,7 +40,8 @@ TARGET_SPACING="1.5 1.5 1.5"
 # 启动训练
 cd "${CODE_DIR}"
 
-echo "🚀 Starting AMOS Supervised Fine-tuning"
+echo "🚀 Starting AMOS Supervised Fine-tuning (DDP Mode)"
+echo "   Prior File: ${CLASS_PRIOR_JSON}"
 echo "   Pretrained Weights: ${PRETRAINED_MODEL}"
 echo "   Output Dir: ${RESULTS_DIR}"
 
@@ -47,12 +51,16 @@ torchrun --nproc_per_node=${NUM_GPUS} \
     --results_dir "${RESULTS_DIR}" \
     --data_split_json "${DATA_SPLIT_JSON}" \
     --pretrained_model "${PRETRAINED_MODEL}" \
+    --class_prior_json "${CLASS_PRIOR_JSON}" \
     --epochs ${EPOCHS} \
     --batch_size ${BATCH_SIZE} \
     --lr ${LEARNING_RATE} \
     --num_classes ${NUM_CLASSES} \
     --roi_x ${ROI_X} --roi_y ${ROI_Y} --roi_z ${ROI_Z} \
     --target_spacing ${TARGET_SPACING} \
-    --num_workers 1 \
-    --cache_rate 0.0 \
-    --use_amp
+    --num_workers 8 \
+    --cache_rate 0.1 \
+    --use_amp \
+    --class_aware_sampling \
+    --weight_power 0.5 \
+    --loss_type "dice_ce"

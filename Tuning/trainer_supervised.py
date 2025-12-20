@@ -4,6 +4,7 @@ FIXED: Always use sliding window option and proper ignore_index handling
 """
 import torch
 import torch.nn as nn
+import torch.distributed as dist
 import torch.nn.functional as F
 import numpy as np
 from tqdm import tqdm
@@ -430,6 +431,17 @@ def val_epoch_supervised(
     metrics['loss'] /= num_steps
     metrics['macro_dice'] /= num_steps
     metrics['dice'] = dice_metric.aggregate().item()
+
+    if dist.is_initialized():
+        local_metrics = torch.tensor(
+            [metrics['loss'], metrics['dice']],
+            device=device,
+            dtype=torch.float32
+        )
+        dist.all_reduce(local_metrics, op=dist.ReduceOp.SUM)
+        world_size = dist.get_world_size()
+        metrics['loss'] = local_metrics[0].item() / world_size
+        metrics['dice'] = local_metrics[1].item() / world_size
 
     # Calculate per-class dice scores
     if class_dice_tracker:

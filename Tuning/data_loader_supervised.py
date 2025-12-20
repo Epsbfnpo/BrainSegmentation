@@ -86,7 +86,7 @@ def load_data_split(split_json_path: str) -> Tuple[List[Dict], List[Dict]]:
 
 
 def compute_sample_weights(train_files: List[Dict], class_prior_json: str = None,
-                          num_classes: int = 87, weight_power: float = 0.75,
+                          num_classes: int = 15, weight_power: float = 0.75,
                           max_weight: float = 20.0) -> torch.Tensor:
     """Compute sample weights based on class presence for balanced sampling
 
@@ -101,9 +101,9 @@ def compute_sample_weights(train_files: List[Dict], class_prior_json: str = None
             prior_data = json.load(f)
         class_ratios = prior_data['class_ratios']
 
-        # Compute inverse frequency weights for regions 1-87
+        # Compute inverse frequency weights for regions/classes
         class_weights = []
-        for i in range(1, 88):  # Skip background
+        for i in range(1, num_classes):  # Skip background
             if i < len(class_ratios):
                 # Use power scaling for more aggressive weighting
                 weight = np.power(1.0 / (class_ratios[i] + 1e-6), weight_power)
@@ -178,7 +178,7 @@ def compute_sample_weights(train_files: List[Dict], class_prior_json: str = None
     return sample_weights
 
 
-def load_class_weights(class_prior_json: str, num_classes: int = 87,
+def load_class_weights(class_prior_json: str, num_classes: int = 15,
                       weight_power: float = 0.75, max_weight: float = 20.0) -> torch.Tensor:
     """Load class weights from prior distribution
 
@@ -191,34 +191,32 @@ def load_class_weights(class_prior_json: str, num_classes: int = 87,
 
         class_ratios = prior_data['class_ratios']
 
-        # For foreground-only mode with 87 classes
-        if num_classes == 87:
-            weights = []
-            for i in range(1, 88):  # Brain regions 1-87
-                if i < len(class_ratios):
-                    # Power inverse frequency
-                    weight = np.power(1.0 / (class_ratios[i] + 1e-6), weight_power)
-                else:
-                    weight = 1.0
-                weights.append(weight)
+        weights = []
+        for i in range(1, num_classes):  # Skip background
+            if i < len(class_ratios):
+                # Power inverse frequency
+                weight = np.power(1.0 / (class_ratios[i] + 1e-6), weight_power)
+            else:
+                weight = 1.0
+            weights.append(weight)
 
-            weights = torch.tensor(weights, dtype=torch.float32)
+        weights = torch.tensor(weights, dtype=torch.float32)
 
-            # Normalize weights
-            weights = weights / weights.mean()
+        # Normalize weights
+        weights = weights / weights.mean()
 
-            # Clip to reasonable range
-            weights = torch.clamp(weights, 0.1, max_weight)
+        # Clip to reasonable range
+        weights = torch.clamp(weights, 0.1, max_weight)
 
-            print(f"✓ Class weights computed for 87 brain regions")
-            print(f"  Min weight: {weights.min():.3f}")
-            print(f"  Max weight: {weights.max():.3f}")
-            print(f"  Mean weight: {weights.mean():.3f}")
+        print(f"✓ Class weights computed for {num_classes - 1} foreground classes")
+        print(f"  Min weight: {weights.min():.3f}")
+        print(f"  Max weight: {weights.max():.3f}")
+        print(f"  Mean weight: {weights.mean():.3f}")
 
-            # Report extreme weights
-            high_weight_classes = (weights > 10.0).sum()
-            if high_weight_classes > 0:
-                print(f"  Classes with weight > 10: {high_weight_classes}")
+        # Report extreme weights
+        high_weight_classes = (weights > 10.0).sum()
+        if high_weight_classes > 0:
+            print(f"  Classes with weight > 10: {high_weight_classes}")
 
         return weights
     else:

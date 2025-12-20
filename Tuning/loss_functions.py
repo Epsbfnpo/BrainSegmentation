@@ -481,12 +481,11 @@ def get_loss_function(args, device: torch.device) -> nn.Module:
 
     print(f"\n📉 Creating loss function: {args.loss_type}")
 
-    if args.foreground_only:
-        if args.out_channels == 87:
-            ignore_index = -1
-        else:
-            ignore_index = -100
-            print(f"  ℹ️  Foreground-only mode for {args.out_channels} classes: Using ignore_index={ignore_index}")
+    if args.out_channels == 15:
+        ignore_index = -100
+        print("  ℹ️  AMOS Mode (15 classes): Including background (class 0) in loss.")
+    elif args.foreground_only and args.out_channels == 87:
+        ignore_index = -1
     else:
         ignore_index = -100
 
