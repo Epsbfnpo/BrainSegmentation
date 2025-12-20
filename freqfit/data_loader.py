@@ -41,6 +41,7 @@ class RemapLabelsd(MapTransform):
         for key in self.key_iterator(d):
             lbl = d[key]
             arr = lbl.cpu().numpy() if isinstance(lbl, MetaTensor) else np.asarray(lbl)
+            arr = arr.astype(np.int32)
             # -1: Background, 0~86: Foreground
             arr = np.where(arr > 0, arr - 1, -1).astype(np.int32)
             d[key] = torch.as_tensor(arr).float()

@@ -39,42 +39,46 @@ class FreqFit(nn.Module):
         # 1. Down-project
         x = self.fc1(x)  # (B, ..., inter_channel)
 
-        # 2. Smart Padding for FP16 FFT
-        # cuFFT in FP16 requires power-of-2 dimensions
-        C = x.shape[-1]
-        target_C = 1
-        while target_C < C:
-            target_C *= 2
+        # 2. FFT stability guard in FP32
+        with torch.cuda.amp.autocast(enabled=False):
+            x = x.float()
 
-        if target_C != C:
-            # Pad the last dimension
-            x_padded = F.pad(x, (0, target_C - C))
-        else:
-            x_padded = x
+            # 3. Smart Padding for FP16 FFT
+            # cuFFT in FP16 requires power-of-2 dimensions
+            C = x.shape[-1]
+            target_C = 1
+            while target_C < C:
+                target_C *= 2
 
-        # 3. FFT (FP16 safe now due to padding)
-        x_fft = torch.fft.rfft(x_padded, dim=-1, norm='ortho')
+            if target_C != C:
+                # Pad the last dimension
+                x_padded = F.pad(x, (0, target_C - C))
+            else:
+                x_padded = x
 
-        # 4. Frequency Modulation
-        weight = torch.view_as_complex(self.complex_weight)
+            # 4. FFT (safe in FP32)
+            x_fft = torch.fft.rfft(x_padded, dim=-1, norm='ortho')
 
-        # Resize weight to match padded frequency dimension
-        # x_fft shape: (..., target_C // 2 + 1)
-        if weight.shape[1] != x_fft.shape[-1]:
-            w_t = torch.view_as_real(weight).permute(0, 2, 1)  # (1, 2, C)
-            w_t = F.interpolate(w_t, size=x_fft.shape[-1], mode='linear', align_corners=False)
-            weight = torch.view_as_complex(w_t.permute(0, 2, 1).contiguous())
+            # 5. Frequency Modulation
+            weight = torch.view_as_complex(self.complex_weight.float())
 
-        x_fft = x_fft * weight
+            # Resize weight to match padded frequency dimension
+            # x_fft shape: (..., target_C // 2 + 1)
+            if weight.shape[1] != x_fft.shape[-1]:
+                w_t = torch.view_as_real(weight).permute(0, 2, 1)  # (1, 2, C)
+                w_t = F.interpolate(w_t, size=x_fft.shape[-1], mode='linear', align_corners=False)
+                weight = torch.view_as_complex(w_t.permute(0, 2, 1).contiguous())
 
-        # 5. Inverse FFT
-        x_out = torch.fft.irfft(x_fft, n=target_C, dim=-1, norm='ortho')
+            x_fft = x_fft * weight
 
-        # 6. Slice back if padded
-        if target_C != C:
-            x_out = x_out[..., :C]
+            # 6. Inverse FFT
+            x_out = torch.fft.irfft(x_fft, n=target_C, dim=-1, norm='ortho')
 
-        # 7. Up-project
+            # 7. Slice back if padded
+            if target_C != C:
+                x_out = x_out[..., :C]
+
+        # 8. Up-project
         x = self.act(x_out)
         x = self.fc2(x)
 
