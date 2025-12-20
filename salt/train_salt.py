@@ -178,6 +178,7 @@ def parse_args():
     parser.add_argument("--use_swin_checkpoint", action="store_true", default=True)
     parser.add_argument("--slurm_time_buffer", default=300, type=float)
     parser.add_argument("--resume", default=None)
+    parser.add_argument("--grad_accum_steps", default=1, type=int)
 
     # SALT specific args
     parser.add_argument("--salt_rank", default=32, type=int, help="Rank for SVD Scale/Shift")
@@ -282,6 +283,7 @@ def main():
             device=device,
             epoch=epoch,
             salt_reg_weight=args.salt_reg_weight,
+            grad_accum_steps=args.grad_accum_steps,
             writer=writer,
             global_step=global_step,
             is_main=is_main,
