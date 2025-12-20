@@ -13,6 +13,7 @@ import gc
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import WeightedRandomSampler
+from torch.utils.data.distributed import DistributedSampler
 import nibabel as nib
 import torch.distributed as dist
 
@@ -364,7 +365,14 @@ def get_supervised_dataloaders(args) -> Tuple[DataLoader, DataLoader]:
 
     # Create sampler for class-aware sampling if enabled
     train_sampler = None
-    if hasattr(args, 'class_aware_sampling') and args.class_aware_sampling:
+    shuffle = True
+    if dist.is_initialized():
+        train_sampler = DistributedSampler(train_dataset, shuffle=True)
+        shuffle = False
+        print(f"  ✓ Enabled DistributedSampler (Rank {dist.get_rank()})")
+        if hasattr(args, 'class_aware_sampling') and args.class_aware_sampling:
+            print("  ⚠️ DDP mode overrides class-aware sampling.")
+    elif hasattr(args, 'class_aware_sampling') and args.class_aware_sampling:
         print("\n🎯 Using class-aware sampling for training...")
         sample_weights = compute_sample_weights(
             train_files,
@@ -381,8 +389,6 @@ def get_supervised_dataloaders(args) -> Tuple[DataLoader, DataLoader]:
             replacement=True
         )
         shuffle = False  # Sampler handles randomization
-    else:
-        shuffle = True
 
     # [CRITICAL FIX] Set pin_memory=False to avoid storage resizing errors with MetaTensors
     pin_memory = False
@@ -400,10 +406,13 @@ def get_supervised_dataloaders(args) -> Tuple[DataLoader, DataLoader]:
     )
 
     # Validation data loader
+    val_sampler = DistributedSampler(val_dataset, shuffle=False) if dist.is_initialized() else None
+
     val_loader = DataLoader(
         val_dataset,
         batch_size=1,  # Use batch_size=1 for validation to handle different image sizes
         shuffle=False,
+        sampler=val_sampler,
         num_workers=max(2, args.num_workers // 2),
         pin_memory=pin_memory,
         persistent_workers=True if args.num_workers > 0 else False,

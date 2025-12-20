@@ -481,8 +481,14 @@ def get_loss_function(args, device: torch.device) -> nn.Module:
 
     print(f"\n📉 Creating loss function: {args.loss_type}")
 
-    # Set ignore_index for foreground-only mode (-1 for background)
-    ignore_index = -1 if args.foreground_only and args.out_channels == 87 else -100
+    if args.foreground_only:
+        if args.out_channels == 87:
+            ignore_index = -1
+        else:
+            ignore_index = -100
+            print(f"  ℹ️  Foreground-only mode for {args.out_channels} classes: Using ignore_index={ignore_index}")
+    else:
+        ignore_index = -100
 
     print(f"  Using ignore_index={ignore_index} for background pixels")
 

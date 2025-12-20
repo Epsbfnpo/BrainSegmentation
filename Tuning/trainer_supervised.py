@@ -64,7 +64,8 @@ def train_epoch_supervised(
     args,
     scaler: Optional[torch.cuda.amp.GradScaler] = None,
     accumulation_steps: int = 1,
-    monitor=None
+    monitor=None,
+    is_main_process: bool = True
 ) -> Dict[str, float]:
     """Train one epoch with improved metrics calculation
 
@@ -89,15 +90,16 @@ def train_epoch_supervised(
     num_steps = len(train_loader)
     use_amp = scaler is not None
 
-    print(f"\n🚀 Training - Epoch {epoch}")
-    print(f"  Learning rate: {metrics['lr']:.6f}")
-    print(f"  Gradient accumulation steps: {accumulation_steps}")
-    print(f"  Mixed precision: {use_amp}")
+    if is_main_process:
+        print(f"\n🚀 Training - Epoch {epoch}")
+        print(f"  Learning rate: {metrics['lr']:.6f}")
+        print(f"  Gradient accumulation steps: {accumulation_steps}")
+        print(f"  Mixed precision: {use_amp}")
 
     start_time = time.time()
 
     # Progress bar
-    pbar = tqdm(train_loader, desc=f"Epoch {epoch}")
+    pbar = tqdm(train_loader, desc=f"Epoch {epoch}") if is_main_process else train_loader
 
     # Zero gradients at start
     optimizer.zero_grad()
@@ -212,16 +214,17 @@ def train_epoch_supervised(
             accumulated_loss = 0.0
 
             # Update progress bar
-            pbar.set_postfix({
-                'loss': f"{loss.item() * accumulation_steps:.4f}",
-                'dice': f"{batch_dice:.4f}",
-                'macro': f"{macro_dice:.4f}",
-                'grad': f"{grad_norm.item():.2f}",
-                'scale': f"{scaler.get_scale():.0f}" if use_amp else "N/A"
-            })
+            if is_main_process:
+                pbar.set_postfix({
+                    'loss': f"{loss.item() * accumulation_steps:.4f}",
+                    'dice': f"{batch_dice:.4f}",
+                    'macro': f"{macro_dice:.4f}",
+                    'grad': f"{grad_norm.item():.2f}",
+                    'scale': f"{scaler.get_scale():.0f}" if use_amp else "N/A"
+                })
 
             # Log to tensorboard
-            if (i + 1) % (10 * accumulation_steps) == 0:
+            if writer is not None and (i + 1) % (10 * accumulation_steps) == 0:
                 global_step = (epoch - 1) * (num_steps // accumulation_steps) + (i + 1) // accumulation_steps
                 writer.add_scalar('train/loss', loss.item() * accumulation_steps, global_step)
                 writer.add_scalar('train/dice', batch_dice, global_step)
@@ -243,12 +246,13 @@ def train_epoch_supervised(
     num_zero_dice = sum(1 for c, scores in class_dice_tracker.items()
                         if scores and np.mean(scores) < 0.1)
 
-    print(f"\n✓ Epoch {epoch} completed in {elapsed:.1f}s")
-    print(f"  Average loss: {metrics['loss']:.4f}")
-    print(f"  Average Dice: {metrics['dice']:.4f}")
-    print(f"  Macro Dice (aligned): {metrics['macro_dice']:.4f}")
-    print(f"  Classes with Dice < 0.1: {num_zero_dice}/{args.out_channels}")
-    print(f"  Average gradient norm: {metrics['grad_norm']:.4f}")
+    if is_main_process:
+        print(f"\n✓ Epoch {epoch} completed in {elapsed:.1f}s")
+        print(f"  Average loss: {metrics['loss']:.4f}")
+        print(f"  Average Dice: {metrics['dice']:.4f}")
+        print(f"  Macro Dice (aligned): {metrics['macro_dice']:.4f}")
+        print(f"  Classes with Dice < 0.1: {num_zero_dice}/{args.out_channels}")
+        print(f"  Average gradient norm: {metrics['grad_norm']:.4f}")
 
     # Update monitor if provided
     if monitor is not None:
@@ -266,7 +270,8 @@ def val_epoch_supervised(
     device: torch.device,
     writer,
     args,
-    monitor=None
+    monitor=None,
+    is_main_process: bool = True
 ) -> Dict[str, float]:
     """Validate one epoch with sliding window inference
 
@@ -294,14 +299,16 @@ def val_epoch_supervised(
 
     num_steps = len(val_loader)
 
-    print(f"\n📊 Validation - Epoch {epoch}")
-    if args.always_use_sliding_window:
-        print(f"  Using sliding window inference (overlap={args.overlap})")
+    if is_main_process:
+        print(f"\n📊 Validation - Epoch {epoch}")
+        if args.always_use_sliding_window:
+            print(f"  Using sliding window inference (overlap={args.overlap})")
 
     start_time = time.time()
 
     with torch.no_grad():
-        for i, batch in enumerate(tqdm(val_loader, desc="Validation")):
+        val_iter = tqdm(val_loader, desc="Validation") if is_main_process else val_loader
+        for i, batch in enumerate(val_iter):
             images = batch['image'].to(device)
             labels = batch['label'].to(device)
 
@@ -368,57 +375,56 @@ def val_epoch_supervised(
             valid_mask = (labels != -1).float()
 
             # Calculate per-class dice scores
-            if args.foreground_only and args.out_channels == 87:
-                batch_dice_scores = []
+            batch_dice_scores = []
 
-                for c in range(args.out_channels):
-                    # For each brain region
-                    pred_c = (pred_argmax == c).float()
-                    label_c = (labels == c).float()
-
-                    # Apply valid mask
-                    pred_c = pred_c * valid_mask
-                    label_c = label_c * valid_mask
-
-                    # Calculate dice for this class
-                    intersection = (pred_c * label_c).sum(dim=(1, 2, 3))
-                    pred_sum = pred_c.sum(dim=(1, 2, 3))
-                    label_sum = label_c.sum(dim=(1, 2, 3))
-
-                    # Only calculate dice if the class exists
-                    dice_c = torch.where(
-                        (pred_sum + label_sum) > 0,
-                        (2.0 * intersection + 1e-5) / (pred_sum + label_sum + 1e-5),
-                        torch.ones_like(intersection)
-                    )
-
-                    dice_value = dice_c.mean().item()
-                    batch_dice_scores.append(dice_value)
-
-                    # Track if class exists in this batch
-                    if (label_sum > 0).any():
-                        class_dice_tracker[c].append(dice_value)
-
-                # Store per-class dice scores
-                all_dice_scores.append(batch_dice_scores)
-
-                # Calculate overall dice
-                pred_onehot = F.one_hot(
-                    pred_argmax.clamp(0, args.out_channels-1),
-                    num_classes=args.out_channels
-                ).permute(0, 4, 1, 2, 3).float()
-
-                labels_clamped = labels.clamp(0, args.out_channels-1)
-                labels_onehot = F.one_hot(
-                    labels_clamped,
-                    num_classes=args.out_channels
-                ).permute(0, 4, 1, 2, 3).float()
+            for c in range(args.out_channels):
+                # For each class/region
+                pred_c = (pred_argmax == c).float()
+                label_c = (labels == c).float()
 
                 # Apply valid mask
-                pred_onehot = pred_onehot * valid_mask.unsqueeze(1)
-                labels_onehot = labels_onehot * valid_mask.unsqueeze(1)
+                pred_c = pred_c * valid_mask
+                label_c = label_c * valid_mask
 
-                dice_metric(y_pred=pred_onehot, y=labels_onehot)
+                # Calculate dice for this class
+                intersection = (pred_c * label_c).sum(dim=(1, 2, 3))
+                pred_sum = pred_c.sum(dim=(1, 2, 3))
+                label_sum = label_c.sum(dim=(1, 2, 3))
+
+                # Only calculate dice if the class exists
+                dice_c = torch.where(
+                    (pred_sum + label_sum) > 0,
+                    (2.0 * intersection + 1e-5) / (pred_sum + label_sum + 1e-5),
+                    torch.ones_like(intersection)
+                )
+
+                dice_value = dice_c.mean().item()
+                batch_dice_scores.append(dice_value)
+
+                # Track if class exists in this batch
+                if (label_sum > 0).any():
+                    class_dice_tracker[c].append(dice_value)
+
+            # Store per-class dice scores
+            all_dice_scores.append(batch_dice_scores)
+
+            # Calculate overall dice
+            pred_onehot = F.one_hot(
+                pred_argmax.clamp(0, args.out_channels-1),
+                num_classes=args.out_channels
+            ).permute(0, 4, 1, 2, 3).float()
+
+            labels_clamped = labels.clamp(0, args.out_channels-1)
+            labels_onehot = F.one_hot(
+                labels_clamped,
+                num_classes=args.out_channels
+            ).permute(0, 4, 1, 2, 3).float()
+
+            # Apply valid mask
+            pred_onehot = pred_onehot * valid_mask.unsqueeze(1)
+            labels_onehot = labels_onehot * valid_mask.unsqueeze(1)
+
+            dice_metric(y_pred=pred_onehot, y=labels_onehot)
 
     # Aggregate metrics
     metrics['loss'] /= num_steps
@@ -430,9 +436,15 @@ def val_epoch_supervised(
         for c, scores in class_dice_tracker.items():
             if scores:
                 mean_dice = np.mean(scores)
-                # For foreground-only, class i represents brain region i+1
-                if args.foreground_only and args.out_channels == 87:
+                if args.out_channels == 87:
                     class_name = f'region_{c+1}'
+                elif args.out_channels == 15:
+                    amos_organs = [
+                        "Background", "Spleen", "R_Kidney", "L_Kidney", "Gallbladder", "Esophagus",
+                        "Liver", "Stomach", "Aorta", "IVC", "Pancreas", "R_Adrenal", "L_Adrenal",
+                        "Duodenum", "Bladder"
+                    ]
+                    class_name = amos_organs[c] if c < len(amos_organs) else f'class_{c}'
                 else:
                     class_name = f'class_{c}'
                 metrics['dice_per_class'][class_name] = float(mean_dice)
@@ -444,13 +456,14 @@ def val_epoch_supervised(
     elapsed = time.time() - start_time
 
     # Log to tensorboard
-    writer.add_scalar('val/loss', metrics['loss'], epoch)
-    writer.add_scalar('val/dice', metrics['dice'], epoch)
-    writer.add_scalar('val/macro_dice', metrics['macro_dice'], epoch)
-    writer.add_scalar('val/num_zero_dice', metrics['num_zero_dice'], epoch)
+    if writer is not None:
+        writer.add_scalar('val/loss', metrics['loss'], epoch)
+        writer.add_scalar('val/dice', metrics['dice'], epoch)
+        writer.add_scalar('val/macro_dice', metrics['macro_dice'], epoch)
+        writer.add_scalar('val/num_zero_dice', metrics['num_zero_dice'], epoch)
 
     # Log per-class dice scores (only top and bottom 5 to avoid clutter)
-    if metrics['dice_per_class']:
+    if metrics['dice_per_class'] and writer is not None:
         sorted_classes = sorted(metrics['dice_per_class'].items(), key=lambda x: x[1])
 
         # Log worst 5
@@ -461,14 +474,15 @@ def val_epoch_supervised(
         for class_name, dice_score in sorted_classes[-5:]:
             writer.add_scalar(f'val/dice_best/{class_name}', dice_score, epoch)
 
-    print(f"\n✓ Validation completed in {elapsed:.1f}s")
-    print(f"  Loss: {metrics['loss']:.4f}")
-    print(f"  Mean Dice: {metrics['dice']:.4f}")
-    print(f"  Macro Dice: {metrics['macro_dice']:.4f}")
-    print(f"  Classes with Dice < 0.1: {metrics['num_zero_dice']}/{args.out_channels}")
+    if is_main_process:
+        print(f"\n✓ Validation completed in {elapsed:.1f}s")
+        print(f"  Loss: {metrics['loss']:.4f}")
+        print(f"  Mean Dice: {metrics['dice']:.4f}")
+        print(f"  Macro Dice: {metrics['macro_dice']:.4f}")
+        print(f"  Classes with Dice < 0.1: {metrics['num_zero_dice']}/{args.out_channels}")
 
     # Show worst performing classes
-    if metrics['dice_per_class']:
+    if metrics['dice_per_class'] and is_main_process:
         sorted_classes = sorted(metrics['dice_per_class'].items(), key=lambda x: x[1])
         print("\n  Worst performing regions:")
         for class_name, dice_score in sorted_classes[:5]:
