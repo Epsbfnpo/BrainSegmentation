@@ -9,6 +9,8 @@ import sys
 import json
 import torch
 import torch.nn as nn
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
 from tensorboardX import SummaryWriter
 from monai.utils import set_determinism
@@ -194,36 +196,53 @@ def get_parser():
     return parser
 
 
-def validate_configuration(args):
+def validate_configuration(args, is_main_process: bool = True):
     """Validate configuration and print warnings"""
 
     # Validate spacing
     if min(args.target_spacing) < 0.4:
-        print(f"⚠️ WARNING: Very fine spacing {args.target_spacing} may require more GPU memory")
+        if is_main_process:
+            print(f"⚠️ WARNING: Very fine spacing {args.target_spacing} may require more GPU memory")
 
     # Check class prior file
     if args.class_aware_sampling and not os.path.exists(args.class_prior_json):
-        print(f"⚠️ WARNING: Class prior file not found: {args.class_prior_json}")
-        print(f"   --> Disabling class-aware sampling. Using uniform sampling.")
+        if is_main_process:
+            print(f"⚠️ WARNING: Class prior file not found: {args.class_prior_json}")
+            print(f"   --> Disabling class-aware sampling. Using uniform sampling.")
         args.class_aware_sampling = False
 
     # Validate rotation angle
     if args.max_rotation_angle > 0.2:  # ~11 degrees
-        print(f"⚠️ WARNING: Large rotation angle {args.max_rotation_angle} rad for registered data")
-        print(f"   Consider reducing for registered data (recommended: 0.05-0.1)")
+        if is_main_process:
+            print(f"⚠️ WARNING: Large rotation angle {args.max_rotation_angle} rad for registered data")
+            print(f"   Consider reducing for registered data (recommended: 0.05-0.1)")
 
 
 def main():
-    """Main training function with enhanced features"""
+    """Main training function with DDP support"""
     # Parse arguments
     parser = get_parser()
-    args = parser.parse_args()
+    if "LOCAL_RANK" in os.environ:
+        args = parser.parse_args()
+        local_rank = int(os.environ["LOCAL_RANK"])
+        dist.init_process_group(backend="nccl")
+        torch.cuda.set_device(local_rank)
+        device = torch.device(f"cuda:{local_rank}")
+        is_main_process = dist.get_rank() == 0
+        world_size = dist.get_world_size()
+    else:
+        print("⚠️ 未检测到 DDP 环境，回退到单卡模式")
+        args = parser.parse_args()
+        local_rank = 0
+        device = torch.device("cuda:0")
+        is_main_process = True
+        world_size = 1
 
     # Keep out_channels in sync with num_classes for downstream components
     args.out_channels = args.num_classes
 
     # Validate configuration
-    validate_configuration(args)
+    validate_configuration(args, is_main_process=is_main_process)
 
     # Create experiment name if not provided
     if args.exp_name is None:
@@ -231,84 +250,103 @@ def main():
 
     # Create directories
     args.results_dir = os.path.join(args.results_dir, args.exp_name)
-    os.makedirs(args.results_dir, exist_ok=True)
+    if is_main_process:
+        os.makedirs(args.results_dir, exist_ok=True)
 
-    # Set random seed
-    set_determinism(seed=42)
+        # Save configuration
+        config_path = os.path.join(args.results_dir, 'config.json')
+        with open(config_path, 'w') as f:
+            json.dump(vars(args), f, indent=2)
 
-    # Save configuration
-    config_path = os.path.join(args.results_dir, 'config.json')
-    with open(config_path, 'w') as f:
-        json.dump(vars(args), f, indent=2)
+        print("\n" + "=" * 80)
+        print(f"🚀 SUPERVISED FINE-TUNING (DDP Enabled, World Size: {world_size})")
+        print("=" * 80)
+        print(f"Experiment: {args.exp_name}")
+        print(f"Results directory: {args.results_dir}")
+        print(f"Training epochs: {args.epochs}")
+        print(
+            f"Batch size: {args.batch_size} (×{args.accumulation_steps} accumulation = {args.batch_size * args.accumulation_steps} effective)")
+        print(f"Initial learning rate: {args.lr}")
+        print(f"Loss function: {args.loss_type}")
+        print(f"Target spacing: {args.target_spacing}")
+        print(f"Max rotation angle: {args.max_rotation_angle} rad (~{args.max_rotation_angle * 180 / np.pi:.1f}°)")
+        print(f"LR Scheduler: {args.lr_scheduler}")
+        print(f"Early stopping patience: {args.early_stopping_patience}")
+        print(f"Class-aware sampling: {args.class_aware_sampling}")
+        print(f"Encoder LR ratio: {args.encoder_lr_ratio}")
+        print(f"Freeze encoder epochs: {args.freeze_encoder_epochs}")
+        print(f"Sliding window overlap: {args.overlap}")
+        print(f"Always use sliding window: {args.always_use_sliding_window}")
+        print("=" * 80)
 
-    print("\n" + "=" * 80)
-    print("SUPERVISED FINE-TUNING ON dHCP DATASET (REGISTERED - FIXED)")
-    print("=" * 80)
-    print(f"Experiment: {args.exp_name}")
-    print(f"Results directory: {args.results_dir}")
-    print(f"Training epochs: {args.epochs}")
-    print(
-        f"Batch size: {args.batch_size} (×{args.accumulation_steps} accumulation = {args.batch_size * args.accumulation_steps} effective)")
-    print(f"Initial learning rate: {args.lr}")
-    print(f"Loss function: {args.loss_type}")
-    print(f"Target spacing: {args.target_spacing}")
-    print(f"Max rotation angle: {args.max_rotation_angle} rad (~{args.max_rotation_angle * 180 / np.pi:.1f}°)")
-    print(f"LR Scheduler: {args.lr_scheduler}")
-    print(f"Early stopping patience: {args.early_stopping_patience}")
-    print(f"Class-aware sampling: {args.class_aware_sampling}")
-    print(f"Encoder LR ratio: {args.encoder_lr_ratio}")
-    print(f"Freeze encoder epochs: {args.freeze_encoder_epochs}")
-    print(f"Sliding window overlap: {args.overlap}")
-    print(f"Always use sliding window: {args.always_use_sliding_window}")
-    print("=" * 80)
+    if dist.is_initialized():
+        dist.barrier()
 
     # Check GPU
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is not available. This code requires GPU.")
 
-    device = torch.device("cuda:0")
-    print(f"\n🖥️ GPU: {torch.cuda.get_device_name(0)}")
-    print(f"Memory: {torch.cuda.get_device_properties(0).total_memory / 1024 ** 3:.2f} GB")
+    if is_main_process:
+        print(f"\n🖥️ GPU: {torch.cuda.get_device_name(local_rank)}")
+        print(f"Memory: {torch.cuda.get_device_properties(local_rank).total_memory / 1024 ** 3:.2f} GB")
+
+    # Set random seed
+    set_determinism(seed=42 + local_rank)
 
     # Create tensorboard writer
-    writer = SummaryWriter(log_dir=os.path.join(args.results_dir, 'tensorboard'))
+    writer = SummaryWriter(log_dir=os.path.join(args.results_dir, 'tensorboard')) if is_main_process else None
 
     # Create monitor
-    monitor = SupervisedMonitor(args.results_dir, num_classes=args.out_channels)
-    print(f"\n📊 Created training monitor")
+    monitor = SupervisedMonitor(args.results_dir, num_classes=args.out_channels) if is_main_process else None
+    if is_main_process:
+        print(f"\n📊 Created training monitor")
 
     # Create model first (needed for auto batch size)
-    print("\n🏗️ Creating model...")
+    if is_main_process:
+        print("\n🏗️ Creating model...")
     model = create_supervised_model(args).to(device)
 
     # Auto find optimal batch size if requested
     if args.auto_batch_size:
-        print("\n🔎 Finding optimal batch size...")
-        optimal_batch_size = get_optimal_batch_size(
-            model, device,
-            roi_size=[args.roi_x, args.roi_y, args.roi_z],
-            start_batch_size=args.batch_size,
-            use_amp=args.use_amp
-        )
-        print(f"✓ Optimal batch size: {optimal_batch_size}")
-        args.batch_size = optimal_batch_size
+        if is_main_process:
+            print("\n🔎 Finding optimal batch size...")
+            optimal_batch_size = get_optimal_batch_size(
+                model, device,
+                roi_size=[args.roi_x, args.roi_y, args.roi_z],
+                start_batch_size=args.batch_size,
+                use_amp=args.use_amp
+            )
+            print(f"✓ Optimal batch size: {optimal_batch_size}")
+            args.batch_size = optimal_batch_size
+        if dist.is_initialized():
+            batch_size_tensor = torch.tensor([args.batch_size], device=device)
+            dist.broadcast(batch_size_tensor, src=0)
+            args.batch_size = int(batch_size_tensor.item())
+
+    if args.batch_size < 4:
+        model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
+
+    if dist.is_initialized():
+        model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
 
     # Get data loaders
-    print("\n📊 Creating data loaders...")
+    if is_main_process:
+        print("\n📊 Creating data loaders...")
     train_loader, val_loader = get_supervised_dataloaders(args)
-    print(f"✓ Training samples: {len(train_loader.dataset)}")
-    print(f"✓ Validation samples: {len(val_loader.dataset)}")
+    if is_main_process:
+        print(f"✓ Training samples: {len(train_loader.dataset)}")
+        print(f"✓ Validation samples: {len(val_loader.dataset)}")
 
     # Create loss function
-    print("\n📉 Creating loss function...")
     criterion = get_loss_function(args, device)
 
     # Create optimizer with differential learning rates
-    print("\n🔧 Creating optimizer with differential learning rates...")
     encoder_params = []
     decoder_params = []
 
-    for name, param in model.named_parameters():
+    model_without_ddp = model.module if dist.is_initialized() else model
+
+    for name, param in model_without_ddp.named_parameters():
         if 'swinViT' in name:  # Encoder parameters
             encoder_params.append(param)
         else:  # Decoder parameters
@@ -319,8 +357,10 @@ def main():
         {'params': decoder_params, 'lr': args.lr, 'name': 'decoder'}
     ], weight_decay=args.weight_decay, betas=(0.9, 0.999))
 
-    print(f"  Encoder parameters: {len(encoder_params)} with lr={args.lr * args.encoder_lr_ratio:.6f}")
-    print(f"  Decoder parameters: {len(decoder_params)} with lr={args.lr:.6f}")
+    if is_main_process:
+        print("\n🔧 Creating optimizer with differential learning rates...")
+        print(f"  Encoder parameters: {len(encoder_params)} with lr={args.lr * args.encoder_lr_ratio:.6f}")
+        print(f"  Decoder parameters: {len(decoder_params)} with lr={args.lr:.6f}")
 
     # Create AMP scaler if needed
     scaler = torch.cuda.amp.GradScaler() if args.use_amp else None
@@ -333,7 +373,8 @@ def main():
             eta_min=args.lr_min
         )
         scheduler_needs_metric = False
-        print(f"✓ Using CosineAnnealingLR (NO RESTART) with T_max={args.epochs}, eta_min={args.lr_min}")
+        if is_main_process:
+            print(f"✓ Using CosineAnnealingLR (NO RESTART) with T_max={args.epochs}, eta_min={args.lr_min}")
     elif args.lr_scheduler == 'plateau':
         scheduler = ReduceLROnPlateau(
             optimizer,
@@ -344,7 +385,8 @@ def main():
             verbose=True
         )
         scheduler_needs_metric = True
-        print(f"✓ Using ReduceLROnPlateau (patience={args.lr_patience}, min_lr={args.lr_min})")
+        if is_main_process:
+            print(f"✓ Using ReduceLROnPlateau (patience={args.lr_patience}, min_lr={args.lr_min})")
     else:  # Old cosine with restart
         from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
         scheduler = CosineAnnealingWarmRestarts(
@@ -354,7 +396,8 @@ def main():
             eta_min=args.lr_min
         )
         scheduler_needs_metric = False
-        print(f"✓ Using CosineAnnealingWarmRestarts (T_0={args.lr_cosine_t0})")
+        if is_main_process:
+            print(f"✓ Using CosineAnnealingWarmRestarts (T_0={args.lr_cosine_t0})")
 
     # Create metrics evaluator
     metrics_evaluator = SegmentationMetrics(
@@ -367,9 +410,10 @@ def main():
     # Optional: Create EMA model
     ema_model = None
     if args.use_ema:
-        print("\n📊 Creating EMA model...")
+        if is_main_process:
+            print("\n📊 Creating EMA model...")
         from model_supervised import ModelEMA
-        ema_model = ModelEMA(model, decay=args.ema_decay)
+        ema_model = ModelEMA(model_without_ddp, decay=args.ema_decay)
 
     # Resume training if needed
     start_epoch = 1
@@ -377,35 +421,44 @@ def main():
     early_stopping_counter = 0
 
     if args.resume_training and args.checkpoint:
-        print(f"\n📂 Resuming from checkpoint: {args.checkpoint}")
-        checkpoint = torch.load(args.checkpoint)
-        model.load_state_dict(checkpoint['model_state_dict'])
+        if is_main_process:
+            print(f"\n📂 Resuming from checkpoint: {args.checkpoint}")
+        checkpoint = torch.load(args.checkpoint, map_location='cpu')
+        model_without_ddp.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         start_epoch = checkpoint['epoch'] + 1
         best_val_dice = checkpoint.get('best_val_dice', 0.0)
         if scheduler and 'scheduler_state_dict' in checkpoint:
             scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-        print(f"✓ Resuming from epoch {start_epoch} with best val Dice = {best_val_dice:.4f}")
+        if is_main_process:
+            print(f"✓ Resuming from epoch {start_epoch} with best val Dice = {best_val_dice:.4f}")
 
     # Training loop
-    print(f"\n🚀 Starting supervised fine-tuning...")
+    if is_main_process:
+        print(f"\n🚀 Starting supervised fine-tuning...")
 
     try:
         for epoch in range(start_epoch, args.epochs + 1):
-            print(f"\n{'=' * 60}")
-            print(f"EPOCH {epoch}/{args.epochs}")
-            print(f"{'=' * 60}")
+            if dist.is_initialized() and hasattr(train_loader.sampler, 'set_epoch'):
+                train_loader.sampler.set_epoch(epoch)
+
+            if is_main_process:
+                print(f"\n{'=' * 60}")
+                print(f"EPOCH {epoch}/{args.epochs}")
+                print(f"{'=' * 60}")
 
             # Dynamic encoder LR adjustment
             if args.dynamic_encoder_lr and epoch == args.encoder_lr_boost_epoch:
-                print(f"📈 Boosting encoder LR ratio to {args.encoder_lr_boost_ratio}")
+                if is_main_process:
+                    print(f"📈 Boosting encoder LR ratio to {args.encoder_lr_boost_ratio}")
                 for param_group in optimizer.param_groups:
                     if param_group.get('name') == 'encoder':
                         param_group['lr'] = args.lr * args.encoder_lr_boost_ratio
 
             # Optionally freeze encoder for initial epochs
             if epoch <= args.freeze_encoder_epochs:
-                print(f"❄️ Encoder frozen for first {args.freeze_encoder_epochs} epochs")
+                if is_main_process:
+                    print(f"❄️ Encoder frozen for first {args.freeze_encoder_epochs} epochs")
                 for param in encoder_params:
                     param.requires_grad = False
             else:
@@ -424,7 +477,8 @@ def main():
                 args=args,
                 scaler=scaler,
                 accumulation_steps=args.accumulation_steps,
-                monitor=monitor
+                monitor=monitor,
+                is_main_process=is_main_process
             )
 
             # Update EMA
@@ -445,40 +499,57 @@ def main():
                     device=device,
                     writer=writer,
                     args=args,
-                    monitor=monitor
+                    monitor=monitor,
+                    is_main_process=is_main_process
                 )
 
                 # Save best model
-                if val_metrics['dice'] > best_val_dice:
-                    improvement = val_metrics['dice'] - best_val_dice
-                    best_val_dice = val_metrics['dice']
-                    early_stopping_counter = 0
+                val_dice = val_metrics['dice']
+                if dist.is_initialized():
+                    val_dice_tensor = torch.tensor([val_dice], device=device)
+                    dist.broadcast(val_dice_tensor, src=0)
+                    val_dice = val_dice_tensor.item()
 
-                    save_checkpoint_supervised(
-                        model=eval_model if ema_model is not None else model,
-                        optimizer=optimizer,
-                        epoch=epoch,
-                        best_val_dice=best_val_dice,
-                        args=args,
-                        filepath=os.path.join(args.results_dir, 'best_model.pth'),
-                        val_metrics=val_metrics,
-                        scaler=scaler,
-                        scheduler=scheduler
-                    )
-                    print(f"✨ New best model! Val Dice: {best_val_dice:.4f} (+{improvement:.4f})")
-                else:
-                    early_stopping_counter += 1
-                    print(
-                        f"⚠️ No improvement for {early_stopping_counter} epochs (patience: {args.early_stopping_patience})")
+                if is_main_process:
+                    if val_dice > best_val_dice:
+                        improvement = val_dice - best_val_dice
+                        best_val_dice = val_dice
+                        early_stopping_counter = 0
+
+                        save_checkpoint_supervised(
+                            model=ema_model.model if ema_model is not None else model_without_ddp,
+                            optimizer=optimizer,
+                            epoch=epoch,
+                            best_val_dice=best_val_dice,
+                            args=args,
+                            filepath=os.path.join(args.results_dir, 'best_model.pth'),
+                            val_metrics=val_metrics,
+                            scaler=scaler,
+                            scheduler=scheduler
+                        )
+                        print(f"✨ New best model! Val Dice: {best_val_dice:.4f} (+{improvement:.4f})")
+                    else:
+                        early_stopping_counter += 1
+                        print(
+                            f"⚠️ No improvement for {early_stopping_counter} epochs (patience: {args.early_stopping_patience})")
 
                 # Step scheduler
                 if scheduler_needs_metric:
-                    scheduler.step(val_metrics['dice'])
+                    scheduler.step(val_dice)
 
                 # Early stopping
-                if early_stopping_counter >= args.early_stopping_patience:
+                early_stop = False
+                if is_main_process and early_stopping_counter >= args.early_stopping_patience:
                     print(f"\n⚠️ Early stopping triggered after {epoch} epochs")
                     print(f"Best validation Dice: {best_val_dice:.4f}")
+                    early_stop = True
+
+                if dist.is_initialized():
+                    stop_tensor = torch.tensor([1 if early_stop else 0], device=device)
+                    dist.broadcast(stop_tensor, src=0)
+                    early_stop = stop_tensor.item() == 1
+
+                if early_stop:
                     break
 
             # Step scheduler
@@ -486,9 +557,9 @@ def main():
                 scheduler.step()
 
             # Save periodic checkpoint
-            if epoch % args.save_interval == 0:
+            if is_main_process and epoch % args.save_interval == 0:
                 save_checkpoint_supervised(
-                    model=model,
+                    model=model_without_ddp,
                     optimizer=optimizer,
                     epoch=epoch,
                     best_val_dice=best_val_dice,
@@ -500,7 +571,7 @@ def main():
                 )
 
             # Generate monitoring reports periodically
-            if epoch % 10 == 0:
+            if is_main_process and epoch % 10 == 0:
                 monitor.generate_report()
                 monitor.plot_metrics()
 
@@ -509,48 +580,56 @@ def main():
                 torch.cuda.empty_cache()
                 gc.collect()
 
-    except Exception as e:
-        print(f"\n❌ Error during training: {str(e)}")
-        traceback.print_exc()
+            if dist.is_initialized():
+                dist.barrier()
 
-        # Save emergency checkpoint
-        save_checkpoint_supervised(
-            model=model,
-            optimizer=optimizer,
-            epoch=epoch,
-            best_val_dice=best_val_dice,
-            args=args,
-            filepath=os.path.join(args.results_dir, f'emergency_epoch_{epoch}.pth'),
-            scaler=scaler,
-            scheduler=scheduler
-        )
+    except Exception as e:
+        if is_main_process:
+            print(f"\n❌ Error during training: {str(e)}")
+            traceback.print_exc()
+
+            # Save emergency checkpoint
+            save_checkpoint_supervised(
+                model=model_without_ddp,
+                optimizer=optimizer,
+                epoch=epoch,
+                best_val_dice=best_val_dice,
+                args=args,
+                filepath=os.path.join(args.results_dir, f'emergency_epoch_{epoch}.pth'),
+                scaler=scaler,
+                scheduler=scheduler
+            )
         raise
 
     # Save final model
-    save_checkpoint_supervised(
-        model=model,
-        optimizer=optimizer,
-        epoch=args.epochs if epoch >= args.epochs else epoch,
-        best_val_dice=best_val_dice,
-        args=args,
-        filepath=os.path.join(args.results_dir, 'final_model.pth'),
-        scaler=scaler,
-        scheduler=scheduler
-    )
+    if is_main_process:
+        save_checkpoint_supervised(
+            model=model_without_ddp,
+            optimizer=optimizer,
+            epoch=args.epochs if epoch >= args.epochs else epoch,
+            best_val_dice=best_val_dice,
+            args=args,
+            filepath=os.path.join(args.results_dir, 'final_model.pth'),
+            scaler=scaler,
+            scheduler=scheduler
+        )
 
-    # Final monitoring report and plots
-    print("\n📊 Generating final reports and plots...")
-    monitor.generate_report()
-    monitor.plot_metrics()
+        # Final monitoring report and plots
+        print("\n📊 Generating final reports and plots...")
+        monitor.generate_report()
+        monitor.plot_metrics()
 
-    print("\n" + "=" * 80)
-    print("✅ SUPERVISED FINE-TUNING COMPLETED!")
-    print("=" * 80)
-    print(f"Best validation Dice: {best_val_dice:.4f}")
-    print(f"Final model saved to: {os.path.join(args.results_dir, 'final_model.pth')}")
-    print("=" * 80)
+        print("\n" + "=" * 80)
+        print("✅ SUPERVISED FINE-TUNING COMPLETED!")
+        print("=" * 80)
+        print(f"Best validation Dice: {best_val_dice:.4f}")
+        print(f"Final model saved to: {os.path.join(args.results_dir, 'final_model.pth')}")
+        print("=" * 80)
 
-    writer.close()
+        writer.close()
+
+    if dist.is_initialized():
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":
