@@ -106,6 +106,8 @@ def train(args, model, loader, optimizer, scaler, device, epoch):
             loss = loss_c + loss_d
 
         scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         scaler.step(optimizer)
         scaler.update()
         total_loss += loss.item()
