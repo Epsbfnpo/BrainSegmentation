@@ -1,11 +1,6 @@
 import argparse
-import os
 import sys
-import time
-import signal
 import torch
-import torch.nn.functional as F
-import torch.distributed as dist
 from pathlib import Path
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
@@ -14,68 +9,17 @@ from tensorboardX import SummaryWriter
 
 # Import local components
 from components import get_dataloaders, MedSeqFTWrapper, MedSeqFTLoss
+from utils_medseqft import SignalHandler, check_slurm_deadline, robust_one_hot
 
 # --- MONAI Imports ---
 from monai.metrics import DiceMetric
 from monai.inferers import sliding_window_inference
-from monai.data import decollate_batch
-
-
-# --- SLURM Signal Handling ---
-class SignalHandler:
-    def __init__(self):
-        self.stop_requested = False
-        signal.signal(signal.SIGTERM, self.handler)
-        signal.signal(signal.SIGUSR1, self.handler)
-
-    def handler(self, signum, frame):
-        print(f"🚩 Signal {signum} received. Requesting stop.")
-        self.stop_requested = True
-
-
-def check_slurm_deadline(buffer_seconds=600):
-    end_time_str = os.environ.get("SLURM_JOB_END_TIME")
-    if end_time_str:
-        try:
-            remaining = float(end_time_str) - time.time()
-            if remaining < buffer_seconds:
-                print(f"⏳ 剩余时间 ({remaining:.1f}s) 不足，准备优雅退出...", flush=True)
-                return True
-        except ValueError:
-            pass
-    return False
-
-
-def custom_expand_label(label: torch.Tensor, num_classes: int):
-    """
-    自定义展开：将索引转换为 One-Hot 格式。
-    对于 Label，将 -1 (背景) 设为全 0 向量。
-    """
-    shape = list(label.shape)
-    shape[1] = num_classes
-    expanded = torch.zeros(shape, device=label.device, dtype=torch.float32)
-
-    # 制作 Brain Mask (Valid Region)
-    valid_mask = (label != -1)
-
-    safe_indices = label.clone().long()
-    safe_indices[~valid_mask] = 0  # 临时填充防止越界
-
-    if safe_indices.max() >= num_classes:
-        safe_indices = torch.clamp(safe_indices, max=num_classes - 1)
-
-    # Scatter: 在对应类别位置填 1
-    expanded.scatter_(1, safe_indices, 1.0)
-
-    # 再次用 mask 乘回去，确保 -1 背景处是全 0 (即不属于任何类别)
-    expanded = expanded * valid_mask
-
-    return expanded
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--split_json", required=True)
+    parser.add_argument("--buffer_json", default=None)
     parser.add_argument("--results_dir", required=True)
     parser.add_argument("--pretrained_checkpoint", required=True)
     parser.add_argument("--volume_stats", type=str, default=None)
@@ -239,21 +183,22 @@ def main():
                     val_pred = torch.argmax(val_out, dim=1, keepdim=True)
 
                     # 1. 提取 Brain Mask (从 Ground Truth 中获取，模拟实际工程中的 Mask 输入)
-                    brain_mask = (v_label != -1)
+                    v_label_expanded, brain_mask = robust_one_hot(
+                        v_label, num_classes=args.out_channels, ignore_index=-1
+                    )
 
                     # 2. 展开预测结果
                     # val_pred 本身在背景处会有随机预测 (因为 Softmax)，但我们不关心
-                    val_pred_expanded = custom_expand_label(val_pred, num_classes=args.out_channels)
+                    val_pred_expanded, _ = robust_one_hot(
+                        val_pred, num_classes=args.out_channels, ignore_index=-1
+                    )
 
                     # 3. 【关键步骤】应用 Mask 到预测结果
                     # 强制将背景区域的预测清零。
                     # 如果不做这一步，背景的随机噪声会降低 Dice，导致分数虚低。
                     val_pred_expanded = val_pred_expanded * brain_mask
 
-                    # 4. 展开标签 (custom_expand_label 内部会自动处理 -1 为全 0)
-                    v_label_expanded = custom_expand_label(v_label, num_classes=args.out_channels)
-
-                    # 5. 计算指标
+                    # 4. 计算指标
                     # 此时 prediction 和 label 在背景处都是全 0
                     dice_metric(y_pred=val_pred_expanded, y=v_label_expanded)
 
