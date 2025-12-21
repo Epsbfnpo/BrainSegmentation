@@ -48,7 +48,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     sig_handler = SignalHandler()
 
-    train_loader, _ = get_dataloaders(args)
+    train_loader, _ = get_dataloaders(args, shuffle_train=False)
 
     model = MedSeqFTWrapper(args, device).to(device)
     model.load_pretrained(args.pretrained_checkpoint)

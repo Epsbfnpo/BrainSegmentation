@@ -129,7 +129,7 @@ def _get_transforms(args, mode="train"):
     return Compose(transforms)
 
 
-def get_dataloaders(args):
+def get_dataloaders(args, shuffle_train: bool = True):
     with open(args.split_json, "r") as f:
         data = json.load(f)
 
@@ -151,8 +151,8 @@ def get_dataloaders(args):
 
     val_ds = Dataset(data=val_files, transform=_get_transforms(args, "val"))
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers,
-                              pin_memory=True)
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=shuffle_train,
+                              num_workers=args.num_workers, pin_memory=True)
     val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=args.num_workers, pin_memory=True)
     return train_loader, val_loader
 
