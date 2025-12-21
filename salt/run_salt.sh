@@ -19,6 +19,7 @@ VOLUME_STATS=${VOLUME_STATS:-${REPO_ROOT}/new/priors/target/volume_stats.json}
 SALT_RANK=${SALT_RANK:-128}
 SALT_LORA_RANK=${SALT_LORA_RANK:-32}
 SALT_REG_WEIGHT=${SALT_REG_WEIGHT:-0.00001}
+TIME_LIMIT_SECONDS=${TIME_LIMIT_SECONDS:-85800}
 
 mkdir -p "${RESULTS_DIR}"
 
@@ -36,6 +37,7 @@ CMD=(
     --salt_rank "${SALT_RANK}"
     --salt_lora_rank "${SALT_LORA_RANK}"
     --salt_reg_weight "${SALT_REG_WEIGHT}"
+    --time_limit_seconds "${TIME_LIMIT_SECONDS}"
     --roi_x 128 --roi_y 128 --roi_z 128
     --feature_size 48
     --out_channels 87

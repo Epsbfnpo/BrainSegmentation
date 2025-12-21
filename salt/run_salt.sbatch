@@ -10,8 +10,7 @@
 #SBATCH --gpus-per-node=4
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err
-#SBATCH --time=6:00:00
-#SBATCH --signal=B:TERM@300
+#SBATCH --time=24:00:00
 
 set -euo pipefail
 
@@ -47,17 +46,20 @@ set -e
 
 echo "Job finished with status $STATUS"
 
+if [ "$STATUS" -eq 3 ]; then
+    echo "⏳ Time limit hit. Resubmitting job."
+    sbatch --export=ALL "$SCRIPT_PATH"
+    exit 0
+fi
+
 if [ -f "$FINAL_MODEL_PATH" ]; then
     echo "🏁 Final model detected; training complete."
+elif [ "$STATUS" -ne 0 ]; then
+    echo "❌ Job failed with status $STATUS."
 elif [ -f "$LATEST_MODEL_PATH" ]; then
-    echo "🔁 Training incomplete (latest checkpoint present); requeuing job."
-    sbatch --export=ALL "$SCRIPT_PATH"
+    echo "⚠️ Job exited without final model; latest checkpoint present."
 else
-    if [ "$STATUS" -ne 0 ]; then
-        echo "❌ Job failed with status $STATUS."
-    else
-        echo "⚠️ Job finished but no checkpoint found."
-    fi
+    echo "⚠️ Job finished but no checkpoint found."
 fi
 
 exit $STATUS

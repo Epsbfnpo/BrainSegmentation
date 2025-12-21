@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import itertools
 import contextlib
+import time
 from typing import Dict, Optional, Sequence
 
 import numpy as np
@@ -231,6 +232,8 @@ def train_epoch(
     debug_mode=False,
     debug_step_limit=2,
     ema_helper=None,
+    start_time=None,
+    time_limit_seconds=None,
 ):
     model.train()
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
@@ -241,7 +244,16 @@ def train_epoch(
     batch_count = 0
     update_count = 0
 
+    time_limited = False
+
     for step, batch in enumerate(loader):
+        if time_limit_seconds is not None and start_time is not None:
+            elapsed = time.time() - start_time
+            if elapsed > time_limit_seconds:
+                time_limited = True
+                if is_main:
+                    print(f"⏰ Time limit reached ({elapsed/3600:.2f}h). Stopping epoch early.")
+                break
         images = batch["image"].to(device)
         labels = batch["label"].to(device)
 
@@ -295,7 +307,7 @@ def train_epoch(
     # Return averaged metrics
     metrics = {k: v / max(batch_count, 1) for k, v in sum_metrics.items()}
     metrics["global_step"] = global_step
-    return metrics
+    return metrics, time_limited
 
 
 # Re-use validate_epoch verbatim from L2-SP, essentially just needs to exist here

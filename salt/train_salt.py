@@ -4,8 +4,9 @@
 
 import argparse
 import os
-import time
 import random
+import sys
+import time
 import signal
 import numpy as np
 import torch
@@ -25,36 +26,6 @@ from trainer_salt import CombinedSegmentationLoss, ExponentialMovingAverage, tra
 
 
 # --- Utility functions copied from L2-SP for consistency ---
-
-def parse_slurm_timelimit(raw):
-    if not raw:
-        return None
-    if "-" in raw:
-        days, rest = raw.split("-")
-        total = int(days) * 24 * 3600
-    else:
-        total = 0
-        rest = raw
-    parts = [int(x) for x in rest.split(":")]
-    if len(parts) == 3:
-        total += parts[0] * 3600 + parts[1] * 60 + parts[2]
-    elif len(parts) == 2:
-        total += parts[0] * 60 + parts[1]
-    else:
-        total += parts[0] * 60
-    return float(total)
-
-
-def compute_job_deadline(buffer_seconds):
-    end = os.environ.get("SLURM_JOB_END_TIME")
-    if end:
-        return float(end) - buffer_seconds
-    start = os.environ.get("SLURM_JOB_START_TIME")
-    limit = os.environ.get("SLURM_JOB_TIME_LIMIT")
-    if start and limit:
-        return float(start) + parse_slurm_timelimit(limit) - buffer_seconds
-    return None
-
 
 def record_resume_checkpoint(results_dir, path):
     (results_dir / "resume_from.txt").write_text(str(path.resolve()), encoding="utf-8")
@@ -176,7 +147,7 @@ def parse_args():
     parser.add_argument("--foreground_only", action="store_true", default=True)
     parser.add_argument("--enhanced_class_weights", action="store_true", default=True)
     parser.add_argument("--use_swin_checkpoint", action="store_true", default=True)
-    parser.add_argument("--slurm_time_buffer", default=300, type=float)
+    parser.add_argument("--time_limit_seconds", default=85800, type=float)
     parser.add_argument("--resume", default=None)
     parser.add_argument("--grad_accum_steps", default=1, type=int)
 
@@ -218,9 +189,8 @@ def main():
         stop_event["triggered"] = True
 
     signal.signal(signal.SIGTERM, sig_handler)
-    signal.signal(signal.SIGUSR1, sig_handler)
-
-    job_deadline = compute_job_deadline(args.slurm_time_buffer)
+    start_time = time.time()
+    time_limit_seconds = args.time_limit_seconds
 
     # Data & Model
     train_loader, val_loader = get_target_dataloaders(
@@ -265,17 +235,22 @@ def main():
     # Loop
     for epoch in range(start_epoch, args.epochs + 1):
         # Time check
-        if stop_event["triggered"] or (job_deadline and time.time() > job_deadline):
+        elapsed = time.time() - start_time
+        if stop_event["triggered"] or elapsed > time_limit_seconds:
             if is_main:
                 print("🛑 Time limit or Signal. Saving latest and exiting.")
             save_checkpoint(latest_ckpt, model, optimizer, scheduler, epoch - 1, global_step, best_dice)
             record_resume_checkpoint(results_dir, latest_ckpt)
-            return 0  # Exit code 0 for requeue logic in sbatch
+            if elapsed > time_limit_seconds:
+                if dist.is_available() and dist.is_initialized():
+                    dist.barrier()
+                return 3
+            return 0
 
         if distributed:
             train_loader.sampler.set_epoch(epoch)
 
-        metrics = train_epoch(
+        metrics, time_limited = train_epoch(
             model,
             train_loader,
             optimizer,
@@ -287,12 +262,23 @@ def main():
             writer=writer,
             global_step=global_step,
             is_main=is_main,
+            start_time=start_time,
+            time_limit_seconds=time_limit_seconds,
         )
         scheduler.step()
         global_step = metrics["global_step"]
 
         if is_main:
             print(f"Epoch {epoch:03d}: loss={metrics['loss']:.4f} seg={metrics['seg']:.4f} reg={metrics['salt_reg']:.4f}")
+
+        if time_limited:
+            if is_main:
+                print("🛑 Time limit reached during epoch. Saving latest and exiting.")
+            save_checkpoint(latest_ckpt, model, optimizer, scheduler, epoch, global_step, best_dice)
+            record_resume_checkpoint(results_dir, latest_ckpt)
+            if dist.is_available() and dist.is_initialized():
+                dist.barrier()
+            return 3
 
         # Validation
         if epoch % 5 == 0:
@@ -318,7 +304,8 @@ def main():
         final_ckpt = results_dir / "final_model.pt"
         save_checkpoint(final_ckpt, model, optimizer, scheduler, args.epochs, global_step, best_dice)
         print("🏁 Training complete.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
