@@ -15,6 +15,7 @@ from monai.transforms import (
     RandZoomd, Spacingd, SpatialPadd, Randomizable
 )
 from monai.networks.nets import SwinUNETR
+from utils_medseqft import robust_one_hot
 
 
 # 移除了 monai.losses 和 one_hot 依赖，完全手写以确保安全
@@ -128,7 +129,7 @@ def _get_transforms(args, mode="train"):
     return Compose(transforms)
 
 
-def get_dataloaders(args):
+def get_dataloaders(args, shuffle_train: bool = True):
     with open(args.split_json, "r") as f:
         data = json.load(f)
 
@@ -139,14 +140,19 @@ def get_dataloaders(args):
     train_files = process(data.get("training", []))
     val_files = process(data.get("validation", []))
 
+    if getattr(args, "buffer_json", None):
+        with open(args.buffer_json, "r") as f:
+            buffer_data = json.load(f)
+        train_files.extend(process(buffer_data))
+
     train_ds = CacheDataset(data=train_files, transform=_get_transforms(args, "train"),
                             cache_rate=args.cache_rate, num_workers=args.num_workers) if args.cache_rate > 0 else \
         Dataset(data=train_files, transform=_get_transforms(args, "train"))
 
     val_ds = Dataset(data=val_files, transform=_get_transforms(args, "val"))
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers,
-                              pin_memory=True)
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=shuffle_train,
+                              num_workers=args.num_workers, pin_memory=True)
     val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=args.num_workers, pin_memory=True)
     return train_loader, val_loader
 
@@ -203,21 +209,8 @@ class MedSeqFTLoss(nn.Module):
         # pred: [B, C, D, H, W] (Logits)
         # target: [B, 1, D, H, W] (Indices)
 
-        # 1. 制作 Mask (剔除背景 -1)
-        # 形状广播到 [B, C, D, H, W]
-        valid_mask = (target != self.ignore_index)
+        target_onehot, valid_mask = robust_one_hot(target, self.num_classes, self.ignore_index)
         valid_mask_float = valid_mask.to(dtype=pred.dtype)
-
-        # 2. 准备 Target One-Hot (Custom Scatter, No monai dependency)
-        # 先把 -1 变成 0 以免 scatter 报错，反正后面会被 mask 掉
-        target_safe = target.clone()
-        target_safe[~valid_mask] = 0
-
-        # Scatter 到 One-Hot [B, C, D, H, W]
-        target_onehot = torch.zeros_like(pred)
-        # 必须 clamp 防止越界 (如果 out_channels 设置小了)
-        target_indices = torch.clamp(target_safe.long(), max=self.num_classes - 1)
-        target_onehot.scatter_(1, target_indices, 1.0)
 
         # 3. 计算 Logits 的 Softmax
         probs = F.softmax(pred, dim=1)
