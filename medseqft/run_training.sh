@@ -70,15 +70,15 @@ if [ ! -f "$STAGE1_MODEL" ]; then
         --pretrained_checkpoint "${PRETRAINED_CHECKPOINT}" \
         --epochs "${EPOCHS_STAGE1}" \
         --batch_size "${BATCH_SIZE}" \
-        --lr 5e-5 --weight_decay 1e-5 \
+        --lr 1e-3 --weight_decay 1e-5 \
         --roi_x "${ROI_X}" --roi_y "${ROI_Y}" --roi_z "${ROI_Z}" \
         --out_channels "${OUT_CHANNELS}" --feature_size "${FEATURE_SIZE}" \
-        --lambda_kd 1.0 \
+        --lambda_kd 0.0 \
         --foreground_only \
         --cache_rate 1.0
 
     if [ ! -f "$TEMP_STAGE1_OUTPUT" ]; then
-        echo "⏳ Step 1 interrupted (Timeout). Requesting Resubmit..."
+        echo "⏳ Step 1 incomplete (Timeout/Interrupted). Stopping pipeline here."
         exit 0
     fi
 
@@ -107,7 +107,7 @@ if [ ! -d "$STAGE2_LORA_DIR" ]; then
         --foreground_only
 
     if [ ! -d "$TEMP_LORA_OUTPUT" ]; then
-        echo "⏳ Step 2 interrupted (Timeout). Requesting Resubmit..."
+        echo "⏳ Step 2 incomplete (Timeout/Interrupted). Stopping pipeline here."
         exit 0
     fi
 

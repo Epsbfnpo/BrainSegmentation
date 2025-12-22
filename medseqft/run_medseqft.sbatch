@@ -14,7 +14,9 @@
 
 set -euo pipefail
 
+echo "=============================================================="
 echo "Job $SLURM_JOB_ID started at $(date)"
+echo "=============================================================="
 
 # Environment
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
@@ -26,27 +28,28 @@ source /datasets/work/hb-nhmrc-dhcp/work/liu275/miniconda3/bin/activate
 conda activate brainseg
 
 RESULTS_DIR="/datasets/work/hb-nhmrc-dhcp/work/liu275/medseqft/results/target_medseqft"
-FINAL_MODEL="${RESULTS_DIR}/final_model.pt"
 SCRIPT_PATH="/datasets/work/hb-nhmrc-dhcp/work/liu275/medseqft/run_medseqft.sbatch"
+
+# Pipeline artifacts
+FINAL_MODEL_PATH="${RESULTS_DIR}/final_model.pt"
+LATEST_MODEL_PATH="${RESULTS_DIR}/latest_checkpoint.pt"
 
 set +e
 bash run_training.sh
 STATUS=$?
 set -e
 
-echo "Job ended with status $STATUS at $(date)"
+echo "=============================================================="
+echo "Job $SLURM_JOB_ID ended at $(date) with exit status $STATUS"
+echo "=============================================================="
 
-# Resubmit Logic
-if [ -f "$FINAL_MODEL" ]; then
-    echo "🏁 Training complete."
+# Stateless, file-based resubmit logic
+if [ -f "$FINAL_MODEL_PATH" ]; then
+    echo "🏁 Final model detected at $FINAL_MODEL_PATH; training complete."
+elif [ -f "$LATEST_MODEL_PATH" ]; then
+    echo "🔁 Training incomplete (final model missing, latest checkpoint present); requeuing job..."
+    sbatch "$SCRIPT_PATH"
 else
-    # 143 usually means SIGTERM (timeout)
-    if [ "$STATUS" -eq 0 ] || [ "$STATUS" -eq 143 ]; then
-        echo "🔁 Job timed out or incomplete. Resubmitting..."
-        sbatch "$SCRIPT_PATH"
-    else
-        echo "❌ Job failed. Not resubmitting."
-    fi
+    echo "❌ Job failed (no final model, no checkpoint). Exit status $STATUS"
+    exit "$STATUS"
 fi
-
-exit $STATUS
