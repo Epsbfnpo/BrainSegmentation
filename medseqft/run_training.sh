@@ -70,10 +70,10 @@ if [ ! -f "$STAGE1_MODEL" ]; then
         --pretrained_checkpoint "${PRETRAINED_CHECKPOINT}" \
         --epochs "${EPOCHS_STAGE1}" \
         --batch_size "${BATCH_SIZE}" \
-        --lr 5e-5 --weight_decay 1e-5 \
+        --lr 1e-3 --weight_decay 1e-5 \
         --roi_x "${ROI_X}" --roi_y "${ROI_Y}" --roi_z "${ROI_Z}" \
         --out_channels "${OUT_CHANNELS}" --feature_size "${FEATURE_SIZE}" \
-        --lambda_kd 1.0 \
+        --lambda_kd 0.0 \
         --foreground_only \
         --cache_rate 1.0
 
