@@ -78,7 +78,7 @@ if [ ! -f "$STAGE1_MODEL" ]; then
         --cache_rate 1.0
 
     if [ ! -f "$TEMP_STAGE1_OUTPUT" ]; then
-        echo "⏳ Step 1 interrupted (Timeout). Requesting Resubmit..."
+        echo "⏳ Step 1 incomplete (Timeout/Interrupted). Stopping pipeline here."
         exit 0
     fi
 
@@ -107,7 +107,7 @@ if [ ! -d "$STAGE2_LORA_DIR" ]; then
         --foreground_only
 
     if [ ! -d "$TEMP_LORA_OUTPUT" ]; then
-        echo "⏳ Step 2 interrupted (Timeout). Requesting Resubmit..."
+        echo "⏳ Step 2 incomplete (Timeout/Interrupted). Stopping pipeline here."
         exit 0
     fi
 
