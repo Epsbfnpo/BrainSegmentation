@@ -93,12 +93,14 @@ class PercentileNormalizationd(MapTransform):
             if mask.any():
                 lo = np.percentile(array[mask], self.lower)
                 hi = np.percentile(array[mask], self.upper)
-                if (hi - lo) > 1e-6 and not np.isnan(hi) and not np.isnan(lo):
+                if not np.isnan(lo) and not np.isnan(hi) and (hi - lo) > 1e-6:
                     norm = (np.clip(array, lo, hi) - lo) / (hi - lo)
                 else:
                     norm = np.zeros_like(array)
-                norm[~mask] = 0
-                d[key] = MetaTensor(torch.as_tensor(norm, dtype=torch.float32), meta=getattr(image, 'meta', None))
+            else:
+                norm = np.zeros_like(array)
+            norm[~mask] = 0
+            d[key] = MetaTensor(torch.as_tensor(norm, dtype=torch.float32), meta=getattr(image, 'meta', None))
         return d
 
 
