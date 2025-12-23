@@ -7,7 +7,6 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from pathlib import Path
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
-from torch.cuda.amp import GradScaler, autocast
 from tensorboardX import SummaryWriter
 
 # Import local components
@@ -105,7 +104,6 @@ def main():
     # Optimization
     optimizer = AdamW(student.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
-    scaler = GradScaler()
     loss_fn = MedSeqFTLoss(num_classes=args.out_channels, lambda_kd=args.lambda_kd)
 
     dice_metric = DiceMetric(include_background=True, reduction="mean", get_not_nans=False)
@@ -191,32 +189,33 @@ def main():
             img = batch["image"].to(device)
             label = batch["label"].to(device)
 
+            # === 新增：NaN 熔断检查 ===
             if torch.isnan(img).any() or torch.isinf(img).any():
-                print(f"⚠️ Warning: NaN/Inf detected in input image at Epoch {epoch}. Skipping batch.")
+                print(f"⚠️ [Epoch {epoch}] Detected NaN/Inf in INPUT IMAGE. Skipping batch.")
+                if "image_meta_dict" in batch and "filename_or_obj" in batch["image_meta_dict"]:
+                    print(f"Bad file: {batch['image_meta_dict']['filename_or_obj']}")
                 continue
+            # =========================
 
-            with autocast():
-                pred = student(img)
-                with torch.no_grad():
-                    teacher_pred = teacher(img)
+            pred = student(img)
+            with torch.no_grad():
+                teacher_pred = teacher(img)
 
-                if teacher_pred.shape[1] != pred.shape[1]:
-                    min_ch = min(teacher_pred.shape[1], pred.shape[1])
-                    teacher_pred_safe = teacher_pred[:, :min_ch, ...]
-                    pred_safe_for_kd = pred[:, :min_ch, ...]
-                    total_loss, l_seg, l_kd = loss_fn(pred, label, teacher_pred_safe, pred_kd=pred_safe_for_kd)
-                else:
-                    total_loss, l_seg, l_kd = loss_fn(pred, label, teacher_pred)
+            if teacher_pred.shape[1] != pred.shape[1]:
+                min_ch = min(teacher_pred.shape[1], pred.shape[1])
+                teacher_pred_safe = teacher_pred[:, :min_ch, ...]
+                pred_safe_for_kd = pred[:, :min_ch, ...]
+                total_loss, l_seg, l_kd = loss_fn(pred, label, teacher_pred_safe, pred_kd=pred_safe_for_kd)
+            else:
+                total_loss, l_seg, l_kd = loss_fn(pred, label, teacher_pred)
 
-                loss = total_loss / args.grad_accum_steps
+            loss = total_loss / args.grad_accum_steps
 
-            scaler.scale(loss).backward()
+            loss.backward()
 
             if (steps + 1) % args.grad_accum_steps == 0:
-                scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(student.parameters(), 1.0)
-                scaler.step(optimizer)
-                scaler.update()
+                optimizer.step()
                 optimizer.zero_grad()
 
             # 简单的 Loss 聚合用于打印 (只在 Rank 0 打印)
@@ -230,10 +229,8 @@ def main():
             steps += 1
 
         if steps % args.grad_accum_steps != 0:
-            scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(student.parameters(), 1.0)
-            scaler.step(optimizer)
-            scaler.update()
+            optimizer.step()
             optimizer.zero_grad()
 
         scheduler.step()
@@ -268,10 +265,9 @@ def main():
                     v_img = val_batch["image"].to(device)
                     v_label = val_batch["label"].to(device)
 
-                    with autocast():
-                        val_out = sliding_window_inference(
-                            v_img, (args.roi_x, args.roi_y, args.roi_z), 4, student, overlap=0.5
-                        )
+                    val_out = sliding_window_inference(
+                        v_img, (args.roi_x, args.roi_y, args.roi_z), 4, student, overlap=0.5
+                    )
 
                     val_pred = torch.argmax(val_out, dim=1, keepdim=True)
                     v_label_expanded, brain_mask = robust_one_hot(
