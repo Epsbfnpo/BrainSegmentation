@@ -32,7 +32,7 @@ def main():
     parser.add_argument("--roi_y", default=128, type=int)
     parser.add_argument("--roi_z", default=128, type=int)
     parser.add_argument("--in_channels", default=1, type=int)
-    parser.add_argument("--out_channels", default=87, type=int)
+    parser.add_argument("--out_channels", default=15, type=int)
     parser.add_argument("--feature_size", default=48, type=int)
 
     parser.add_argument("--batch_size", default=1, type=int)
