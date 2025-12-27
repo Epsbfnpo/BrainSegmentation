@@ -22,10 +22,10 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from monai.inferers import sliding_window_inference
-from monai.metrics import DiceMetric, HausdorffDistanceMetric, SurfaceDistanceMetric
+from monai.metrics import DiceMetric, HausdorffDistanceMetric
 from monai.transforms import (
     Compose, LoadImaged, EnsureChannelFirstd, Orientationd, Spacingd,
-    EnsureTyped, MapTransform
+    EnsureTyped, MapTransform, ScaleIntensityRanged, ToTensord
 )
 from monai.data import Dataset, DataLoader, MetaTensor, decollate_batch
 from torch.cuda.amp import autocast
@@ -37,24 +37,6 @@ if str(SCRIPT_DIR) not in sys.path:
 
 # --- Imports specific to MedSeqFT ---
 from components import MedSeqFTWrapper
-
-try:
-    from extra_metrics import compute_cbdice, compute_clce, compute_cldice
-except ImportError:
-    print("⚠️  Could not import extra_metrics. Some metrics will be 0.")
-
-
-    def compute_cbdice(*args):
-        return 0.0
-
-
-    def compute_clce(*args):
-        return 0.0
-
-
-    def compute_cldice(*args):
-        return 0.0
-
 
 # =========================================================================
 # PART 1: Helper Functions (Aligned with SALT)
@@ -208,6 +190,23 @@ class ExtractAged(MapTransform):
         return d
 
 
+def get_test_transforms(args):
+    return Compose([
+        LoadImaged(keys=["image", "label"]),
+        EnsureChannelFirstd(keys=["image", "label"]),
+        Spacingd(keys=["image", "label"], pixdim=(1.5, 1.5, 1.5), mode=("bilinear", "nearest")),
+        Orientationd(keys=["image", "label"], axcodes="RAS"),
+        ScaleIntensityRanged(
+            keys=["image"],
+            a_min=-175.0, a_max=250.0,
+            b_min=0.0, b_max=1.0,
+            clip=True,
+        ),
+        EnsureTyped(keys=["image", "label"], dtype=torch.float32, track_meta=True),
+        ToTensord(keys=["image", "label"]),
+    ])
+
+
 def get_medseqft_test_loader(args):
     with open(args.split_json, "r") as f:
         data = json.load(f)
@@ -226,21 +225,7 @@ def get_medseqft_test_loader(args):
     if not test_files:
         raise ValueError("Could not find 'testing', 'test', or 'test_set' in split json.")
 
-    transforms = [
-        LoadImaged(keys=["image", "label"]),
-        EnsureChannelFirstd(keys=["image", "label"]),
-        ExtractAged(),
-    ]
-    if getattr(args, "apply_spacing", True):
-        transforms.append(Spacingd(keys=["image", "label"], pixdim=args.target_spacing, mode=("bilinear", "nearest")))
-    if getattr(args, "apply_orientation", True):
-        transforms.append(Orientationd(keys=["image", "label"], axcodes="RAS"))
-
-    transforms.append(PercentileNormalizationd(keys=["image"]))
-    # track_meta=True is essential for MetaTensor to hold the correct affine
-    transforms.append(EnsureTyped(keys=["image", "label", "age"], track_meta=True))
-
-    ds = Dataset(data=test_files, transform=Compose(transforms))
+    ds = Dataset(data=test_files, transform=get_test_transforms(args))
     loader = DataLoader(ds, batch_size=1, shuffle=False, num_workers=args.num_workers, pin_memory=True)
     return loader
 
@@ -415,7 +400,7 @@ def parse_args():
     parser.add_argument("--roi_x", default=128, type=int)
     parser.add_argument("--roi_y", default=128, type=int)
     parser.add_argument("--roi_z", default=128, type=int)
-    parser.add_argument("--out_channels", default=87, type=int)
+    parser.add_argument("--out_channels", default=15, type=int)
     parser.add_argument("--feature_size", default=48, type=int)
     parser.add_argument("--foreground_only", action="store_true", default=True)
     parser.add_argument("--num_workers", default=4, type=int)
@@ -424,7 +409,7 @@ def parse_args():
     parser.add_argument("--use_amp", action="store_true", default=True)
     parser.add_argument("--apply_spacing", action="store_true", default=True)
     parser.add_argument("--apply_orientation", action="store_true", default=True)
-    parser.add_argument("--target_spacing", nargs=3, type=float, default=[0.8, 0.8, 0.8])
+    parser.add_argument("--target_spacing", nargs=3, type=float, default=[1.5, 1.5, 1.5])
     parser.add_argument("--class_map_json", type=str, default=None)
     parser.add_argument("--adjacency_prior", type=str, default=None)
     parser.add_argument("--structural_rules", type=str, default=None)
@@ -462,18 +447,6 @@ def main():
     dice_metric = DiceMetric(include_background=not args.foreground_only, reduction="mean_batch")
     hd95_metric = HausdorffDistanceMetric(include_background=not args.foreground_only, percentile=95,
                                           reduction="mean_batch")
-    assd_metric = SurfaceDistanceMetric(include_background=not args.foreground_only, symmetric=True,
-                                        reduction="mean_batch")
-
-    adv_metrics = AdvancedMetrics(
-        num_classes=args.out_channels,
-        include_background=not args.foreground_only,
-        adjacency_prior=args.adjacency_prior,
-        structural_rules=args.structural_rules,
-        laterality_pairs=args.laterality_pairs_json,
-        device=device
-    )
-
     predictions_dir = Path(args.output_dir)
     per_case = []
     class_mapping = load_class_mapping(Path(args.class_map_json)) if args.class_map_json else {}
@@ -522,34 +495,7 @@ def main():
 
             dice_metric(y_pred=preds_oh, y=target_oh)
             hd95_val = float(torch.nan_to_num(hd95_metric(y_pred=preds_oh, y=target_oh)).mean().item())
-            assd_val = float(torch.nan_to_num(assd_metric(y_pred=preds_oh, y=target_oh)).mean().item())
             case_dice = float(_compute_case_dice(preds_oh, target_oh, include_background=True).mean().item())
-
-            # --- Advanced Metrics ---
-            age = float(batch["age"][0].item()) if "age" in batch else 40.0
-            p_vol = pred_labels[0];
-            t_vol = labels.long().squeeze(1)[0];
-            m_vol = brain_mask[0]
-
-            adj = adv_metrics.compute_adjacency(p_vol, m_vol)
-            spec_dist = adv_metrics.compute_spectral_distance(adj, age)
-            struct_v = adv_metrics.compute_structural_violations(adj)
-            sym = adv_metrics.compute_symmetry(p_vol, m_vol)
-            rve = adv_metrics.compute_rve(p_vol, t_vol, m_vol)
-
-            p_np = p_vol.cpu().numpy();
-            t_np = t_vol.cpu().numpy()
-            cldice_s, cbdice_s, v_cnt = 0.0, 0.0, 0
-            for c in range(1, total_cls):
-                pc = p_np == c;
-                tc = t_np == c
-                if tc.sum() > 0:
-                    cldice_s += compute_cldice(pc, tc)
-                    cbdice_s += compute_cbdice(pc, tc)
-                    v_cnt += 1
-            cldice = cldice_s / v_cnt if v_cnt > 0 else 0.0
-            cbdice = cbdice_s / v_cnt if v_cnt > 0 else 0.0
-            clce = compute_clce(logits, labels.long().squeeze(1) - 1)
 
             # --- Save Outputs (SALT STYLE RESAMPLING) ---
             # 1. Decollate to get individual item metadata (essential for finding filename)
@@ -577,27 +523,19 @@ def main():
             )
 
             per_case.append({
-                "case_id": case_id, "dice": case_dice, "hd95": hd95_val, "assd": assd_val,
-                "rve": rve, "symmetry": sym, "spec_distance": spec_dist,
-                "cldice": cldice, "cbdice": cbdice, "clce": clce,
-                "violation_forbidden": struct_v["forbidden"], "violation_required": struct_v["required"],
+                "case_id": case_id, "dice": case_dice, "hd95": hd95_val,
                 "path": str(pred_native_path)
             })
             print(f"  Processed {case_id}: Dice={case_dice:.4f} HD95={hd95_val:.2f}")
 
     mean_dice = float(dice_metric.aggregate().mean().item())
     mean_hd95 = float(torch.nan_to_num(hd95_metric.aggregate()).mean().item())
-    mean_assd = float(torch.nan_to_num(assd_metric.aggregate()).mean().item())
 
     def avg(k):
         return sum(c[k] for c in per_case if c[k] is not None) / len(per_case) if per_case else 0.0
 
     metrics = {
-        "mean_dice": mean_dice, "mean_hd95": mean_hd95, "mean_assd": mean_assd,
-        "mean_rve": avg("rve"), "mean_symmetry": avg("symmetry"), "mean_spec_distance": avg("spec_distance"),
-        "mean_cldice": avg("cldice"), "mean_cbdice": avg("cbdice"), "mean_clce": avg("clce"),
-        "total_violations_forbidden": sum(c["violation_forbidden"] for c in per_case),
-        "total_violations_required": sum(c["violation_required"] for c in per_case),
+        "mean_dice": mean_dice, "mean_hd95": mean_hd95,
         "cases": per_case
     }
 

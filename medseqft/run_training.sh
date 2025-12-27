@@ -2,22 +2,28 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"  # 假设你的代码结构没变
 
 # --- Configuration ---
 NUM_GPUS=${NUM_GPUS:-4}
-BATCH_SIZE=${BATCH_SIZE:-2}
-EPOCHS_STAGE1=${EPOCHS_STAGE1:-2000}
-EPOCHS_STAGE2=${EPOCHS_STAGE2:-500}
-RESULTS_DIR=${RESULTS_DIR:-${SCRIPT_DIR}/results/target_medseqft}
-TARGET_SPLIT_JSON=${TARGET_SPLIT_JSON:-${REPO_ROOT}/PPREMOPREBO_split.json}
-PRETRAINED_CHECKPOINT=${PRETRAINED_CHECKPOINT:-/datasets/work/hb-nhmrc-dhcp/work/liu275/Tuning/results_fixed/dHCP_registered_fixed/best_model.pth}
+BATCH_SIZE=${BATCH_SIZE:-2} # 3D SwinUNETR 128x128 显存占用大，2是安全值
+EPOCHS_STAGE1=${EPOCHS_STAGE1:-300} # AMOS 规模较大，可以适当跑多点，或者按需调整
+EPOCHS_STAGE2=${EPOCHS_STAGE2:-100}
+
+# 结果保存路径
+RESULTS_DIR=${RESULTS_DIR:-/datasets/work/hb-nhmrc-dhcp/work/liu275/medseqft/results/target_totalseg}
+
+# [关键修改] 目标域 Split JSON (刚才生成的)
+TARGET_SPLIT_JSON=${TARGET_SPLIT_JSON:-/datasets/work/hb-nhmrc-dhcp/work/liu275/TotalSegmentator_14cls_final_split.json}
+
+# [关键修改] AMOS 预训练模型 (Source Model)
+PRETRAINED_CHECKPOINT=${PRETRAINED_CHECKPOINT:-/datasets/work/hb-nhmrc-dhcp/work/liu275/Tuning/results_fixed/amos_supervised_finetune/AMOS_CT_Finetune_Fixed/best_model.pth}
 
 # Model Params
 ROI_X=${ROI_X:-128}
 ROI_Y=${ROI_Y:-128}
 ROI_Z=${ROI_Z:-128}
-OUT_CHANNELS=${OUT_CHANNELS:-87}
+OUT_CHANNELS=${OUT_CHANNELS:-15}  # 0背景 + 14器官 = 15类
 FEATURE_SIZE=${FEATURE_SIZE:-48}
 
 # Pipeline artifacts
@@ -75,7 +81,7 @@ if [ ! -f "$STAGE1_MODEL" ]; then
         --out_channels "${OUT_CHANNELS}" --feature_size "${FEATURE_SIZE}" \
         --lambda_kd 0.0 \
         --foreground_only \
-        --cache_rate 1.0
+        --cache_rate 0.0
 
     if [ ! -f "$TEMP_STAGE1_OUTPUT" ]; then
         echo "⏳ Step 1 incomplete (Timeout/Interrupted). Stopping pipeline here."

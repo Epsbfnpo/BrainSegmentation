@@ -12,7 +12,8 @@ from monai.transforms import (
     LoadImaged, MapTransform, Orientationd, RandAdjustContrastd, RandBiasFieldd,
     RandCropByLabelClassesd, RandGaussianNoised, RandGaussianSmoothd,
     RandHistogramShiftd, RandRotated, RandScaleIntensityd, RandShiftIntensityd,
-    RandZoomd, Spacingd, SpatialPadd, Randomizable, RandCropByPosNegLabeld
+    RandZoomd, Spacingd, SpatialPadd, Randomizable, RandCropByPosNegLabeld,
+    ScaleIntensityRanged, ToTensord
 )
 from monai.networks.nets import SwinUNETR
 from utils_medseqft import robust_one_hot
@@ -54,6 +55,20 @@ def safe_collate(batch):
 
 
 # --- 1. Data Loader Components ---
+
+class ForceContiguousd(MapTransform):
+    def __init__(self, keys):
+        super().__init__(keys)
+
+    def __call__(self, data):
+        d = dict(data)
+        for key in self.key_iterator(d):
+            if isinstance(d[key], torch.Tensor):
+                d[key] = d[key].clone()
+            elif isinstance(d[key], np.ndarray):
+                d[key] = d[key].copy()
+        return d
+
 
 class ExtractAged(MapTransform):
     def __init__(self, metadata_key: str = "metadata"):
@@ -198,11 +213,85 @@ def get_dataloaders(args, shuffle_train: bool = True):
             buffer_data = json.load(f)
         train_files.extend(process(buffer_data))
 
-    train_ds = CacheDataset(data=train_files, transform=_get_transforms(args, "train"),
-                            cache_rate=args.cache_rate, num_workers=args.num_workers) if args.cache_rate > 0 else \
-        Dataset(data=train_files, transform=_get_transforms(args, "train"))
+    train_transforms = Compose([
+        LoadImaged(keys=["image", "label"]),
+        EnsureChannelFirstd(keys=["image", "label"]),
+        Spacingd(
+            keys=["image", "label"],
+            pixdim=(1.5, 1.5, 1.5),
+            mode=("bilinear", "nearest")
+        ),
+        Orientationd(keys=["image", "label"], axcodes="RAS"),
+        ScaleIntensityRanged(
+            keys=["image"],
+            a_min=-175.0, a_max=250.0,
+            b_min=0.0, b_max=1.0,
+            clip=True,
+        ),
+        SpatialPadd(
+            keys=["image", "label"],
+            spatial_size=(args.roi_x, args.roi_y, args.roi_z),
+            mode="constant"
+        ),
+        RandCropByLabelClassesd(
+            keys=["image", "label"],
+            label_key="label",
+            spatial_size=(args.roi_x, args.roi_y, args.roi_z),
+            num_classes=args.out_channels,
+            num_samples=1,
+        ),
+        RandRotated(
+            keys=["image", "label"],
+            range_x=0.3, range_y=0.3, range_z=0.3,
+            prob=0.3, mode=["bilinear", "nearest"],
+        ),
+        RandZoomd(
+            keys=["image", "label"],
+            min_zoom=0.85, max_zoom=1.15,
+            prob=0.2, mode=["bilinear", "nearest"],
+        ),
+        RandGaussianNoised(keys=["image"], prob=0.1, mean=0.0, std=0.01),
+        RandAdjustContrastd(keys=["image"], prob=0.1, gamma=(0.7, 1.3)),
+        ForceContiguousd(keys=["image", "label"]),
+        ToTensord(keys=["image", "label"]),
+    ])
 
-    val_ds = Dataset(data=val_files, transform=_get_transforms(args, "val"))
+    val_transforms = Compose([
+        LoadImaged(keys=["image", "label"]),
+        EnsureChannelFirstd(keys=["image", "label"]),
+        Spacingd(
+            keys=["image", "label"],
+            pixdim=(1.5, 1.5, 1.5),
+            mode=("bilinear", "nearest")
+        ),
+        Orientationd(keys=["image", "label"], axcodes="RAS"),
+        ScaleIntensityRanged(
+            keys=["image"],
+            a_min=-175.0, a_max=250.0,
+            b_min=0.0, b_max=1.0,
+            clip=True,
+        ),
+        SpatialPadd(
+            keys=["image", "label"],
+            spatial_size=(args.roi_x, args.roi_y, args.roi_z),
+            mode="constant"
+        ),
+        CenterSpatialCropd(
+            keys=["image", "label"],
+            roi_size=(args.roi_x, args.roi_y, args.roi_z),
+        ),
+        ForceContiguousd(keys=["image", "label"]),
+        ToTensord(keys=["image", "label"]),
+    ])
+
+    train_ds = CacheDataset(
+        data=train_files,
+        transform=train_transforms,
+        cache_rate=args.cache_rate,
+        num_workers=args.num_workers
+    ) if args.cache_rate > 0 else Dataset(data=train_files, transform=train_transforms)
+
+    val_ds = Dataset(data=val_files, transform=val_transforms)
 
     # 关键修改：使用 safe_collate 替代默认 collation
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=shuffle_train,
